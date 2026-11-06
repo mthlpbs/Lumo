@@ -1,0 +1,171 @@
+name: ci
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_dry_run:
+        description: Build and test release assets without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    # Add-on releases use their own tags and do not ship the app.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate release version
+        id: version
+        shell: python
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          import os, pathlib, re, tomllib
+          root = pathlib.Path('.')
+          version = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['package']['version']
+          if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+              raise SystemExit(f'Expected a numeric x.y.z version, got {version}')
+          tag = os.environ.get('RELEASE_TAG', '')
+          if tag and tag != f'v{version}':
+              raise SystemExit(f'Release tag {tag} must match Cargo.toml version v{version}')
+          checks = {
+              'installer/lumo.nsi': [f'!define VERSION "{version}"', f'VIProductVersion "{version}.0"'],
+              'installer/lumo.iss': [f'#define AppVersion "{version}"'],
+              'crates/lumo/res/lumo.rc': [f'FILEVERSION {version.replace(".", ",")},0', f'PRODUCTVERSION {version.replace(".", ",")},0'],
+          }
+          for file, expected in checks.items():
+              contents = (root / file).read_text()
+              for value in expected:
+                  if value not in contents:
+                      raise SystemExit(f'{file} must contain {value}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\n')
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Test workspace
+        run: cargo test --workspace --locked --target x86_64-pc-windows-msvc
+
+      - name: Build Windows app
+        run: cargo build -p lumo --release --locked --target x86_64-pc-windows-msvc
+
+      # lumo.nsi uses Target amd64-unicode, unavailable in the runner's stock NSIS.
+      - name: Install NSIS with native x64 support
+        uses: negrutiu/nsis-install@9c575d44c2938a43e38a305caeb403de90303c60 # v3
+        with:
+          distro: negrutiu
+          arch: amd64
+
+      - name: Package installer and portable app
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'target/x86_64-pc-windows-msvc/release/lumo.exe'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          $portable = Join-Path $dist 'Lumo'
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item -LiteralPath $exe -Destination $portable
+          Copy-Item -LiteralPath LICENSE, THIRD-PARTY-NOTICES.txt -Destination $portable
+          Compress-Archive -LiteralPath $portable -DestinationPath "$dist/Lumo-$env:APP_VERSION-portable.zip"
+          makensis /V2 "/DEXE=$exe" "/DOUTDIR=$dist" installer/lumo.nsi
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS packaging failed' }
+          $assets = @("$dist/Lumo-Setup-$env:APP_VERSION.exe", "$dist/Lumo-$env:APP_VERSION-portable.zip")
+          $checksums = foreach ($asset in $assets) {
+            $file = Get-Item -LiteralPath $asset
+            $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+            "$($file.Name): $($file.Length) bytes" | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+          $checksums | Set-Content -LiteralPath "$dist/SHA256SUMS.txt" -Encoding ascii
+          'App changes: none; new work at rest or per frame: none.' | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Check Windows desktop and idle costs
+        run: ./tools/ci-smoke.ps1 -Exe ./target/x86_64-pc-windows-msvc/release/lumo.exe -Out smoke-out
+
+      - name: Check installer
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: ./tools/ci-installer.ps1 -Setup "$env:GITHUB_WORKSPACE/dist/Lumo-Setup-$env:APP_VERSION.exe" -Version $env:APP_VERSION
+
+      - name: Save screenshots and metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumo-screens
+          path: |
+            smoke-out/
+            installer-out/
+          if-no-files-found: ignore
+
+      - name: Save installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumo-setup
+          path: dist/Lumo-Setup-*.exe
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Save portable app and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumo-portable
+          path: |
+            dist/Lumo-*-portable.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Summarize dry run
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          'Dry run completed. A published vX.Y.Z release would receive the installer, portable ZIP and SHA256SUMS.txt. No tag or release was created or changed. Update-feed deployment remains disabled.' | Add-Content $env:GITHUB_STEP_SUMMARY
+
+  upload:
+    needs: windows
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: lumo-setup
+          path: dist
+      - uses: actions/download-artifact@v5
+        with:
+          name: lumo-portable
+          path: dist
+      - name: Attach assets to the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          cd dist
+          sha256sum --check SHA256SUMS.txt
+          gh release upload "$RELEASE_TAG" --repo "$GH_REPO" --clobber -- Lumo-Setup-*.exe Lumo-*-portable.zip SHA256SUMS.txt

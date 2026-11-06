@@ -1,6 +1,7 @@
 # Lumo
 
 A lightweight living notch for Windows 10 and 11, maintained by **mthlpbs**.
+Lumo is a modified version of [Oyenza Studio](https://github.com/lucacadalora/oyenza-studio).
 Hover over the island to open its pages. Swipe horizontally with two fingers
 on your touchpad to switch pages, or scroll over the header. Keep swiping to
 move through several tabs; scrolling stops at the first and last tabs. Right-click the
@@ -158,8 +159,30 @@ Lumo branding or Add-ons page. Disabled add-ons stay asleep. Features that
 repeat rest while the session is locked, the screen is off, or battery saver
 is on. [PRIVACY.md](PRIVACY.md) describes network and local storage behavior.
 
+## Release builds
+
+Publish a GitHub release with a tag matching the app version, such as `v0.2.8`.
+The [ci workflow](.github/workflows/ci.yml) tests and builds the Windows app,
+checks the installer, and attaches `Lumo-Setup-<version>.exe`,
+`Lumo-<version>-portable.zip`, and `SHA256SUMS.txt` to that release.
+The release's title and notes stay as you wrote them. Saving a draft does not
+start a build; publishing a release or pre-release does.
+
+Commit the workflow before creating the release tag. Update `Cargo.toml`,
+`Cargo.lock`, `crates/lumo/res/lumo.rc`, `installer/lumo.nsi`, and
+`installer/lumo.iss` together before tagging. The workflow rejects mismatched
+versions. Non-`v` tags are reserved for add-ons and skipped.
+
+For a local branch's release rehearsal, use Actions > ci > Run workflow, or
+`gh workflow run ci.yml --ref <branch> -f release_dry_run=true`.
+Manual runs only build and test; they never publish.
+Installer downloads are saved in `lumo-setup`; screenshots and idle-memory
+metrics are in `lumo-screens`. In-app updates and feed deployment remain disabled.
+
 ## Credits and license
 
-Lumo is maintained by mthlpbs and derived from Lumo by Jatevo Labs.
+Lumo is maintained by mthlpbs and is a modified version of
+[Oyenza Studio](https://github.com/lucacadalora/oyenza-studio)
+(formerly Oyen Poni), by Jatevo Labs and its contributors.
 Original copyright notices and third-party licenses are preserved.
 See [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).

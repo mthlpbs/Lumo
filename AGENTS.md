@@ -31,14 +31,14 @@ Supported themes are Classic and Pill. Retired theme values load as Classic.
 
 The app is Windows-only. The macOS app, Oyenza account integration and bundled landing website have been removed. Shared branding in `docs/brand/` is still used by the Windows app, installer and README.
 
-The only Pages deployment is the app update feed, `.github/workflows/update-feed.yml`, which publishes the signed `latest.json` file. A release does not require a landing-page update.
+In-app updates and update-feed deployment are currently disabled (see `docs/updates.md`). A release does not require a landing-page update.
 
 ## Cutting a release
 
 Merges, tags and releases happen only when the maintainer says so.
 
-The version lives in several files: copy the last "Release x.y.z" commit (`git log --grep '^Release '`). Add `docs/release-notes/vX.md`, which becomes the release text, then push an annotated tag `vX`. The `ci` workflow builds, tests and publishes the Windows release from the tag.
+Keep the version in `Cargo.toml`, `Cargo.lock`, `crates/lumo/res/lumo.rc`, `installer/lumo.nsi`, and `installer/lumo.iss` aligned. Add `docs/release-notes/vX.md` and use it for the release text. Publish a GitHub release with the matching `vX` tag after the workflow has been committed. The `ci` workflow builds and tests the Windows app, checks the installer, and attaches the installer, portable ZIP, and checksums to that release. Drafts and non-`v` add-on releases do not build the app. Pushing a tag alone does not start a release build.
 
-After publishing, `ci` starts the Update feed workflow to refresh `raw.githubusercontent.com/mthlpbs/lumo/main/latest.json`, the signed file the app reads to learn that a new version is out ([docs/updates.md](docs/updates.md)). It describes GitHub's latest release. The `UPDATE_FEED_KEY` secret that signs it stays in the `release` environment: never print it or move it.
+The release workflow does not deploy an update feed while updates are disabled. The retained `UPDATE_FEED_KEY` secret stays in the `release` environment: never print it or move it.
 
-To try the release path without releasing, run `ci` by hand with `release_dry_run` on (`gh workflow run ci.yml --ref <branch> -f release_dry_run=true`). It runs every job a tag runs and publishes nothing: no tag, release or update-feed deploy. Its summary says what a tag would publish and that it would refresh the update feed.
+To try the release path without releasing, run `ci` by hand with `release_dry_run` on (`gh workflow run ci.yml --ref <branch> -f release_dry_run=true`). Manual runs build and test, save artifacts, and publish nothing: no tag, release or update-feed deploy.
