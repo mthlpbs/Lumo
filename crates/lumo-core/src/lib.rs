@@ -1,0 +1,45 @@
+//! Platform-independent models and logic for Lumo.
+//!
+//! Everything here is pure Rust with no OS calls so it can be unit-tested on
+//! any machine. The Windows crate (`lumo`) owns all I/O and rendering and
+//! feeds clocks/dates into these types. Three modules use `std` I/O, which
+//! still runs anywhere: `store` (the JSON files), `phonedrop` (its small
+//! web server) and `pairdrop` (UDP sockets for the direct link to a paired
+//! phone), so the tests can drive them over real sockets.
+
+pub mod addons;
+pub mod ai;
+pub mod ai_reasoning;
+pub mod markdown;
+pub mod applemusic;
+pub mod cliphist;
+pub mod datetime;
+pub mod frames;
+pub mod frametime;
+pub mod geom;
+pub mod look;
+pub mod profile;
+pub mod local_lyrics;
+pub mod lrc;
+pub mod lrclib;
+pub mod nowplaying;
+pub mod navigation;
+pub mod pairdrop;
+pub mod phonedrop;
+pub mod pomodoro;
+pub mod power;
+pub mod recorder;
+pub mod romanize;
+pub mod script;
+pub mod settings;
+pub mod sha256;
+pub mod shelf;
+pub mod spring;
+pub mod store;
+pub mod svgpath;
+pub mod sysmon;
+pub mod timeline;
+pub mod todo;
+pub mod ttml;
+pub mod update;
+pub mod urlenc;

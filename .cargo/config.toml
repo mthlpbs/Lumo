@@ -1,0 +1,9 @@
+[alias]
+# Type-check the Windows app from another OS (no linker needed).
+wcheck = "check -p lumo --target x86_64-pc-windows-gnu"
+wclippy = "clippy -p lumo --target x86_64-pc-windows-gnu"
+# Build a Windows exe locally (needs mingw-w64: x86_64-w64-mingw32-gcc).
+wbuild = "build -p lumo --release --target x86_64-pc-windows-gnu"
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"

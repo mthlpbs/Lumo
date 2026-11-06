@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = ["crates/lumo-core", "crates/lumo"]
+
+[workspace.package]
+version = "0.2.8"
+edition = "2021"
+publish = false
+authors = ["mthlpbs"]
+license = "MIT"
+repository = "https://github.com/mthlpbs/lumo"
+homepage = "https://github.com/mthlpbs/lumo"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+# Libraries that run for moments and never in a frame, built for size instead
+# of speed (AGENTS.md, Keep it light): paired phone drop's WebRTC (str0m and
+# what it pulls in), the Japanese dictionary's tokenizer and unpacker, JSON
+# and QR codes. Lumo's own code keeps opt-level 3.
+[profile.release.package.str0m]
+opt-level = "s"
+[profile.release.package.str0m-proto]
+opt-level = "s"
+[profile.release.package.str0m-wincrypto]
+opt-level = "s"
+[profile.release.package.dimpl]
+opt-level = "s"
+[profile.release.package.sctp-proto]
+opt-level = "s"
+[profile.release.package.combine]
+opt-level = "s"
+[profile.release.package.is]
+opt-level = "s"
+[profile.release.package.serde_json]
+opt-level = "s"
+[profile.release.package.qrcodegen]
+opt-level = "s"

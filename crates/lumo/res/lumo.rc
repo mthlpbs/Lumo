@@ -1,0 +1,28 @@
+1 ICON "lumo.ico"
+1 24 "lumo.manifest"
+
+1 VERSIONINFO
+FILEVERSION 0,2,8,0
+PRODUCTVERSION 0,2,8,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "mthlpbs\0"
+      VALUE "FileDescription", "Lumo\0"
+      VALUE "FileVersion", "0.2.8\0"
+      VALUE "InternalName", "lumo\0"
+      VALUE "LegalCopyright", "Copyright (C) 2026 mthlpbs\0"
+      VALUE "OriginalFilename", "lumo.exe\0"
+      VALUE "ProductName", "Lumo\0"
+      VALUE "ProductVersion", "0.2.8\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

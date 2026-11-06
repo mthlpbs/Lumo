@@ -1,0 +1,536 @@
+//! Settings page, behind the gear on the right of the header.
+//!
+//! Theme and idle look pickers, switches, and full-screen behavior.
+//! A change saves at once and applies the way the tray's does
+//! (`Command::SaveSettings`). While a later version is out, a last row
+//! across the page says so, with Update: that opens the Update sheet, which
+//! takes the rows' place (as the island's notice and the menu's "Update to"
+//! line do) until the island closes or Settings does.
+
+use crate::activities::{text_with_dim, text_with_dim_width};
+use crate::commands::Command;
+use crate::gfx::{TextStyle, Weight};
+use crate::icons::Icon;
+use crate::pill::status;
+use crate::state::AppState;
+use crate::ui::{wid, wid_n, PillStyle, Ui, PILL_SMALL};
+use lumo_core::geom::{palette, Color, Point, Rect};
+use lumo_core::phonedrop::fmt_bytes;
+use lumo_core::settings::{IdleStyle, Theme};
+use lumo_core::update::Release;
+
+/// Pickers, switches and choices, followed by the update row when available.
+const MUSIC_FOLDER_Y: f32 = SWITCHES_Y + ROWS as f32 * ROW_H;
+const MUSIC_FOLDER_H: f32 = 72.0;
+const SHEET_HEAD_H: f32 = 44.0;
+/// Update sheet icon and text column.
+const ICON: f32 = 36.0;
+const TEXT_X: f32 = 48.0;
+const RULE_Y: f32 = 54.0;
+const LABELS_Y: f32 = 0.0;
+const PICKERS_Y: f32 = 18.0;
+const SWITCHES_Y: f32 = 52.0;
+const ROW_H: f32 = 26.0;
+const COL_GAP: f32 = 24.0;
+/// A row's hover wash reaches this far past its text and switch.
+const ROW_BLEED: f32 = 8.0;
+/// Pickers: the selection's inset in the track, and each choice's padding.
+/// Side by side, the theme and idle look pickers may close their choices up
+/// to SEG_PAD_MIN to fit their columns (the Pill theme's five idle looks at
+/// the default width).
+const SEG_INSET: f32 = 2.0;
+const SEG_PAD: f32 = 11.0;
+const SEG_PAD_MIN: f32 = 7.5;
+/// Where they still don't fit (a narrow island), each takes a row, its
+/// label on the left, in the room the labels-above layout uses, so the page
+/// keeps its height.
+const STACK_Y: [f32; 2] = [0.0, 28.0];
+const STACK_GAP: f32 = 16.0;
+/// The full-screen choice's picker, inside its row.
+const ROW_PICKER_H: f32 = 24.0;
+const SWITCH_W: f32 = 30.0;
+const SWITCH_H: f32 = 18.0;
+const KNOB_INSET: f32 = 2.0;
+
+const THEMES: [(Theme, &str); 2] = [(Theme::Classic, "Classic"), (Theme::Pill, "Pill")];
+
+fn idle_name(s: IdleStyle, eyes: &'static str) -> &'static str {
+    match s {
+        IdleStyle::Clock => "Clock",
+        IdleStyle::Eyes => eyes,
+        IdleStyle::Minimal => "Minimal",
+        IdleStyle::Hidden => "Hidden",
+        IdleStyle::Status => "Status",
+    }
+}
+
+/// The switches, as the tray menu names them (new versions: Settings only).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Switch {
+    Lyrics,
+    Pronunciation,
+    Sounds,
+    Autostart,
+    Updates,
+}
+
+/// What a row of the two columns holds: a switch, or the full-screen choice
+/// (the tray menu's "In full-screen apps" submenu).
+#[derive(Clone, Copy)]
+enum Row {
+    Switch(Switch, &'static str),
+    Fullscreen,
+    Maximized,
+}
+
+const LEFT: &[Row] = &[
+    Row::Switch(Switch::Lyrics, "Lyrics on closed island"),
+    Row::Switch(Switch::Pronunciation, "Lyrics pronunciation"),
+    Row::Switch(Switch::Sounds, "Sounds"),
+    Row::Switch(Switch::Updates, if lumo_core::update::ENABLED { "Tell me about new versions" } else { "Updates (temporarily disabled)" }),
+];
+const RIGHT: &[Row] = &[
+    Row::Fullscreen,
+    Row::Switch(Switch::Autostart, "Start with Windows"),
+    Row::Maximized,
+];
+const COLUMNS: [&[Row]; 2] = [LEFT, RIGHT];
+/// Rows in the taller column.
+const ROWS: usize = if LEFT.len() > RIGHT.len() { LEFT.len() } else { RIGHT.len() };
+
+/// The full-screen choices as the tray menu names them, and the
+/// `hide_in_fullscreen` each one sets.
+const FULLSCREEN: [(bool, &str); 2] = [(true, "Hide"), (false, "Stay on top")];
+
+pub fn height(st: &AppState) -> f32 {
+    let body = MUSIC_FOLDER_Y + music_folder_height(st);
+    match st.update.offer.as_ref().filter(|_| lumo_core::update::ENABLED) {
+        Some(_) if st.update.sheet => SHEET_H,
+        Some(_) => body + ROW_H,
+        None => body,
+    }
+}
+
+pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) {
+    if let Some(rel) = st.update.offer.clone().filter(|_| lumo_core::update::ENABLED && st.update.sheet) {
+        draw_sheet(ui, st, area, &rel);
+        return;
+    }
+
+    let col_w = ((area.w - COL_GAP) / 2.0).max(0.0);
+    let cols = [area.x, area.x + col_w + COL_GAP];
+    let label_st = TextStyle::caption().weight(Weight::Semibold).color(palette::TEXT_FAINT);
+
+    // Pickers.
+    let theme_names: Vec<&str> = THEMES.iter().map(|t| t.1).collect();
+    let theme_sel = THEMES.iter().position(|t| t.0 == st.settings.theme).unwrap_or(0);
+    let looks = status::looks(st.settings.theme);
+    let eyes = "Eyes";
+    let look_names: Vec<&str> = looks.iter().map(|s| idle_name(*s, eyes)).collect();
+    let look_sel = looks.iter().position(|s| *s == status::shown(st.settings.theme, st.settings.idle_style)).unwrap_or(0);
+    // Side by side under their labels when both fit their columns, each
+    // closed up only as far as it needs; else a row each. Whether they fit is
+    // side exactly where they always did (at a narrow island picking Pill,
+    // with its fifth look, can stack them).
+    let theme_pad = pad_to_fit(ui, &theme_names, col_w);
+    let side_by_side = theme_pad >= SEG_PAD_MIN && pad_to_fit(ui, &look_names, col_w) >= SEG_PAD_MIN;
+    let (theme_pick, look_pick) = if side_by_side {
+        ui.c.text("THEME", Rect::new(cols[0], area.y + LABELS_Y, col_w, 14.0), &label_st);
+        ui.c.text("IDLE LOOK", Rect::new(cols[1], area.y + LABELS_Y, col_w, 14.0), &label_st);
+        let y = area.y + PICKERS_Y;
+        let look_pad = pad_to_fit(ui, &look_names, col_w);
+        (
+            picker_padded(ui, "settings.theme", cols[0], y, PILL_SMALL, &theme_names, theme_sel, theme_pad),
+            picker_padded(ui, "settings.idle", cols[1], y, PILL_SMALL, &look_names, look_sel, look_pad),
+        )
+    } else {
+        // A row each, the labels in a column of their own and both pickers
+        // starting after it.
+        let labels = ["THEME", "IDLE LOOK"];
+        let label_w = labels.iter().map(|l| ui.c.measure(l, &label_st, 300.0).0.ceil()).fold(0.0f32, f32::max);
+        let x = area.x + label_w + STACK_GAP;
+        let pick = |ui: &mut Ui, i: usize, id: &str, names: &[&str], sel: usize| {
+            let row = Rect::new(area.x, area.y + STACK_Y[i], area.w, ROW_H);
+            ui.c.text(labels[i], Rect::new(row.x, row.y, label_w + 2.0, row.h), &label_st);
+            let pad = pad_to_fit(ui, names, row.right() - x).max(0.0);
+            picker_padded(ui, id, x, row.center().y - ROW_PICKER_H / 2.0, ROW_PICKER_H, names, sel, pad)
+        };
+        (pick(ui, 0, "settings.theme", &theme_names, theme_sel), pick(ui, 1, "settings.idle", &look_names, look_sel))
+    };
+    if let Some(i) = theme_pick {
+        st.settings.theme = THEMES[i].0;
+        st.cmd(Command::SaveSettings);
+    }
+    if let Some(i) = look_pick {
+        st.settings.idle_style = looks[i];
+        st.cmd(Command::SaveSettings);
+    }
+
+    // Switches and the two choices, in two columns.
+    let accent = st.accent;
+    let card = super::clipboard::pill_card(st, area);
+    for (c, column) in COLUMNS.iter().enumerate() {
+        for (r, &kind) in column.iter().enumerate() {
+            let row = Rect::new(cols[c], area.y + SWITCHES_Y + r as f32 * ROW_H, col_w, ROW_H);
+            match kind {
+                Row::Switch(sw, label) => {
+                    let on = switch_on(st, sw);
+                    let id = wid_n("settings.switch", (c * ROWS + r) as u64);
+                    if switch_row_on(ui, id, row, label, on, accent, card) {
+                        flip(st, sw, on);
+                    }
+                }
+                Row::Fullscreen => {
+                    let sel = FULLSCREEN.iter().position(|f| f.0 == st.settings.hide_in_fullscreen).unwrap_or(0);
+                    if let Some(i) = choice_row(ui, row, "In full-screen apps", "settings.fullscreen", &FULLSCREEN.map(|f| f.1), sel) {
+                        st.settings.hide_in_fullscreen = FULLSCREEN[i].0;
+                        st.cmd(Command::SaveSettings);
+                    }
+                }
+                Row::Maximized => {
+                    let sel = FULLSCREEN.iter().position(|f| f.0 == st.settings.hide_over_maximized).unwrap_or(0);
+                    if let Some(i) = choice_row(ui, row, "In maximized apps", "settings.maximized", &FULLSCREEN.map(|f| f.1), sel) {
+                        st.settings.hide_over_maximized = FULLSCREEN[i].0;
+                        st.cmd(Command::SaveSettings);
+                    }
+                }
+
+            }
+        }
+    }
+    draw_music_folder(ui, st, Rect::new(area.x, area.y + MUSIC_FOLDER_Y, area.w, music_folder_height(st)), card);
+    if let Some(rel) = st.update.offer.clone().filter(|_| lumo_core::update::ENABLED) {
+        draw_offer(ui, st, Rect::new(area.x, area.y + MUSIC_FOLDER_Y + music_folder_height(st), area.w, ROW_H), &rel);
+    }
+}
+
+fn music_folder_height(st: &AppState) -> f32 {
+    if st.settings.local_lyrics { MUSIC_FOLDER_H } else { 44.0 }
+}
+
+/// Local lyrics are opt-in. Choosing a folder saves it without copying or
+/// modifying anything in the person's music library.
+fn draw_music_folder(ui: &mut Ui, st: &mut AppState, r: Rect, card: Option<(Rect, f32)>) {
+    let on = st.settings.local_lyrics;
+    let col_w = ((r.w - COL_GAP) / 2.0).max(0.0);
+    let mut x = r.x;
+    let buttons_y = r.y + ROW_H;
+    if on {
+        let choosing = st.ui.choosing_music_dir;
+        let label = if choosing { "Choosing…" } else { "Change folder" };
+        let w = ui.pill_width(label, false, true);
+        let b = Rect::new(x, buttons_y, w, ROW_PICKER_H);
+        if ui.pill(wid("settings.music-folder"), b, label, None, PillStyle::Utility).clicked && !choosing {
+            st.cmd(Command::ChooseMusicDirectory);
+        }
+        x = b.right() + 8.0;
+        if !st.settings.music_directory.is_empty() {
+            let w = ui.pill_width("Reset", false, true);
+            let b = Rect::new(x, buttons_y, w, ROW_PICKER_H);
+            if ui.pill(wid("settings.music-folder.reset"), b, "Reset", None, PillStyle::Utility).clicked {
+                st.settings.music_directory.clear();
+                st.cmd(Command::SaveSettings);
+            }
+        }
+    }
+    let row = Rect::new(r.x, r.y, col_w, ROW_H);
+    if switch_row_on(ui, wid("settings.local-lyrics"), row, "Local lyrics for music players", Some(on), st.accent, card) {
+        st.settings.local_lyrics = !on;
+        st.cmd(Command::SaveSettings);
+    }
+    let line = if on {
+        crate::paths::music_dir(&st.settings).to_string_lossy().into_owned()
+    } else {
+        "Sidecar and embedded lyrics first; LRCLIB for missing lyrics and streaming.".to_string()
+    };
+    let path_y = if on { buttons_y + ROW_PICKER_H + 4.0 } else { buttons_y };
+    ui.c.text(&line, Rect::new(r.x, path_y, r.w, 17.0), &TextStyle::footnote().color(palette::TEXT_DIM));
+}
+
+/// The last row while a later version is out, across the page: "Update
+/// available 0.2.5", its headline, and Update (the sheet).
+fn draw_offer(ui: &mut Ui, st: &mut AppState, r: Rect, rel: &Release) {
+    let cy = r.center().y;
+    let w = ui.pill_width("Update", false, true);
+    let b = Rect::new(r.right() - w, cy - PILL_SMALL / 2.0, w, PILL_SMALL);
+    if ui.pill(wid("settings.update"), b, "Update", None, PillStyle::Primary(st.accent)).clicked {
+        st.update.sheet = true;
+    }
+    let right = b.x - 12.0;
+    let body = TextStyle::body();
+    let title = "Update available";
+    let tw = text_with_dim_width(ui, title, &rel.version, &body).ceil().min((right - r.x).max(0.0));
+    text_with_dim(ui, title, &rel.version, Rect::new(r.x, r.y, tw + 1.0, r.h), body);
+    let x = r.x + tw + 12.0;
+    if right > x {
+        ui.c.text(&rel.headline, Rect::new(x, r.y, right - x, r.h), &TextStyle::footnote().color(palette::TEXT_DIM));
+    }
+}
+
+// ---------------------------------------------------------------- the Update sheet
+
+/// The Update sheet: a disc, "Update available 0.2.5" over what the
+/// download is, Not now; a line; the release's headline under What's new;
+/// a card that gets it; and its notes. Once Windows has the Setup it reads
+/// "Update ready to install", with Install now and Install on next start,
+/// as Screen Studio's does.
+const SHEET_CAPTION_Y: f32 = 66.0;
+const SHEET_HEADLINE_Y: f32 = 82.0;
+const CARDS_Y: f32 = 114.0;
+const CARD_H: f32 = 58.0;
+const CARD_GAP: f32 = 10.0;
+const CARD_DISC: f32 = 30.0;
+const NOTES_Y: f32 = CARDS_Y + CARD_H + 12.0;
+const SHEET_H: f32 = NOTES_Y + PILL_SMALL;
+
+/// What a card of the sheet does when clicked.
+#[derive(Clone, Copy)]
+enum Get {
+    /// The release page, until Setup is downloaded.
+    Download,
+    /// Run the downloaded Setup now (Windows).
+    InstallNow,
+    /// Run it before the app opens next time (Windows).
+    NextStart,
+}
+
+pub(crate) fn draw_sheet(ui: &mut Ui, st: &mut AppState, area: Rect, rel: &Release) {
+    let head = Rect::new(area.x, area.y, area.w, SHEET_HEAD_H);
+    let cy = head.center().y;
+    let accent = st.accent;
+    let c = Point::new(head.x + ICON / 2.0, cy);
+    ui.c.fill_circle(c, ICON / 2.0, accent.with_alpha(0.22));
+    ui.c.icon(Icon::Download, Rect::from_center(c, 20.0, 20.0), accent);
+    let later_w = ui.pill_width("Not now", false, true);
+    let later = Rect::new(head.right() - later_w, cy - PILL_SMALL / 2.0, later_w, PILL_SMALL);
+    if ui.pill(wid("update.later"), later, "Not now", None, PillStyle::Utility).clicked {
+        st.update.sheet = false;
+        st.cmd(Command::Collapse);
+    }
+    let x = head.x + TEXT_X;
+    let w = (later.x - 16.0 - x).max(0.0);
+    let ready = st.update.ready;
+    let title = if ready { "Update ready to install" } else { "Update available" };
+    text_with_dim(ui, title, &rel.version, Rect::new(x, cy - 19.0, w, 20.0), TextStyle::headline());
+    let size = rel.download().map(|d| fmt_bytes(d.size)).unwrap_or_default();
+    let line = if ready {
+        "A new version of Lumo is ready to be installed.".to_string()
+    } else {
+        format!("A new version of Lumo is ready to download ({size}).")
+    };
+    ui.c.text(&line, Rect::new(x, cy + 1.0, w, 17.0), &TextStyle::footnote().color(palette::TEXT_DIM));
+
+    let px = 1.0 / ui.c.scale().max(0.5);
+    ui.c.fill_rect(Rect::new(area.x, area.y + RULE_Y, area.w, px), Color::white(0.10));
+    let label_st = TextStyle::caption().weight(Weight::Semibold).color(palette::TEXT_FAINT);
+    ui.c.text("WHAT'S NEW", Rect::new(area.x, area.y + SHEET_CAPTION_Y, area.w, 14.0), &label_st);
+    ui.c.text(&rel.headline, Rect::new(area.x, area.y + SHEET_HEADLINE_Y, area.w, 20.0), &TextStyle::body());
+
+    // With Setup downloaded: now or next start. Otherwise open the release page.
+    let cards: Vec<(Get, Icon, String, &str)> = if ready {
+        let next = if st.update.next_start {
+            (Get::NextStart, Icon::Check, "Installs on next start".to_string(), "Set: before it next opens")
+        } else {
+            (Get::NextStart, Icon::Reset, "Install on next start".to_string(), "Before it next opens")
+        };
+        vec![(Get::InstallNow, Icon::Download, "Install now".to_string(), "Closes, updates and opens again"), next]
+    } else {
+        vec![(Get::Download, Icon::Download, format!("Download {}", rel.version), "Opens its release page: run the Setup there, your settings stay.")]
+    };
+    let n = cards.len() as f32;
+    let card_w = ((area.w - (n - 1.0) * CARD_GAP) / n).max(0.0);
+    for (i, (get, icon, title, line)) in cards.iter().enumerate() {
+        let r = Rect::new(area.x + i as f32 * (card_w + CARD_GAP), area.y + CARDS_Y, card_w, CARD_H);
+        if card(ui, wid_n("update.card", i as u64), r, *icon, title, line, accent) {
+            match get {
+                Get::Download | Get::InstallNow => st.cmd(Command::Update),
+                Get::NextStart => st.cmd(Command::InstallOnNextStart),
+            }
+        }
+    }
+
+    let notes = format!("See what's new in Lumo {}", rel.version);
+    let nw = ui.pill_width(&notes, true, true).min(area.w);
+    let nr = Rect::new(area.x, area.y + NOTES_Y, nw, PILL_SMALL);
+    if ui.pill(wid("update.notes"), nr, &notes, Some(Icon::Open), PillStyle::Utility).clicked {
+        st.cmd(Command::OpenUrl(rel.notes.clone()));
+    }
+}
+
+/// One of the sheet's choices: a card with an icon, what it does in bold
+/// and how under it. True when clicked.
+fn card(ui: &mut Ui, id: u64, r: Rect, icon: Icon, title: &str, line: &str, accent: Color) -> bool {
+    let resp = ui.button(id, r);
+    let fill = if resp.pressed {
+        Color::white(0.14)
+    } else if resp.hovered {
+        Color::white(0.10)
+    } else {
+        Color::white(0.06)
+    };
+    ui.c.fill_rrect(r, 12.0, fill);
+    let c = Point::new(r.x + 14.0 + CARD_DISC / 2.0, r.center().y);
+    ui.c.fill_circle(c, CARD_DISC / 2.0, accent.with_alpha(0.22));
+    ui.c.icon(icon, Rect::from_center(c, 16.0, 16.0), accent);
+    let x = c.x + CARD_DISC / 2.0 + 12.0;
+    let w = (r.right() - 14.0 - x).max(0.0);
+    let cy = r.center().y;
+    ui.c.text(title, Rect::new(x, cy - 18.0, w, 20.0), &TextStyle::body().weight(Weight::Semibold));
+    ui.c.text(line, Rect::new(x, cy + 1.0, w, 16.0), &TextStyle::footnote().color(palette::TEXT_DIM));
+    resp.clicked
+}
+
+/// A choice's label with its picker where the other rows have their
+/// switch. Returns the choice clicked, if any.
+fn choice_row(ui: &mut Ui, r: Rect, label: &str, id: &str, names: &[&str], sel: usize) -> Option<usize> {
+    let label_w = ui.c.measure(label, &TextStyle::body(), r.w).0;
+    let pad = pad_to_fit(ui, names, (r.w - label_w - 10.0).max(0.0)).max(2.0);
+    let w = 2.0 * SEG_INSET + names.iter().map(|n| choice_width(ui, n, pad)).sum::<f32>();
+    let x = r.right() - w;
+    ui.c.text(label, Rect::new(r.x, r.y, (x - 10.0 - r.x).max(0.0), r.h), &TextStyle::body());
+    picker_padded(ui, id, x, r.center().y - ROW_PICKER_H / 2.0, ROW_PICKER_H, names, sel, pad)
+}
+
+/// Where a switch reads from. Start with Windows is read off the UI thread
+/// when the page opens; until then it shows off, dimmed.
+fn switch_on(st: &AppState, sw: Switch) -> Option<bool> {
+    let s = &st.settings;
+    match sw {
+        Switch::Lyrics => Some(s.island_lyrics),
+        Switch::Pronunciation => Some(s.lyrics_pronunciation),
+        Switch::Sounds => Some(s.sounds),
+        Switch::Autostart => st.ui.autostart,
+        Switch::Updates => lumo_core::update::ENABLED.then_some(s.update_check),
+    }
+}
+
+fn flip(st: &mut AppState, sw: Switch, on: Option<bool>) {
+    let s = &mut st.settings;
+    match sw {
+        Switch::Lyrics => s.island_lyrics = !s.island_lyrics,
+        Switch::Pronunciation => s.lyrics_pronunciation = !s.lyrics_pronunciation,
+        Switch::Sounds => s.sounds = !s.sounds,
+        Switch::Updates => {
+            if !lumo_core::update::ENABLED { return; }
+            s.update_check = !s.update_check;
+        }
+        Switch::Autostart => {
+            if let Some(on) = on {
+                st.cmd(Command::SetAutostart(!on));
+            }
+            return;
+        }
+    }
+    st.cmd(Command::SaveSettings);
+}
+
+// ---------------------------------------------------------------- widgets
+
+/// The widest padding (up to SEG_PAD) that fits a picker of `names` into `w`.
+fn pad_to_fit(ui: &mut Ui, names: &[&str], w: f32) -> f32 {
+    let n = names.len().max(1) as f32;
+    let text: f32 = names.iter().map(|s| ui.c.measure(s, &picker_text(), 300.0).0).sum();
+    // Each choice's width is rounded up: up to a DIP each.
+    ((w - 2.0 * SEG_INSET - text - n) / (2.0 * n)).min(SEG_PAD)
+}
+
+/// Choices side by side in a track `h` tall, the chosen one lifted (the
+/// Focus page's picker, a size smaller). Returns the choice clicked, if any.
+pub(crate) fn picker(ui: &mut Ui, id: &str, x: f32, y: f32, h: f32, names: &[&str], sel: usize) -> Option<usize> {
+    picker_padded(ui, id, x, y, h, names, sel, SEG_PAD)
+}
+
+/// [`picker`] with `pad` around each choice's name.
+#[allow(clippy::too_many_arguments)]
+fn picker_padded(ui: &mut Ui, id: &str, x: f32, y: f32, h: f32, names: &[&str], sel: usize, pad: f32) -> Option<usize> {
+    let st = picker_text();
+    let inner_h = h - 2.0 * SEG_INSET;
+    let mut cx = x + SEG_INSET;
+    let cells: Vec<Rect> = names
+        .iter()
+        .map(|n| {
+            let w = choice_width(ui, n, pad);
+            let cell = Rect::new(cx, y + SEG_INSET, w, inner_h);
+            cx += w;
+            cell
+        })
+        .collect();
+    ui.c.fill_rrect(Rect::new(x, y, cx + SEG_INSET - x, h), h / 2.0, palette::SURFACE);
+    let mut picked = None;
+    for (i, (name, cell)) in names.iter().zip(&cells).enumerate() {
+        let color = if i == sel {
+            ui.c.fill_rrect(*cell, inner_h / 2.0, Color::white(0.16));
+            palette::TEXT
+        } else {
+            let resp = ui.button(wid_n(id, i as u64), Rect::new(cell.x, y, cell.w, h));
+            if resp.clicked {
+                picked = Some(i);
+            }
+            if resp.pressed || resp.hovered {
+                ui.c.fill_rrect(*cell, inner_h / 2.0, Color::white(if resp.pressed { 0.10 } else { 0.06 }));
+                palette::TEXT
+            } else {
+                palette::TEXT_DIM
+            }
+        };
+        ui.c.text(name, *cell, &st.color(color).center());
+    }
+    picked
+}
+
+fn picker_text() -> TextStyle {
+    TextStyle::footnote().weight(Weight::Semibold)
+}
+
+/// One choice in a picker: its name and the padding around it.
+fn choice_width(ui: &mut Ui, name: &str, pad: f32) -> f32 {
+    (2.0 * pad + ui.c.measure(name, &picker_text(), 300.0).0).ceil()
+}
+
+/// A whole picker: its choices and the track's inset.
+pub(crate) fn picker_width(ui: &mut Ui, names: &[&str]) -> f32 {
+    2.0 * SEG_INSET + names.iter().map(|n| choice_width(ui, n, SEG_PAD)).sum::<f32>()
+}
+
+/// A label with a switch at the row's right end; the whole row toggles.
+/// `None` = not known yet: drawn off and dimmed, and it doesn't click.
+/// Returns true when clicked.
+pub(crate) fn switch_row(ui: &mut Ui, id: u64, r: Rect, label: &str, on: Option<bool>, accent: Color) -> bool {
+    switch_row_on(ui, id, r, label, on, accent, None)
+}
+
+/// [`switch_row`] on the open card (`card` from `clipboard::pill_card`): in
+/// Pill, a bottom row's hover wash follows the card's rounder corners.
+fn switch_row_on(ui: &mut Ui, id: u64, r: Rect, label: &str, on: Option<bool>, accent: Color, card: Option<(Rect, f32)>) -> bool {
+    let hit = Rect::new(r.x - ROW_BLEED, r.y, r.w + 2.0 * ROW_BLEED, r.h);
+    let resp = if on.is_some() { ui.button(id, hit) } else { Default::default() };
+    if resp.hovered || resp.pressed {
+        super::clipboard::fill_box(ui, card, hit.inset(0.0, 1.0), 8.0, Color::white(if resp.pressed { 0.10 } else { 0.06 }));
+    }
+    let sw = Rect::new(r.right() - SWITCH_W, r.center().y - SWITCH_H / 2.0, SWITCH_W, SWITCH_H);
+    ui.c.text(label, Rect::new(r.x, r.y, (sw.x - 10.0 - r.x).max(0.0), r.h), &TextStyle::body());
+    let alpha = if on.is_some() { 1.0 } else { 0.5 };
+    ui.c.with_alpha(alpha, |c| draw_switch(c, sw, on == Some(true), accent));
+    resp.clicked
+}
+
+/// A switch's track and knob.
+pub(crate) fn draw_switch(c: &mut crate::gfx::Canvas, r: Rect, on: bool, accent: Color) {
+    c.fill_rrect(r, r.h / 2.0, if on { accent } else { palette::TRACK });
+    let d = r.h - 2.0 * KNOB_INSET;
+    let x = if on { r.right() - KNOB_INSET - d / 2.0 } else { r.x + KNOB_INSET + d / 2.0 };
+    c.fill_circle(Point::new(x, r.center().y), d / 2.0, palette::ON_ACCENT);
+}
+
+#[cfg(test)]
+mod disabled_update_tests {
+    use super::*;
+    use lumo_core::{settings::Settings, store::Store};
+    #[test]
+    fn old_enabled_preference_cannot_reactivate_updates() {
+        let mut st = AppState::new(Settings { update_check: true, ..Settings::default() }, Store::default());
+        assert_eq!(switch_on(&st, Switch::Updates), None);
+        flip(&mut st, Switch::Updates, Some(true));
+        assert!(st.cmds.is_empty());
+    }
+}

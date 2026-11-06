@@ -1,0 +1,13 @@
+/target
+/dist
+*.log
+.DS_Store
+/selftest-out
+/.claude/
+/design-review
+/after
+/ci-artifacts
+/_update-feed
+
+# Local validation toolchain
+/.tools/

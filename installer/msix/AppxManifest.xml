@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Microsoft Store package (MSIX) for Lumo. tools/make_msix.ps1 fills in
+  the $...$ values, adds lumo.exe, the images and resources.pri, and packs it.
+  The Store signs the package after review, so the upload is unsigned.
+
+  Identity Name, Publisher and PublisherDisplayName must be the values on
+  Partner Center > Lumo > Product identity, or the Store refuses the upload.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 rescap">
+
+  <Identity Name="$IdentityName$" Publisher="$Publisher$" Version="$Version$" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Lumo</DisplayName>
+    <PublisherDisplayName>$PublisherDisplayName$</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+    <!-- lumo.exe is built with MSVC and loads vcruntime140.dll; the Store installs this framework with the app. -->
+    <PackageDependency Name="Microsoft.VCLibs.140.00.UWPDesktop" MinVersion="14.0.24217.0" Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Lumo" Executable="lumo.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Lumo"
+        Description="Lumo"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- "Start with Windows". TaskId must match TASK_ID in crates/lumo/src/autostart.rs. -->
+        <uap5:Extension Category="windows.startupTask" Executable="lumo.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="LumoStartup" Enabled="true" DisplayName="Lumo" />
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Lyrics lookups (LRCLIB, and Apple Music once the user adds a token). -->
+    <Capability Name="internetClient" />
+    <!-- Phone drop: a page on the home network for the user's own phone, while its panel is open. -->
+    <Capability Name="privateNetworkClientServer" />
+    <!-- A desktop app: runs outside the app sandbox, like the installer build. -->
+    <rescap:Capability Name="runFullTrust" />
+    <!-- Headphone battery levels over Bluetooth LE. -->
+    <DeviceCapability Name="bluetooth" />
+  </Capabilities>
+</Package>
