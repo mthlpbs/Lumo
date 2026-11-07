@@ -170,7 +170,8 @@ starts at `2026.1108.1`. January 7 uses `2027.107.1`, without leading zeros.
 Each release gets a new number; rebuilding the same source keeps its version.
 All three fields fit Windows version numbers; the build counter is 1–65535.
 
-Publish a GitHub release with a tag matching the app version, such as `v2026.1107.2`.
+Publish a GitHub release with a numeric tag matching the app version, such as
+`2026.1107.2`. The historical `v2026.1107.2` format also works.
 The [ci workflow](.github/workflows/ci.yml) tests and builds the Windows app,
 checks the installer, and attaches `Lumo-Setup-<version>.exe`,
 `Lumo-<version>-portable.zip`, and `SHA256SUMS.txt` to that release.
@@ -181,7 +182,7 @@ Commit the workflow before creating the release tag. Update `Cargo.toml`,
 `Cargo.lock`, `crates/lumo/res/lumo.rc`, `crates/lumo/res/lumo.manifest`,
 `installer/lumo.nsi`, and `installer/lumo.iss` together before tagging.
 Add `docs/release-notes/v<version>.md` and use it for the release text.
-The workflow rejects mismatched versions. Non-`v` tags are reserved for add-ons and skipped.
+The workflow rejects mismatched versions. Non-version tags are reserved for add-ons and skipped.
 
 Re-running a failed release job uses its original tagged commit. To include
 fixes, commit them first and publish the matching new version. Keep existing

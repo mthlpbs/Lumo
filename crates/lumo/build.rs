@@ -25,11 +25,14 @@ fn build_info() {
     }
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     let ci = env("GITHUB_ACTIONS") == "true";
-    let release = ci && env("GITHUB_REF_TYPE") == "tag" && env("GITHUB_REF_NAME") == format!("v{}", env("CARGO_PKG_VERSION"));
+    let tag = env("GITHUB_REF_NAME");
+    let version = env("CARGO_PKG_VERSION");
+    let release = ci && env("GITHUB_REF_TYPE") == "tag" && tag.strip_prefix('v').unwrap_or(&tag) == version;
     let kind = if release { "release" } else if ci { "test" } else { "local" };
     let commit: String = if ci { env("GITHUB_SHA").chars().take(7).collect() } else { String::new() };
     let day = if ci { utc_day() } else { String::new() };
     println!("cargo:rustc-env=LUMO_BUILD_KIND={kind}");
+    println!("cargo:rustc-env=LUMO_BUILD_TAG={}", if release { tag.as_str() } else { "" });
     println!("cargo:rustc-env=LUMO_BUILD_COMMIT={commit}");
     println!("cargo:rustc-env=LUMO_BUILD_DAY={day}");
 }

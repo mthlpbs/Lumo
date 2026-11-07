@@ -15,8 +15,14 @@ pub const MAX_SETUP_BYTES: u64 = 32 * 1024 * 1024;
 /// Historical signed-feed URL; the running app uses RELEASES_URL instead.
 pub const FEED_URL: &str = "https://raw.githubusercontent.com/mthlpbs/lumo/main/latest.json";
 /// Downloads only ever come from this repository's releases.
-const DOWNLOADS: &str = "https://github.com/mthlpbs/lumo/releases/download/v";
-const RELEASE_PAGE: &str = "https://github.com/mthlpbs/lumo/releases/tag/v";
+const DOWNLOADS: &str = "https://github.com/mthlpbs/lumo/releases/download/";
+const RELEASE_PAGE: &str = "https://github.com/mthlpbs/lumo/releases/tag/";
+
+/// Numeric release tags are preferred; historical `v` tags remain supported.
+pub fn version_from_tag(tag: &str) -> Option<&str> {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    parts(version).is_some().then_some(version)
+}
 /// The file's layout this version reads. A file with a newer one is ignored
 /// (a later version of the app will read it).
 pub const SCHEMA: u64 = 1;
@@ -97,9 +103,10 @@ pub struct Release {
 impl Release {
     /// Persisted metadata must still bind the version, release and installer.
     pub fn allowed(&self) -> bool {
-        self.notes == format!("{RELEASE_PAGE}{}", self.version)
+        let Some(tag) = self.notes.strip_prefix(RELEASE_PAGE) else { return false };
+        version_from_tag(tag) == Some(self.version.as_str())
             && self.windows.as_ref().is_some_and(|d| d.allowed()
-                && d.url == format!("{DOWNLOADS}{0}/Lumo-Setup-{0}.exe", self.version))
+                && d.url == format!("{DOWNLOADS}{tag}/Lumo-Setup-{}.exe", self.version))
     }
     /// The Windows installer.
     pub fn download(&self) -> Option<&Download> {
@@ -111,8 +118,9 @@ impl Download {
     /// Only Lumo's versioned Windows installers can be executed.
     pub fn allowed(&self) -> bool {
         let Some(rest) = self.url.strip_prefix(DOWNLOADS) else { return false };
-        let Some((version, name)) = rest.split_once('/') else { return false };
-        parts(version).is_some() && name == format!("Lumo-Setup-{version}.exe")
+        let Some((tag, name)) = rest.split_once('/') else { return false };
+        let Some(version) = version_from_tag(tag) else { return false };
+        name == format!("Lumo-Setup-{version}.exe")
             && (1..=MAX_SETUP_BYTES).contains(&self.size)
             && self.sha256.len() == 64
             && self.sha256.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
@@ -148,11 +156,11 @@ pub fn parse_releases(text: &str) -> Result<Option<Release>, String> {
     let items: Vec<Item> = serde_json::from_str(text).map_err(|_| "GitHub returned an unreadable release list".to_string())?;
     let mut latest: Option<Release> = None;
     for item in items {
-        let Some(version) = item.tag_name.strip_prefix('v').filter(|v| parts(v).is_some()) else { continue };
+        let Some(version) = version_from_tag(&item.tag_name) else { continue };
         if item.draft || item.prerelease { continue; }
         let name = format!("Lumo-Setup-{version}.exe");
         let Some(asset) = item.assets.iter().find(|a| a.name == name && a.state == "uploaded") else { continue };
-        let url = format!("{DOWNLOADS}{version}/{name}");
+        let url = format!("{DOWNLOADS}{}/{name}", item.tag_name);
         if !asset.browser_download_url.eq_ignore_ascii_case(&url) { return Err("The installer is outside Lumo's GitHub releases".into()); }
         let sha256 = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).unwrap_or_default().to_string();
         let download = Download { url, size: asset.size, sha256 };
@@ -162,7 +170,7 @@ pub fn parse_releases(text: &str) -> Result<Option<Release>, String> {
         let release = Release {
             version: version.into(),
             date: item.published_at.unwrap_or_default().chars().take(10).collect(),
-            headline: headline(title, version), notes: format!("{RELEASE_PAGE}{version}"),
+            headline: headline(title, version), notes: format!("{RELEASE_PAGE}{}", item.tag_name),
             windows: Some(download),
         };
         if latest.as_ref().is_none_or(|old| newer(version, &old.version)) { latest = Some(release); }
@@ -192,10 +200,10 @@ pub fn parse_payload(text: &str) -> Result<Release, String> {
     if parts(&p.version).is_none() {
         return Err(format!("\"{:.20}\" isn't a version", p.version));
     }
-    if p.notes != format!("{RELEASE_PAGE}{}", p.version) {
+    if p.notes != format!("{RELEASE_PAGE}v{}", p.version) {
         return Err("its notes aren't this repository's release page".into());
     }
-    let prefix = format!("{DOWNLOADS}{}/", p.version);
+    let prefix = format!("{DOWNLOADS}v{}/", p.version);
     for d in p.windows.iter() {
         let name = d.url.strip_prefix(&prefix).unwrap_or_default();
         let plain = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
@@ -498,6 +506,30 @@ mod github_tests {
         assert_eq!(latest.date, "2026-11-07");
         assert!(latest.download().unwrap().allowed());
         assert!(parse_releases("[]").unwrap().is_none());
+    }
+    #[test]
+    fn numeric_release_tags_keep_their_actual_download_and_page_urls() {
+        let mut numeric = release("2026.1107.10");
+        numeric["tag_name"] = json!("2026.1107.10");
+        numeric["assets"][0]["browser_download_url"] = json!("https://github.com/mthlpbs/Lumo/releases/download/2026.1107.10/Lumo-Setup-2026.1107.10.exe");
+        let latest = parse_releases(&json!([release("2026.1107.9"), numeric]).to_string()).unwrap().unwrap();
+        assert_eq!(latest.version, "2026.1107.10");
+        assert_eq!(latest.notes, "https://github.com/mthlpbs/lumo/releases/tag/2026.1107.10");
+        assert_eq!(latest.download().unwrap().url, "https://github.com/mthlpbs/lumo/releases/download/2026.1107.10/Lumo-Setup-2026.1107.10.exe");
+        assert!(latest.allowed());
+        let mut mismatched = latest.clone();
+        mismatched.notes = mismatched.notes.replace("/tag/2026", "/tag/v2026");
+        assert!(!mismatched.allowed(), "a cached release cannot mix assets from different tags");
+        let saved = serde_json::to_string(&latest).unwrap();
+        assert!(serde_json::from_str::<Release>(&saved).unwrap().allowed());
+    }
+    #[test]
+    fn release_tag_normalization_rejects_addon_and_path_tags() {
+        assert_eq!(version_from_tag("2026.1107.2"), Some("2026.1107.2"));
+        assert_eq!(version_from_tag("v2026.1107.2"), Some("2026.1107.2"));
+        for tag in ["", "v", "vv2026.1107.2", "dictionary-data", "2026.1107.2/evil.exe", "2026.1107.2?query", "2026.1107.2-preview"] {
+            assert!(version_from_tag(tag).is_none(), "{tag}");
+        }
     }
     #[test]
     fn refuses_missing_hash_wrong_repository_and_oversized_installers() {

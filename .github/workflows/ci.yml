@@ -18,9 +18,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      build: ${{ steps.tag.outputs.build }}
+    steps:
+      - name: Identify app release
+        id: tag
+        shell: python3 {0}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          import os, re
+          tag = os.environ.get('RELEASE_TAG', '')
+          build = os.environ['EVENT_NAME'] == 'workflow_dispatch' or re.fullmatch(r'v?[0-9]+\.[0-9]+\.[0-9]+', tag) is not None
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'build={str(build).lower()}\n')
+          print(f'Building app release {tag}' if build else f'Skipping non-app release {tag}')
+
   windows:
     # Add-on releases use their own tags and do not ship the app.
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    needs: classify
+    if: needs.classify.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -53,8 +74,8 @@ jobs:
           except ValueError as error:
               raise SystemExit(f'Invalid calendar date in version {version}: {error}')
           tag = os.environ.get('RELEASE_TAG', '')
-          if tag and tag != f'v{version}':
-              raise SystemExit(f'Release tag {tag} must match Cargo.toml version v{version}. Prepare and commit the version files before publishing the matching release.')
+          if tag and tag not in (version, f'v{version}'):
+              raise SystemExit(f'Release tag {tag} must match Cargo.toml version {version} (or v{version}). Prepare and commit the version files before publishing the matching release.')
           packages = tomllib.loads((root / 'Cargo.lock').read_text())['package']
           for name in ('lumo', 'lumo-core'):
               if not any(p['name'] == name and p['version'] == version for p in packages):
@@ -74,6 +95,9 @@ jobs:
               raise SystemExit(f'Missing docs/release-notes/v{version}.md')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'version={version}\n')
+
+      - name: Test release tag handling
+        run: python tools/test_release_workflow.py
 
       - name: Install Rust toolchain
         run: |
@@ -154,7 +178,7 @@ jobs:
       - name: Summarize dry run
         if: github.event_name == 'workflow_dispatch'
         run: |
-          'Dry run completed. A published vX.Y.Z release would receive the installer, portable ZIP and SHA256SUMS.txt. No tag or release was created or changed. Update-feed deployment remains disabled.' | Add-Content $env:GITHUB_STEP_SUMMARY
+          'Dry run completed. A published release with a matching numeric or v-prefixed version tag would receive the installer, portable ZIP and SHA256SUMS.txt. No tag or release was created or changed. Update-feed deployment remains disabled.' | Add-Content $env:GITHUB_STEP_SUMMARY
 
   upload:
     needs: windows

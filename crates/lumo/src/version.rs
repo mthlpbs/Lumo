@@ -17,7 +17,10 @@ pub fn about_label() -> String {
 
 /// The page the About line opens: this release's notes, a test build's commit.
 pub fn notes_url() -> String {
-    url(VERSION, KIND, COMMIT)
+    let tag = option_env!("LUMO_BUILD_TAG").unwrap_or_default();
+    if KIND == "release" && lumo_core::update::version_from_tag(tag) == Some(VERSION) {
+        format!("{REPO}/releases/tag/{tag}")
+    } else { url(VERSION, KIND, COMMIT) }
 }
 
 fn label(version: &str, kind: &str, commit: &str, day: &str) -> String {

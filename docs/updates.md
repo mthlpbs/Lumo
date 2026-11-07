@@ -58,7 +58,9 @@ worker completion, including while a request is in progress.
 
 ## Releases
 
-Publish a matching version tag and release after committing the workflow.
+Publish a matching numeric version tag (for example, `2026.1107.2`) and release
+after committing the workflow. Historical `v`-prefixed tags also work. The
+updater keeps the actual tag in download URLs and cached release metadata.
 The `ci` workflow attaches the installer and checksums. Once a stable release
 has its uploaded installer and GitHub digest, existing copies can discover it.
 There is no update-feed or website deployment. A local `dist` build alone does
