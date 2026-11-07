@@ -1,206 +1,366 @@
-# Lumo
+<p align="center">
+  <img src="docs/brand/lumo-logo.svg" width="88" alt="Lumo logo">
+</p>
 
-A lightweight living notch for Windows 10 and 11, maintained by **mthlpbs**.
-Lumo is a modified version of [Oyenza Studio](https://github.com/lucacadalora/oyenza-studio).
-Hover over the island to open its pages. Swipe horizontally with two fingers
-on your touchpad to switch pages, or scroll over the header. Keep swiping to
-move through several tabs; scrolling stops at the first and last tabs. Right-click the
-island or tray icon for options.
+<h1 align="center">Lumo</h1>
 
-## Features
+<p align="center"><strong>A living island for your Windows desktop.</strong></p>
 
-- **Ask AI (prototype):** Markdown replies, Ctrl+hover access, an expandable compact chat and a resizable full chat window, your own provider/key/models, images/PDFs and screen snips, image generation, temporary chats and encrypted local history. [Setup and limits](docs/ai-companion.md).
+<p align="center">
+  Your music, focus timer, files and AI companion, close at hand.<br>
+  A small island at the top of your screen that opens when you need it.
+</p>
 
-- **Music:** controls for Windows media sessions, synced lyrics from LRCLIB,
-  optional Apple Music lyrics, and local lyric files for desktop players.
-- **Focus:** a Pomodoro timer with a countdown on the closed island.
-- **Shelf:** keep links to files, drag files in or out, and send files from a
-  phone over Wi-Fi. Paired phones can connect from other networks.
-- **Tasks:** a small local to-do list.
-- **Today:** the date and calendar.
-- **System:** CPU, GPU, memory, drives, network, battery, and power information.
-  Optional FPS, GPU, and CPU readouts over borderless full-screen games.
-- **Add-ons:** turn **Script reader** and **Clipboard history** on or off.
-  Script reader is a teleprompter under the webcam; Clipboard history keeps
-  copied text in memory and skips text marked private by password managers.
-- **Themes:** Classic and Pill, with volume, charging, and headset notices.
+<p align="center">
+  <a href="#features">Features</a> &nbsp;·&nbsp;
+  <a href="#install">Install</a> &nbsp;·&nbsp;
+  <a href="#faq">FAQ</a> &nbsp;·&nbsp;
+  <a href="#guides">Guides</a> &nbsp;·&nbsp;
+  <a href="#development">Development</a>
+</p>
 
-Prayer times, Health, Money, Oyenza accounts, and Japanese readings are not
-included. This repository builds the Windows app only.
+<p align="center">
+  <img src="docs/brand/readme/lumo/music.png" width="880" alt="Lumo's Music page with album artwork, playback controls, a seek bar and synced lyrics">
+</p>
+
+<p align="center"><sub>Windows 10 &amp; 11 · x64 · Free and open source · No Lumo account needed</sub></p>
+<p align="center"><sub>Maintained by <a href="https://github.com/mthlpbs">mthlpbs</a>. Based on <a href="https://github.com/lucacadalora/oyenza-studio">Oyenza Studio</a>. Screenshots use demo data.</sub></p>
 
 ## Install
 
-Run `Lumo-Setup-2026.1107.2.exe` from `dist`, or extract
-`Lumo-2026.1107.2-portable.zip` and run `Lumo/lumo.exe`.
-The installer uses your Windows account and needs no administrator rights.
+Get the [latest release](https://github.com/mthlpbs/Lumo/releases/latest),
+or download the current **2026.1107.2** build directly:
 
-The application uses `lumo.exe`, Lumo folders and `LUMO_*` environment variables.
-Existing profiles and received-file inboxes remain readable after the rename:
+| Download | Get started |
+| :--- | :--- |
+| **[Installer (.exe)](https://github.com/mthlpbs/Lumo/releases/download/2026.1107.2/Lumo-Setup-2026.1107.2.exe)** | Recommended. Installs for your Windows account without administrator rights. |
+| **[Portable ZIP](https://github.com/mthlpbs/Lumo/releases/download/2026.1107.2/Lumo-2026.1107.2-portable.zip)** | Extract the whole ZIP, then run `Lumo/lumo.exe`. |
+| [Checksums](https://github.com/mthlpbs/Lumo/releases/download/2026.1107.2/SHA256SUMS.txt) | Compare the download's SHA-256 with `SHA256SUMS.txt`. |
 
-- App: `%LOCALAPPDATA%\Programs\Lumo\lumo.exe`
-- Settings and data: `%APPDATA%\Lumo\`
-- Cache and log: `%LOCALAPPDATA%\Lumo\`
-- Files received from phones: `Downloads\Lumo\`; an existing inbox from a
-  previous version is reused to preserve Shelf links.
+**First time here?** Click the island to open it. Scroll over its header or
+swipe horizontally with two fingers on your touchpad to switch pages. The
+gear opens Settings; the pin keeps the island open.
 
-Uninstalling keeps your settings, tasks, focus history, and received files.
-Existing profiles are imported into Lumo once. Original folders remain as backups;
-retired themes, old logs and obsolete update metadata are not carried forward.
+Over a maximized app, hover at the top edge to reveal the island, then click
+to open it. To open by hover over normal windows, choose **Settings > General >
+Open island with > Hover**.
 
-## Settings and options
+## Features
 
-The gear opens a separate Settings window with General, Display, Appearance,
-Music & lyrics, AI companion, Focus, Notifications, and About categories. Changes apply and
-save immediately. Horizontal touchpad scrolling also switches Settings categories.
-Close Settings with the button at the top right; the island keeps running.
-The compact island stays visible over normal and split-screen windows. Over
-a maximized app, hover at the top edge to reveal it, then click to open.
-Choose **Settings > General > Open island with** to enable hover opening over
-normal windows; maximized windows still require a click. Maximized-window
-visibility remains configurable in **Display**.
-The tray menu contains only **Start with Windows**,
-**Settings**, and **Exit**. Right-clicking the island has no action.
-When an app is maximized, the window icon beside the gear keeps the island
-visible over that app. Its tooltip names the app. Lumo remembers that choice until
-you untick the icon; the pin beside it keeps the expanded island open.
+### Music that stays within reach
 
-Music uses a grey lyrics speech-bubble button for compact-island lyrics; the
-icon is crossed out when disabled. The expanded player and popup retain neighbouring cues
-around the current lyric, including in compact popup sizes. When lyrics
-are available, the grey pop-out button at the upper right opens a resizable player at
-the top right, with album-coloured backgrounds, synced lyrics and playback
-controls. Drag an edge to resize it; the size is remembered. Hover the corner
-dot to reveal Close and return to Music on the island. The island stays visible
-while the popup is open; its compact lyrics and expanded lyrics column are
-temporarily hidden and return when the popup closes. While it is open, the
-lyrics toggle is disabled and the pop-out button points inward; click it to
-close the popup and return lyrics to the island.
-Hide the pop-out button
-in **Settings > Music & lyrics > Lyrics window button**.
+Control the music apps that use Windows media controls, seek through a track,
+and follow matched lyrics from LRCLIB or your local library. The current line
+can stay on the closed island. A separate, resizable lyrics window gives the
+song more room when you want it.
 
-### Add-ons
+Korean and Chinese pronunciation can appear beneath the original text.
+[Music setup and local files](#guides) are covered below.
 
-Open the **+ (Add-ons)** tab and switch **Script reader** on. Its Script tab
-appears and its shortcut becomes available. Switch it off to hide the tab and
-stop the reader. Clipboard history has its own switch on the same page.
-Both add-ons are built in and require no download.
+### Ask AI without leaving your desktop
 
-### Local lyrics
+Open **Ask AI**, or hold <kbd>Ctrl</kbd> while hovering over the closed
+island's trailing edge. Chat in the island, expand it, or open a full chat
+window. Bring your own provider, key and models; add images, PDFs or a screen
+snip when your model supports them.
 
-Turn on **Use local lyrics** in **Settings > Music & lyrics** and choose your music
-folder. Local music tries sidecar `.lrc`, `.lyrics`, and `.txt` files, then
-embedded MP3 (USLT/SYLT), FLAC, M4A and Opus/Ogg lyrics in matching song files.
-Other audio formats can use Windows' installed metadata handlers. LRC stored
-inside a song retains its timestamps; plain embedded lyrics remain unsynced.
-Lookups read bounded metadata on demand and never modify your songs. Choose
-the containing music folder, using title or Artist - Title filenames.
-LRCLIB supplies missing lyrics. **Save downloaded lyrics** automatically saves
-its results using the matched audio file's exact basename and `.lrc` extension.
-The default places the sidecar beside that song; a custom download folder keeps
-the same basename. Matching uses filenames and audio tags in the selected Music
-folder, with bounded metadata reads. Ambiguous/unmatched songs are not saved;
-their LRCLIB lyrics still work, including streaming music.
-Explicit badges in metadata and `(Explicit)` filename labels match each other;
-clean and explicit editions remain distinct.
-Change the
-download folder or disable saving under **Settings > Music & lyrics > Downloaded
-lyrics**. Enable local lyrics to use the Music folder shown above, or choose a
-download folder. Global lyrics alone enable no file writes. Existing files
-are kept. Local music can reuse saved lyrics from a separate download folder;
-streaming music still asks LRCLIB directly. Source details stay in the lyrics
-icon's tooltip, along with its closed-island On/Off action.
-Music services such as Spotify and
-Deezer use LRCLIB directly, even with local lyrics enabled. The LRC control
-appears only for local music and identified music services, not other media.
-Korean and Chinese pronunciation
-remain available; Japanese lyrics display their original text.
+<p align="center">
+  <img src="docs/brand/readme/lumo/ai.png" width="880" alt="Ask AI inside Lumo, with a compact conversation, history, model selection and an attachment button">
+</p>
 
-### Phone drop
+Replies support Markdown, tables and copyable code blocks. History is
+encrypted for your Windows account, and temporary chats are not saved.
+**Ask AI is a prototype**; provider capabilities, usage limits and charges
+still apply. [Setup and limits](docs/ai-companion.md).
 
-Open **Shelf > Phone**, scan its code with your phone, and send files over
-your Wi-Fi. Accept the incoming request on your PC. Pair a phone in that panel
-to send from another network. See [Paired phone drop](docs/paired-drop.md) and
-the [server guide](server/README.md) for the protocol and self-hosting.
+### Files from your phone, with your permission
 
-### Show over games
+Keep files and links on the **Shelf**, drag them into another app, or scan
+its QR code to send files from your phone over Wi-Fi. Lumo asks before
+accepting an incoming transfer. Pair a phone once to send from other networks.
 
-Enable it in **System > Games**. Windows frame tracing
-requires a one-time permission to join the Performance Log Users group.
-**Alt+Shift+F** hides or shows the readout while a game is in front.
-Choose the brief peeks option to avoid leaving an overlay over the game.
+<p align="center">
+  <img src="docs/brand/readme/lumo/phone.png" width="880" alt="The Shelf showing an incoming phone transfer with separate Decline and Accept actions">
+</p>
 
-### Updates
+Works through your phone's browser. [Paired phone drop](docs/paired-drop.md)
+explains pairing and how the connection works.
 
-Open **Settings > About** to check for updates, download a newer release,
-and install it with a restart. **Automatically update Lumo** downloads
-verified installers and installs them on the next launch. **Tell me about
-new versions** controls update notifications separately. Both are off by
-default; manual checks work with both off. Automatic work rests while the
-session is locked, the display is off, or battery saver is on.
-See [Update implementation](docs/updates.md).
+### Know what your PC is doing
 
-## Build and test
+**System** brings CPU, GPU, memory, drives, network and battery information
+into one place. Open a module for its history and details. Optional game
+readouts show FPS, GPU and CPU information over borderless full-screen games.
+
+<p align="center">
+  <img src="docs/brand/readme/lumo/system.png" width="880" alt="Lumo's System page with CPU gauges, usage history, per-core activity and a process list">
+</p>
+
+Counters are active while their page or an enabled readout needs them.
+**Show over games** has its own switch under **System > Games**.
+
+### Make room for the small things
+
+| Page | What it keeps close |
+| :--- | :--- |
+| **Focus** | A Pomodoro timer, with its countdown on the closed island. |
+| **Tasks** | A small local to-do list. |
+| **Today** | The date and calendar. |
+| **Script reader** | A teleprompter beneath your webcam, enabled from Add-ons. |
+| **Clipboard history** | Copied text in memory, with password-manager privacy markers respected. |
+
+<p align="center">
+  <img src="docs/brand/readme/lumo/focus.png" width="880" alt="Lumo's Focus page showing a Pomodoro session, timer controls and focus history">
+</p>
+
+Script reader and Clipboard history are built in. Switch them on from the
+**+ (Add-ons)** page when you need them, and off to stop them.
+
+### Classic or Pill
+
+Choose an island that meets the top edge, or a floating pill with a little
+space around it. Both themes keep the same pages and controls, with brief
+volume, charging and headset notices.
+
+<p align="center">
+  <img src="docs/brand/readme/lumo/pill.png" width="880" alt="The Music page in Lumo's Pill theme, floating below the top edge with rounded corners">
+</p>
+
+Change themes under **Settings > Appearance**. The rest of the app stays
+familiar.
+
+## FAQ
+
+<details>
+<summary><strong>Is Lumo free? Do I need an account?</strong></summary>
+
+Lumo's code is MIT licensed, and its core features need no Lumo account.
+Ask AI uses your own provider and API key; that provider may charge for requests.
+See [PRIVACY.md](PRIVACY.md) for what each network feature sends.
+
+</details>
+
+<details>
+<summary><strong>How do updates work?</strong></summary>
+
+Open **Settings > About** and choose **Check for updates**. A newer release
+offers **Download update**, followed by **Install and restart** once verified.
+
+**Automatically update Lumo** downloads verified updates and installs them on
+the next launch. **Tell me about new versions** controls notifications
+separately. Both switches default to off; manual checks work with both off.
+Automatic work rests while the session is locked, the display is off, or
+battery saver is on. [How updates are verified](docs/updates.md).
+
+</details>
+
+<details>
+<summary><strong>Will it cover my tabs or full-screen apps?</strong></summary>
+
+Over maximized apps, the island reveals itself when you hover at the top
+edge. The window button beside the gear can keep it visible over a particular
+app; Lumo remembers that choice. **Settings > Display** controls maximized
+and full-screen behavior. The pin keeps the expanded island open.
+
+</details>
+
+<details>
+<summary><strong>Does it need administrator rights?</strong></summary>
+
+The installer runs for your Windows account without administrator rights.
+The optional FPS readout needs a one-time permission to join Windows'
+Performance Log Users group. Its System page explains that permission before
+requesting it.
+
+</details>
+
+<details>
+<summary><strong>What stays on my PC?</strong></summary>
+
+Settings, tasks, focus history and saved chats stay on your PC. AI requests
+go to the provider you choose, lyrics lookups use their configured services,
+and enabled update checks contact this project's public GitHub releases.
+Phone transfers ask before accepting files. Details are in
+[PRIVACY.md](PRIVACY.md).
+
+Uninstalling keeps settings, tasks, focus history and received files.
+
+</details>
+
+<details>
+<summary><strong>Where can I report a problem?</strong></summary>
+
+[Open an issue](https://github.com/mthlpbs/Lumo/issues/new) with your Windows
+version, the Lumo version from **Settings > About**, and steps to reproduce it.
+Review `%LOCALAPPDATA%\Lumo\lumo.log` before attaching it; logs can contain
+file paths or media information.
+
+</details>
+
+## Guides
+
+<details>
+<summary><strong>Music, local lyrics and downloaded lyrics</strong></summary>
+
+Under **Settings > Music & lyrics**, enable **Use local lyrics** and choose
+your Music folder. Lumo reads matching sidecar `.lrc`, `.lyrics` and `.txt`
+files, plus embedded MP3, FLAC, M4A and Opus/Ogg lyrics. Windows metadata
+handlers may support other formats. Timed lyrics keep their timestamps;
+plain text remains unsynced. LRCLIB supplies missing lyrics.
+
+**Save downloaded lyrics** uses the matching song's exact filename with a
+`.lrc` extension. Save beside the song or choose a separate download folder.
+A Music folder or download folder must be configured before files are saved.
+Existing files are kept, and ambiguous or unmatched songs are not saved.
+Clean and explicit editions remain distinct.
+
+The speech-bubble button controls closed-island lyrics. The pop-out button
+opens a resizable lyrics player; clicking it again returns lyrics to the
+island. Hide that button with **Lyrics window button** in Music settings.
+While the player is open, the island's lyrics column is hidden and its lyrics
+toggle is disabled; closing the player restores them.
+
+</details>
+
+### Apple Music lyrics
+
+Apple Music playback uses Windows media controls. Matched lyrics from LRCLIB
+and local lyric files work without an Apple Music token. See
+[PRIVACY.md](PRIVACY.md) for details about optional Apple Music requests.
+
+<details>
+<summary><strong>Phone drop and paired phones</strong></summary>
+
+Open **Shelf > Phone**, scan the QR code and select files on your phone.
+Accept the transfer on your PC. Same-Wi-Fi transfers use your local network.
+Pair a phone from that panel to send from other networks.
+
+See [Paired phone drop](docs/paired-drop.md) and the
+[server guide](server/README.md) for connection details and self-hosting.
+
+</details>
+
+<details>
+<summary><strong>Game readouts and shortcuts</strong></summary>
+
+Enable **Show over games** under **System > Games**. Windows frame tracing
+asks for its one-time permission there. Press
+<kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd> to hide or show the readout while a game is in front. Choose
+brief peeks if you do not want a persistent readout.
+
+The tray menu contains **Start with Windows**, **Settings** and **Exit**.
+Right-clicking the island has no action. Settings changes save immediately,
+and horizontal touchpad swipes also switch Settings categories.
+
+</details>
+
+<details>
+<summary><strong>Settings, saved data and migration</strong></summary>
+
+| Location | Path |
+| :--- | :--- |
+| Installed app | `%LOCALAPPDATA%\Programs\Lumo\lumo.exe` |
+| Settings and data | `%APPDATA%\Lumo\` |
+| Cache and log | `%LOCALAPPDATA%\Lumo\` |
+| Received files | `Downloads\Lumo\` |
+
+Existing profiles are imported into Lumo once, with the original folders kept
+as backups. An existing received-file inbox is reused to preserve Shelf links.
+Retired themes load as Classic; old logs and obsolete update metadata are not
+carried forward. Lumo uses `lumo.exe` and `LUMO_*` environment variables.
+
+</details>
+
+## Development
+
+Lumo is a Windows-only Cargo workspace with a native Win32, Direct2D and
+WinRT interface.
+
+| Component | Purpose |
+| :--- | :--- |
+| `crates/lumo` | The Windows application and its UI and services. |
+| `crates/lumo-core` | Shared models, parsing, settings and other core logic. |
+| `server` | The paired-phone meeting server and phone page. |
+
+<details>
+<summary><strong>Build and test</strong></summary>
+
+Use Rust stable with the Windows MSVC toolchain:
 
 ```powershell
-cargo test --workspace
-cargo build -p lumo --release
+cargo test --workspace --locked
+cargo build -p lumo --release --locked
 ```
 
-For a GNU cross build, `cargo wcheck` checks the Windows target and
-`cargo wbuild` builds `lumo.exe` with a MinGW toolchain. The graphical self-test
-uses an isolated data directory:
+The executable is `target/release/lumo.exe`. For a GNU cross-build with a
+MinGW toolchain, `cargo wcheck` checks the Windows target and `cargo wbuild`
+builds `target/x86_64-pc-windows-gnu/release/lumo.exe`.
+
+The graphical self-test uses an isolated data directory and demo data:
 
 ```powershell
 .\target\release\lumo.exe --selftest selftest-out
 ```
 
-Settings scenes capture the current standalone Settings window. Older saved
-Settings page selections return to Music instead of restoring the retired panel.
+It writes screenshots and `report.json` with layout and timing checks.
+`LUMO_SELFTEST_THEME=classic` or `pill` selects a theme;
+`LUMO_SELFTEST_DPI=144` renders at 150% scaling.
+Read [AGENTS.md](AGENTS.md) before changing the app. Keep background work
+opt-in, load heavy Windows components on demand, and measure CPU in cycles.
 
-No new background timers, network calls, or per-frame work were added for the
-Lumo branding or Add-ons page. Disabled add-ons stay asleep. Features that
-repeat rest while the session is locked, the screen is off, or battery saver
-is on. [PRIVACY.md](PRIVACY.md) describes network and local storage behavior.
+</details>
 
-## Release builds
+<details>
+<summary><strong>Versioning and release builds</strong></summary>
 
-Versions use `year.monthday.build`: `2026.1107.1` is 7 November 2026,
-build 1. Another release on that date uses `2026.1107.2`; the next day
-starts at `2026.1108.1`. January 7 uses `2027.107.1`, without leading zeros.
-Each release gets a new number; rebuilding the same source keeps its version.
-All three fields fit Windows version numbers; the build counter is 1–65535.
+Versions use `year.monthday.build`: `2026.1107.2` means 7 November 2026,
+build 2. A later release that day uses `2026.1107.3`; the next day starts at
+`2026.1108.1`. January 7 uses `2027.107.1`, without leading zeros.
+The build counter runs from 1 to 65535. Rebuilding a commit keeps its version;
+every published app release gets a new number.
 
-Publish a GitHub release with a numeric tag matching the app version, such as
-`2026.1107.2`. The historical `v2026.1107.2` format also works.
-The [ci workflow](.github/workflows/ci.yml) tests and builds the Windows app,
-checks the installer, and attaches `Lumo-Setup-<version>.exe`,
-`Lumo-<version>-portable.zip`, and `SHA256SUMS.txt` to that release.
-The release's title and notes stay as you wrote them. Saving a draft does not
-start a build; publishing a release or pre-release does.
+Keep these files aligned before tagging:
 
-Commit the workflow before creating the release tag. Update `Cargo.toml`,
-`Cargo.lock`, `crates/lumo/res/lumo.rc`, `crates/lumo/res/lumo.manifest`,
-`installer/lumo.nsi`, and `installer/lumo.iss` together before tagging.
-Add `docs/release-notes/v<version>.md` and use it for the release text.
-The workflow rejects mismatched versions. Non-version tags are reserved for add-ons and skipped.
+- `Cargo.toml` and the `lumo` / `lumo-core` entries in `Cargo.lock`.
+- `crates/lumo/res/lumo.rc` and `crates/lumo/res/lumo.manifest`.
+- `installer/lumo.nsi` and `installer/lumo.iss`.
 
-Re-running a failed release job uses its original tagged commit. To include
-fixes, commit them first and publish the matching new version. Keep existing
-release tags intact.
+Add `docs/release-notes/v<version>.md` and use it as the release text. Commit
+the workflow and source first, then publish a GitHub release with the matching
+numeric tag, such as `2026.1107.2`. Historical `v`-prefixed tags also work.
 
-CI uses the latest Windows runner and current action major versions.
-Dependabot checks daily and opens action-update PRs for review.
+The [ci workflow](.github/workflows/ci.yml) tests and builds Windows, checks the
+installer, and attaches the installer, portable ZIP and checksums. Saving a
+draft or pushing a tag alone does not build; publishing a release or
+pre-release does. Non-version add-on tags are skipped, and mismatched app
+versions fail validation. Re-running a failed job uses its original tagged
+commit; publish a new matching version to include fixes instead of moving an
+existing release tag.
 
-For a local branch's release rehearsal, use Actions > ci > Run workflow, or
-`gh workflow run ci.yml --ref <branch> -f release_dry_run=true`.
-Manual runs only build and test; they never publish.
-Installer downloads are saved in `lumo-setup`; screenshots and idle-memory
-metrics are in `lumo-screens`. The app reads GitHub releases directly; no update-feed deployment is needed.
+For a release rehearsal, use **Actions > ci > Run workflow**, or:
+
+```powershell
+gh workflow run ci.yml --ref <branch> -f release_dry_run=true
+```
+
+Manual runs publish nothing. Installers are saved in `lumo-setup`; screenshots
+and idle metrics are in `lumo-screens`. Dependabot checks action versions
+daily. The app reads GitHub releases directly, so no update-feed or website
+deployment is needed. Packaging writes the portable ZIP directly, without
+leaving an unpacked `dist/Lumo` folder.
+
+</details>
 
 ## Credits and license
 
-Lumo is maintained by mthlpbs and is a modified version of
-[Oyenza Studio](https://github.com/lucacadalora/oyenza-studio)
-(formerly Oyen Poni), by Jatevo Labs and its contributors.
-Original copyright notices and third-party licenses are preserved.
-See [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
+Lumo is maintained by **mthlpbs** and is a modified version of
+[Oyenza Studio](https://github.com/lucacadalora/oyenza-studio), by Jatevo Labs
+and its contributors. Original copyright notices and third-party licenses
+are preserved.
+
+Synced lyrics use [LRCLIB](https://lrclib.net). The app is built with Rust,
+[windows-rs](https://github.com/microsoft/windows-rs) and
+[serde](https://serde.rs), with other dependencies listed in the notices.
+
+Code is licensed under [MIT](LICENSE).
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) ships with every download.
