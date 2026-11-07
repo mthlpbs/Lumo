@@ -1,11 +1,12 @@
 # Smoke test on a real Windows desktop (used by CI):
-# start Lumo normally, screenshot the top of the screen while idle, hover the
+# start Lumo in hover mode, screenshot the top of the screen while idle, hover the
 # island to expand it, screenshot again, and record idle CPU / memory. Also
 # checks that the island is really on screen, that its transparent
 # surroundings stay click-through, and how smoothly it morphs (the "motion"
 # lines Lumo logs for its first morphs).
 #
-# Maximized windows: with a maximized window (Notepad) in front, the resting
+# Maximized windows: with "hide over maximized" switched off and a maximized
+# window (Notepad) in front, the resting
 # island stays on screen over it (0.2.4 and 0.2.5 stepped aside by default,
 # which read as the island vanishing), and still does once it's closed.
 #
@@ -29,6 +30,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class Native {
+    [DllImport("kernel32.dll")] public static extern bool QueryProcessCycleTime(IntPtr process, out ulong cycles);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
@@ -95,9 +97,17 @@ $soft = $env:LUMO_RENDERER -eq "software"
 
 # A home of its own per run (the CI runs this once per renderer and theme).
 $env:LUMO_HOME = Join-Path (Resolve-Path ".").Path "$(Split-Path $Out -Leaf)-home"
+New-Item -ItemType Directory -Force -Path $env:LUMO_HOME | Out-Null
+# These scenes exercise the optional hover and always-visible modes, rather
+# than the click-to-open / hover-reveal defaults. Version 8 preserves the
+# explicit maximized-window choice through Settings::sanitized.
+@{
+    settings_version = 8
+    theme = $Theme
+    open_on_hover = $true
+    hide_over_maximized = $false
+} | ConvertTo-Json | Set-Content -Path (Join-Path $env:LUMO_HOME "settings.json") -Encoding ascii
 if ($pill) {
-    New-Item -ItemType Directory -Force -Path $env:LUMO_HOME | Out-Null
-    '{"theme":"pill"}' | Set-Content -Path (Join-Path $env:LUMO_HOME "settings.json") -Encoding ascii
     "theme: pill$(if ($soft) { ' (software renderer)' })" | Tee-Object -FilePath $metrics -Append
 }
 $p = Start-Process -FilePath $Exe -PassThru
@@ -189,13 +199,16 @@ if (-not $pill) {
     Start-Sleep -Milliseconds 500
 }
 
-# Idle CPU over 10 seconds (should be ~0).
-$p.Refresh(); $cpu0 = $p.TotalProcessorTime.TotalMilliseconds
+# Idle CPU over 10 seconds, in cycles: clock ticks miss sub-millisecond work.
+[uint64]$cycles0 = 0
+if (-not [Native]::QueryProcessCycleTime($p.Handle, [ref]$cycles0)) { throw 'Could not read idle CPU cycles' }
 Start-Sleep -Seconds 10
-$p.Refresh(); $cpu1 = $p.TotalProcessorTime.TotalMilliseconds
+$p.Refresh()
+[uint64]$cycles1 = 0
+if (-not [Native]::QueryProcessCycleTime($p.Handle, [ref]$cycles1)) { throw 'Could not read idle CPU cycles' }
 $ws = [Math]::Round($p.WorkingSet64 / 1MB, 1)
 $priv = [Math]::Round($p.PrivateMemorySize64 / 1MB, 1)
-"idle cpu ms over 10s: $([Math]::Round($cpu1 - $cpu0, 1))" | Tee-Object -FilePath $metrics -Append
+"idle CPU million cycles over 10s: $([Math]::Round(($cycles1 - $cycles0) / 1e6, 3))" | Tee-Object -FilePath $metrics -Append
 "working set MB: $ws; private MB: $priv" | Tee-Object -FilePath $metrics -Append
 
 # Hover the island (top centre) to expand it. Pill: thrown at the top edge,

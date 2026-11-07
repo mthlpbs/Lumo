@@ -4,7 +4,7 @@
 use crate::commands::Command;
 use crate::gfx::{Gfx, TextStyle, Weight};
 use crate::icons::Icon;
-use crate::pages::settings::{draw_sheet, draw_switch, picker};
+use crate::pages::settings::{draw_switch, picker};
 use crate::pill::status;
 use crate::state::AppState;
 use crate::ui::{wid, wid_n, Hit, Input, MouseButton, PillStyle, Ui};
@@ -139,6 +139,7 @@ impl SettingsWindow {
     }
 
     pub fn show_ai(&mut self) {self.section=Section::Ai;self.show();}
+    pub fn show_about(&mut self) { self.section = Section::About; self.scroll = 0.0; self.show(); }
 
     pub fn show(&mut self) {
         // The island is topmost. Give Settings priority for this explicit open,
@@ -533,27 +534,20 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
             if f.toggle(ui, "preferences.hud-bluetooth", "Bluetooth", "Device connection updates", Some(st.settings.hud_bluetooth)) { st.settings.hud_bluetooth = !st.settings.hud_bluetooth; }
         }
         Section::About => {
-            if st.update.sheet {
-                if let Some(rel) = st.update.offer.clone().filter(|_| lumo_core::update::ENABLED) { draw_sheet(ui, st, area, &rel); return area.bottom(); }
-            }
             f.group(ui, "Lumo", 1);
             f.row(ui, &format!("Version {}", env!("CARGO_PKG_VERSION")), "A living island for Windows");
             f.end();
-            f.group(ui, "Updates", 1);
-            if f.toggle(ui, "preferences.updates", "Tell me about new versions", if lumo_core::update::ENABLED { "Let me know when an update is available" } else { "Automatic updates are temporarily disabled" }, lumo_core::update::ENABLED.then_some(st.settings.update_check)) { st.settings.update_check = !st.settings.update_check; }
+            draw_update_status(ui, st, &mut f);
+            f.group(ui, "Update preferences", 2);
+            let managed = st.update.managed;
+            if f.toggle(ui, "preferences.auto-updates", "Automatically update Lumo", "Download now, install on the next launch", (!managed).then_some(st.settings.automatic_updates)) { st.settings.automatic_updates = !st.settings.automatic_updates; }
+            if f.toggle(ui, "preferences.updates", "Tell me about new versions", "Show a notification when a new version is available", (!managed).then_some(st.settings.update_check)) { st.settings.update_check = !st.settings.update_check; }
             f.end();
-            if let Some(rel) = st.update.offer.as_ref().filter(|_| lumo_core::update::ENABLED) {
-                let label = format!("Update to {}", rel.version);
-                if ui.pill(wid("preferences.update"), Rect::new(f.x, f.y, 200.0, 32.0), &label, None, PillStyle::Primary(st.accent)).clicked { st.update.sheet = true; }
-                f.y += 44.0;
-            }
-            for (i, label, path) in [
-                (0, "Release notes", crate::version::notes_url()),
-                (1, "Open data folder", crate::paths::data_dir().to_string_lossy().into_owned()),
-            ] {
-                let w = ui.pill_width(label, true, true);
-                if ui.pill(wid_n("preferences.about-link", i), Rect::new(f.x, f.y, w, 32.0), label, Some(Icon::Open), PillStyle::Utility).clicked { st.cmd(Command::OpenPath(path)); }
-                f.y += 44.0;
+            if st.update.checked != 0 {
+                let minutes = (st.unix.max(0) as u64).saturating_sub(st.update.checked) / 60;
+                let text = if minutes == 0 { "Last checked just now".into() } else if minutes < 60 { format!("Last checked {minutes} min ago") } else { format!("Last checked {} hours ago", minutes / 60) };
+                ui.c.text(&text, Rect::new(f.x + 4.0, f.y, f.w, 18.0), &TextStyle::footnote().color(palette::TEXT_DIM));
+                f.y += 22.0;
             }
         }
     }
@@ -561,10 +555,106 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
     f.y
 }
 
+fn draw_update_status(ui: &mut Ui, st: &mut AppState, f: &mut Form) {
+    use crate::state::UpdateStatus;
+    ui.c.text("Software updates", Rect::new(f.x + 4.0, f.y, f.w, 20.0), &TextStyle::footnote().color(palette::TEXT_DIM));
+    f.y += 26.0;
+    let card = Rect::new(f.x, f.y, f.w, 134.0);
+    ui.c.fill_rrect(card, 13.0, CARD);
+    let busy = matches!(st.update.status, UpdateStatus::Checking | UpdateStatus::Downloading | UpdateStatus::Installing);
+    let version = st.update.offer.as_ref().map(|r| r.version.as_str()).unwrap_or_default();
+    let (title, detail, icon, color) = if st.update.managed {
+        ("Managed by Microsoft Store".to_string(), "Windows keeps your Store copy up to date.".to_string(), Icon::CheckCircle, GREEN)
+    } else {
+        match &st.update.status {
+            UpdateStatus::Checking => ("Checking for updates…".into(), "Looking for a newer Windows release.".into(), Icon::Reset, palette::TEXT_DIM),
+            UpdateStatus::Downloading => (format!("Downloading {version}…"), "You can keep using Lumo while the update downloads.".into(), Icon::Download, st.accent),
+            UpdateStatus::Installing => ("Installing update…".into(), "Lumo will reopen when the update is installed.".into(), Icon::Download, st.accent),
+            UpdateStatus::Failed(error) => ("Update couldn't finish".into(), error.chars().take(125).collect(), Icon::Circle, palette::ORANGE),
+            _ if st.update.ready => (format!("Version {version} is ready"), if st.update.next_start { "It will install automatically the next time Lumo starts.".into() } else { "Install the update and restart when you're ready.".into() }, Icon::CheckCircle, GREEN),
+            _ if st.update.offer.is_some() => (format!("Version {version} is available"), "Download the update here. Your settings will stay.".into(), Icon::Download, st.accent),
+            UpdateStatus::Current => ("You're up to date".into(), "You have the newest available Windows build.".into(), Icon::CheckCircle, GREEN),
+            _ => ("Keep Lumo up to date".into(), "Check for a newer version whenever you're ready.".into(), Icon::Reset, palette::TEXT_DIM),
+        }
+    };
+    ui.c.icon(icon, Rect::new(card.x + 16.0, card.y + 17.0, 22.0, 22.0), color);
+    ui.c.text(&title, Rect::new(card.x + 50.0, card.y + 13.0, card.w - 66.0, 25.0), &TextStyle::body().weight(Weight::Semibold));
+    ui.c.text(&detail, Rect::new(card.x + 50.0, card.y + 41.0, card.w - 66.0, 36.0), &TextStyle::footnote().color(palette::TEXT_DIM));
+    if !st.update.managed {
+        let check_label = if busy { "Please wait…" } else { "Check for updates" };
+        let check_w = ui.pill_width(check_label, false, true);
+        let check = Rect::new(card.right() - 16.0 - check_w, card.y + 88.0, check_w, 30.0);
+        if !busy {
+            if ui.pill(wid("preferences.check-updates"), check, check_label, None, PillStyle::Utility).clicked { st.cmd(Command::CheckUpdates); }
+            if st.update.offer.is_some() {
+                let label = if st.update.ready { "Install and restart" } else if matches!(st.update.status, UpdateStatus::Failed(_)) { "Retry download" } else { "Download update" };
+                let width = ui.pill_width(label, false, true);
+                if ui.pill(wid("preferences.update"), Rect::new(card.x + 16.0, check.y, width, 30.0), label, None, PillStyle::Primary(st.accent)).clicked { st.cmd(Command::Update); }
+            }
+        } else {
+            ui.c.text(check_label, check, &TextStyle::footnote().color(palette::TEXT_DIM));
+        }
+    }
+    f.y += 152.0;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use lumo_core::{settings::Settings, store::Store};
+
+    #[test]
+    #[ignore = "requires a Windows desktop"]
+    fn about_update_controls_and_states() {
+        use crate::state::{UpdateStatus, UpdateView};
+        let mut st = AppState::new(Settings::default(), Store::default());
+        let mut window = SettingsWindow::new(HWND::default()).unwrap();
+        window.show_about();
+        window.draw(&mut st).unwrap();
+        assert!(window.hits.iter().any(|h| h.id == wid("preferences.check-updates")));
+        assert!(!window.hits.iter().any(|h| h.id == wid_n("preferences.about-link", 0) || h.id == wid_n("preferences.about-link", 1)));
+        st.cmds.clear();
+        window.input.clicked = Some((wid("preferences.check-updates"), MouseButton::Left));
+        window.draw(&mut st).unwrap();
+        assert!(st.cmds.contains(&Command::CheckUpdates));
+        assert!(!st.settings.automatic_updates && !st.settings.update_check);
+        for id in ["preferences.auto-updates", "preferences.updates"] {
+            window.input.clicked = Some((wid(id), MouseButton::Left));
+            window.draw(&mut st).unwrap();
+        }
+        assert!(st.settings.automatic_updates && st.settings.update_check);
+        let output = std::env::var_os("LUMO_SETTINGS_QA").map(std::path::PathBuf::from);
+        let release = lumo_core::update::Release { version: "2026.1107.3".into(), date: "2026-11-07".into(), headline: "A new version".into(), notes: String::new(), windows: None };
+        for (name, status, offer, ready) in [
+            ("idle", UpdateStatus::Idle, None, false),
+            ("checking", UpdateStatus::Checking, None, false),
+            ("current", UpdateStatus::Current, None, false),
+            ("available", UpdateStatus::Available, Some(release.clone()), false),
+            ("downloading", UpdateStatus::Downloading, Some(release.clone()), false),
+            ("ready", UpdateStatus::Ready, Some(release.clone()), true),
+            ("error", UpdateStatus::Failed("Couldn't connect to GitHub. Check your connection and try again.".into()), Some(release), false),
+        ] {
+            let busy = matches!(status, UpdateStatus::Checking | UpdateStatus::Downloading);
+            st.update = UpdateView { status, offer, ready, ..Default::default() };
+            window.draw(&mut st).unwrap();
+            assert_eq!(window.hits.iter().any(|h| h.id == wid("preferences.check-updates")), !busy);
+            if ready || name == "available" || name == "error" {
+                st.cmds.clear();
+                window.input.clicked = Some((wid("preferences.update"), MouseButton::Left));
+                window.draw(&mut st).unwrap();
+                assert!(st.cmds.contains(&Command::Update));
+            }
+            assert_eq!(window.max_scroll, 0.0, "About must fit without scrolling: {name}");
+            if let Some(dir) = &output {
+                std::fs::create_dir_all(dir).unwrap();
+                let (w, h, pixels, _, _) = window.selftest_capture(&mut st, Section::About).unwrap();
+                crate::png::save_rgba(dir.join(format!("about-{name}.png")), w as u32, h as u32, &crate::png::pbgra_to_rgba(&pixels)).unwrap();
+            }
+        }
+        st.update.managed = true;
+        window.draw(&mut st).unwrap();
+        assert!(!window.hits.iter().any(|h| h.id == wid("preferences.check-updates") || h.id == wid("preferences.auto-updates")));
+    }
 
     #[test]
     #[ignore = "requires a Windows desktop"]

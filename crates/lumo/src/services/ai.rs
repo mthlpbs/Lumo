@@ -79,7 +79,8 @@ fn fetch_attempt(
 ) -> Result<Value, (String, bool)> {
     model::validate_url(url).map_err(|e| (e, false))?;
     let _com = MtaGuard::new();
-    let client = Client::new("Lumo/0.2.8").map_err(|e| (e.to_string(), true))?;
+    let client = Client::new(concat!("Lumo/", env!("CARGO_PKG_VERSION")))
+        .map_err(|e| (e.to_string(), true))?;
     let hs = headers(c, key);
     let hs: Vec<_> = hs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let json = body.map(Value::to_string);

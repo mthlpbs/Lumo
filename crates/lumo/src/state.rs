@@ -159,7 +159,23 @@ impl Notice {
 
 /// What the app knows about new versions.
 #[derive(Clone, Debug, Default, PartialEq)]
+pub enum UpdateStatus {
+    #[default]
+    Idle,
+    Checking,
+    Current,
+    Available,
+    Downloading,
+    Ready,
+    Failed(String),
+    Installing,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct UpdateView {
+    pub status: UpdateStatus,
+    pub checked: u64,
+    pub managed: bool,
     /// A later release than this copy, with a download for this system
     /// (only while the checks are on).
     pub offer: Option<lumo_core::update::Release>,
@@ -515,11 +531,7 @@ impl AppState {
     /// The Update sheet: Settings, with the sheet in place of its rows (the
     /// gear goes back to the page it was opened from).
     pub fn open_update(&mut self) {
-        if self.page != PageKind::Settings {
-            self.ui.before_settings = Some(self.page);
-        }
-        self.page = PageKind::Settings;
-        self.update.sheet = true;
+        self.cmd(Command::OpenUpdateSettings);
     }
 
     /// Give the current notice a one-click inline action pill.

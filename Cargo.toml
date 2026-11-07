@@ -3,7 +3,8 @@ resolver = "2"
 members = ["crates/lumo-core", "crates/lumo"]
 
 [workspace.package]
-version = "0.2.8"
+# Date-based Windows build: year.monthday.build (increment build on the same day).
+version = "2026.1107.2"
 edition = "2021"
 publish = false
 authors = ["mthlpbs"]

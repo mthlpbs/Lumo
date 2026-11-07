@@ -1,18 +1,18 @@
-//! New versions (docs/updates.md): https://raw.githubusercontent.com/mthlpbs/lumo/main/latest.json says
-//! which release is the latest, signed with a key from data/update-keys.txt.
-//! The app checks the signature with the system's own crypto
-//! (`services::update`); this module reads the file, refuses anything that
-//! isn't this repository's own release, and keeps what the app remembers
-//! between starts: when it last looked, what it found, what it announced.
+//! Lumo's stable GitHub releases, installer integrity and update preferences.
+//! The old signed-feed parser stays for historical signature fixtures; the
+//! running app uses only RELEASES_URL and GitHub's asset SHA-256 digests.
 
 use serde::{Deserialize, Serialize};
 
-/// Temporarily disabled for Lumo. Keep the updater and its persisted state
-/// for future use. Before enabling, configure Lumo's feed and signing keys.
-/// This build policy overrides even an older settings file with checks on.
-pub const ENABLED: bool = false;
+/// Controls live in Settings > About. Network work remains opt-in.
+pub const ENABLED: bool = true;
 
-/// Where every copy looks.
+/// Published stable releases from Lumo's own repository, over HTTPS.
+pub const RELEASES_URL: &str = "https://api.github.com/repos/mthlpbs/Lumo/releases?per_page=10";
+pub const MAX_RELEASE_BYTES: u64 = 1024 * 1024;
+pub const MAX_SETUP_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Historical signed-feed URL; the running app uses RELEASES_URL instead.
 pub const FEED_URL: &str = "https://raw.githubusercontent.com/mthlpbs/lumo/main/latest.json";
 /// Downloads only ever come from this repository's releases.
 const DOWNLOADS: &str = "https://github.com/mthlpbs/lumo/releases/download/v";
@@ -95,6 +95,12 @@ pub struct Release {
 }
 
 impl Release {
+    /// Persisted metadata must still bind the version, release and installer.
+    pub fn allowed(&self) -> bool {
+        self.notes == format!("{RELEASE_PAGE}{}", self.version)
+            && self.windows.as_ref().is_some_and(|d| d.allowed()
+                && d.url == format!("{DOWNLOADS}{0}/Lumo-Setup-{0}.exe", self.version))
+    }
     /// The Windows installer.
     pub fn download(&self) -> Option<&Download> {
         self.windows.as_ref()
@@ -102,6 +108,15 @@ impl Release {
 }
 
 impl Download {
+    /// Only Lumo's versioned Windows installers can be executed.
+    pub fn allowed(&self) -> bool {
+        let Some(rest) = self.url.strip_prefix(DOWNLOADS) else { return false };
+        let Some((version, name)) = rest.split_once('/') else { return false };
+        parts(version).is_some() && name == format!("Lumo-Setup-{version}.exe")
+            && (1..=MAX_SETUP_BYTES).contains(&self.size)
+            && self.sha256.len() == 64
+            && self.sha256.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    }
     /// Its file's name ("Lumo-Setup-0.2.5.exe"): plain letters,
     /// digits and `-_.`, as [`parse_payload`] made sure.
     pub fn file_name(&self) -> &str {
@@ -112,6 +127,47 @@ impl Download {
     pub fn matches(&self, bytes: &[u8]) -> bool {
         bytes.len() as u64 == self.size && crate::sha256::hex(&crate::sha256::sha256(bytes)) == self.sha256
     }
+}
+
+/// The newest stable app release with a completely uploaded, hashed installer.
+/// GitHub supplies the digest over HTTPS; legacy signed feeds are not used.
+pub fn parse_releases(text: &str) -> Result<Option<Release>, String> {
+    #[derive(Deserialize)]
+    struct Asset {
+        name: String, browser_download_url: String, size: u64,
+        #[serde(default)] digest: Option<String>,
+        state: String,
+    }
+    #[derive(Deserialize)]
+    struct Item {
+        tag_name: String, draft: bool, prerelease: bool,
+        #[serde(default)] published_at: Option<String>,
+        #[serde(default)] body: Option<String>,
+        assets: Vec<Asset>,
+    }
+    let items: Vec<Item> = serde_json::from_str(text).map_err(|_| "GitHub returned an unreadable release list".to_string())?;
+    let mut latest: Option<Release> = None;
+    for item in items {
+        let Some(version) = item.tag_name.strip_prefix('v').filter(|v| parts(v).is_some()) else { continue };
+        if item.draft || item.prerelease { continue; }
+        let name = format!("Lumo-Setup-{version}.exe");
+        let Some(asset) = item.assets.iter().find(|a| a.name == name && a.state == "uploaded") else { continue };
+        let url = format!("{DOWNLOADS}{version}/{name}");
+        if !asset.browser_download_url.eq_ignore_ascii_case(&url) { return Err("The installer is outside Lumo's GitHub releases".into()); }
+        let sha256 = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).unwrap_or_default().to_string();
+        let download = Download { url, size: asset.size, sha256 };
+        if !download.allowed() { return Err("GitHub has not provided a valid installer size and SHA-256 yet".into()); }
+        let notes = item.body.unwrap_or_default();
+        let title = notes.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim().trim_matches('*').trim_start_matches('#').trim();
+        let release = Release {
+            version: version.into(),
+            date: item.published_at.unwrap_or_default().chars().take(10).collect(),
+            headline: headline(title, version), notes: format!("{RELEASE_PAGE}{version}"),
+            windows: Some(download),
+        };
+        if latest.as_ref().is_none_or(|old| newer(version, &old.version)) { latest = Some(release); }
+    }
+    Ok(latest)
 }
 
 /// Read the payload, once its signature checked out. Refuses a newer
@@ -187,7 +243,7 @@ pub fn newer(a: &str, b: &str) -> bool {
 pub struct Memory {
     /// When the file was last read (Unix seconds), whatever it said.
     pub checked: u64,
-    /// The latest release it described (signature checked).
+    /// Latest verified release metadata received from GitHub.
     pub latest: Option<Release>,
     /// The version the island has announced: once per version.
     pub announced: String,
@@ -333,6 +389,8 @@ mod tests {
 
     #[test]
     fn versions_compare_as_numbers() {
+        assert!(newer("2026.1107.10", "2026.1107.9"));
+        assert!(newer("2026.1108.1", "2026.1107.99"));
         assert!(newer("0.2.10", "0.2.9"));
         assert!(newer("0.3.0", "0.2.99"));
         assert!(newer("1.0", "0.9.9"));
@@ -414,5 +472,55 @@ mod tests {
         assert_eq!(base64("aGVsbG8=").unwrap(), b"hello");
         assert_eq!(base64("aGVsbG8").unwrap(), b"hello");
         assert_eq!(base64("aGVs bG8="), None);
+    }
+}
+
+#[cfg(test)]
+mod github_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    fn release(version: &str) -> Value {
+        json!({"tag_name": format!("v{version}"), "draft": false, "prerelease": false,
+            "published_at": "2026-11-07T12:00:00Z", "body": "**A better Lumo.**\nMore details.",
+            "assets": [{"name": format!("Lumo-Setup-{version}.exe"), "size": 1234,
+                "browser_download_url": format!("https://github.com/mthlpbs/Lumo/releases/download/v{version}/Lumo-Setup-{version}.exe"),
+                "state": "uploaded", "digest": format!("sha256:{}", "a".repeat(64))}]})
+    }
+    #[test]
+    fn chooses_the_newest_ready_stable_release_and_skips_addons() {
+        let mut draft = release("2026.1107.99"); draft["draft"] = json!(true);
+        let mut preview = release("2026.1107.98"); preview["prerelease"] = json!(true);
+        let mut pending = release("2026.1107.97"); pending["assets"] = json!([]);
+        let mut addon = release("2026.1107.96"); addon["tag_name"] = json!("dictionary-data");
+        let text = json!([release("2026.1107.9"), draft, preview, pending, addon, release("2026.1107.10")]).to_string();
+        let latest = parse_releases(&text).unwrap().unwrap();
+        assert_eq!(latest.version, "2026.1107.10");
+        assert_eq!(latest.date, "2026-11-07");
+        assert!(latest.download().unwrap().allowed());
+        assert!(parse_releases("[]").unwrap().is_none());
+    }
+    #[test]
+    fn refuses_missing_hash_wrong_repository_and_oversized_installers() {
+        for field in ["digest", "browser_download_url", "size"] {
+            let mut item = release("2026.1107.2");
+            item["assets"][0][field] = match field {
+                "digest" => Value::Null,
+                "size" => json!(MAX_SETUP_BYTES + 1),
+                _ => json!("https://github.com/another/repo/releases/download/v2026.1107.2/Lumo-Setup-2026.1107.2.exe"),
+            };
+            assert!(parse_releases(&json!([item]).to_string()).is_err(), "{field}");
+        }
+        assert!(parse_releases("<html>offline</html>").is_err());
+    }
+    #[test]
+    fn executable_downloads_require_the_exact_versioned_setup_name() {
+        let latest = parse_releases(&json!([release("2026.1107.2")]).to_string()).unwrap().unwrap();
+        assert!(latest.allowed());
+        let mut changed = latest.clone();
+        changed.version = "2099.101.1".into();
+        assert!(!changed.allowed(), "cached version cannot authorize a different installer");
+        let mut d = latest.windows.unwrap();
+        d.url = d.url.replace("Lumo-Setup-2026.1107.2.exe", "payload.exe");
+        assert!(!d.allowed());
     }
 }

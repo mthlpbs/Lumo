@@ -30,8 +30,8 @@ included. This repository builds the Windows app only.
 
 ## Install
 
-Run `Lumo-Setup-0.2.8.exe` from `dist`, or extract
-`Lumo-0.2.8-portable.zip` and run `Lumo/lumo.exe`.
+Run `Lumo-Setup-2026.1107.2.exe` from `dist`, or extract
+`Lumo-2026.1107.2-portable.zip` and run `Lumo/lumo.exe`.
 The installer uses your Windows account and needs no administrator rights.
 
 The application uses `lumo.exe`, Lumo folders and `LUMO_*` environment variables.
@@ -131,10 +131,13 @@ Choose the brief peeks option to avoid leaving an overlay over the game.
 
 ### Updates
 
-Updates are **temporarily disabled**, including checks, downloads, notices,
-and installation on the next start. Settings keeps a disabled update switch.
-The update implementation is retained; an older `update_check: true` setting
-cannot enable it. See [Update implementation](docs/updates.md).
+Open **Settings > About** to check for updates, download a newer release,
+and install it with a restart. **Automatically update Lumo** downloads
+verified installers and installs them on the next launch. **Tell me about
+new versions** controls update notifications separately. Both are off by
+default; manual checks work with both off. Automatic work rests while the
+session is locked, the display is off, or battery saver is on.
+See [Update implementation](docs/updates.md).
 
 ## Build and test
 
@@ -161,7 +164,13 @@ is on. [PRIVACY.md](PRIVACY.md) describes network and local storage behavior.
 
 ## Release builds
 
-Publish a GitHub release with a tag matching the app version, such as `v0.2.8`.
+Versions use `year.monthday.build`: `2026.1107.1` is 7 November 2026,
+build 1. Another release on that date uses `2026.1107.2`; the next day
+starts at `2026.1108.1`. January 7 uses `2027.107.1`, without leading zeros.
+Each release gets a new number; rebuilding the same source keeps its version.
+All three fields fit Windows version numbers; the build counter is 1–65535.
+
+Publish a GitHub release with a tag matching the app version, such as `v2026.1107.2`.
 The [ci workflow](.github/workflows/ci.yml) tests and builds the Windows app,
 checks the installer, and attaches `Lumo-Setup-<version>.exe`,
 `Lumo-<version>-portable.zip`, and `SHA256SUMS.txt` to that release.
@@ -169,15 +178,23 @@ The release's title and notes stay as you wrote them. Saving a draft does not
 start a build; publishing a release or pre-release does.
 
 Commit the workflow before creating the release tag. Update `Cargo.toml`,
-`Cargo.lock`, `crates/lumo/res/lumo.rc`, `installer/lumo.nsi`, and
-`installer/lumo.iss` together before tagging. The workflow rejects mismatched
-versions. Non-`v` tags are reserved for add-ons and skipped.
+`Cargo.lock`, `crates/lumo/res/lumo.rc`, `crates/lumo/res/lumo.manifest`,
+`installer/lumo.nsi`, and `installer/lumo.iss` together before tagging.
+Add `docs/release-notes/v<version>.md` and use it for the release text.
+The workflow rejects mismatched versions. Non-`v` tags are reserved for add-ons and skipped.
+
+Re-running a failed release job uses its original tagged commit. To include
+fixes, commit them first and publish the matching new version. Keep existing
+release tags intact.
+
+CI uses the latest Windows runner and current action major versions.
+Dependabot checks daily and opens action-update PRs for review.
 
 For a local branch's release rehearsal, use Actions > ci > Run workflow, or
 `gh workflow run ci.yml --ref <branch> -f release_dry_run=true`.
 Manual runs only build and test; they never publish.
 Installer downloads are saved in `lumo-setup`; screenshots and idle-memory
-metrics are in `lumo-screens`. In-app updates and feed deployment remain disabled.
+metrics are in `lumo-screens`. The app reads GitHub releases directly; no update-feed deployment is needed.
 
 ## Credits and license
 

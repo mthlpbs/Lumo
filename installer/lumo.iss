@@ -3,15 +3,15 @@
 ; Releases ship installer/lumo.nsi (NSIS), which 0.1.x installs came from; CI builds this one too as a check.
 ;
 ; Build after `cargo build -p lumo --release`:
-;   iscc installer\lumo.iss                      -> dist\Lumo-Setup-0.2.8.exe
-;   iscc /DAppVersion=0.2.0 installer\lumo.iss   (another version)
+;   iscc installer\lumo.iss                      -> dist\Lumo-Setup-2026.1107.2.exe
+;   iscc /DAppVersion=2026.1107.3 installer\lumo.iss   (another build)
 ;
 ; Per-user install: no admin rights and no UAC prompt. The app goes to
 ; %LOCALAPPDATA%\Programs\Lumo; settings and data stay in %APPDATA%\Lumo and
 ; survive uninstalling (only the cache in %LOCALAPPDATA%\Lumo is removed).
 
 #ifndef AppVersion
-  #define AppVersion "0.2.8"
+  #define AppVersion "2026.1107.2"
 #endif
 #ifndef ExeSource
   #define ExeSource "..\target\release\lumo.exe"

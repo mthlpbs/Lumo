@@ -31,14 +31,18 @@ Supported themes are Classic and Pill. Retired theme values load as Classic.
 
 The app is Windows-only. The macOS app, Oyenza account integration and bundled landing website have been removed. Shared branding in `docs/brand/` is still used by the Windows app, installer and README.
 
-In-app updates and update-feed deployment are currently disabled (see `docs/updates.md`). A release does not require a landing-page update.
+Update controls live only in Settings > About. Automatic updates and new-version notifications are separate opt-in settings. The app reads its own GitHub releases directly; update-feed deployment remains disabled (see `docs/updates.md`). A release does not require a landing-page update.
 
 ## Cutting a release
 
 Merges, tags and releases happen only when the maintainer says so.
 
-Keep the version in `Cargo.toml`, `Cargo.lock`, `crates/lumo/res/lumo.rc`, `installer/lumo.nsi`, and `installer/lumo.iss` aligned. Add `docs/release-notes/vX.md` and use it for the release text. Publish a GitHub release with the matching `vX` tag after the workflow has been committed. The `ci` workflow builds and tests the Windows app, checks the installer, and attaches the installer, portable ZIP, and checksums to that release. Drafts and non-`v` add-on releases do not build the app. Pushing a tag alone does not start a release build.
+Use numeric date-based versions: `year.monthday.build` (for example, `2026.1107.1` for 7 November 2026, build 1). Increment the build counter for another release on the same date; reset it to 1 for a later date. Do not use leading zeros. Each field must fit 0–65535, and the build counter starts at 1. Rebuilding a commit keeps its version; every published app release gets a new version.
+
+Keep the version in `Cargo.toml`, `Cargo.lock`, `crates/lumo/res/lumo.rc`, `crates/lumo/res/lumo.manifest`, `installer/lumo.nsi`, and `installer/lumo.iss` aligned. Add `docs/release-notes/vX.md` and use it for the release text. Publish a GitHub release with the matching `vX` tag after the workflow has been committed. The `ci` workflow builds and tests the Windows app, checks the installer, and attaches the installer, portable ZIP, and checksums to that release. Drafts and non-`v` add-on releases do not build the app. Pushing a tag alone does not start a release build.
 
 The release workflow does not deploy an update feed while updates are disabled. The retained `UPDATE_FEED_KEY` secret stays in the `release` environment: never print it or move it.
+
+Do not create an unpacked `dist/Lumo` folder. Use `tools/package_portable.py` to write the portable ZIP directly from the executable and license files. Keep the `Lumo/` directory inside the ZIP only.
 
 To try the release path without releasing, run `ci` by hand with `release_dry_run` on (`gh workflow run ci.yml --ref <branch> -f release_dry_run=true`). Manual runs build and test, save artifacts, and publish nothing: no tag, release or update-feed deploy.

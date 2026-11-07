@@ -21,7 +21,7 @@ jobs:
   windows:
     # Add-on releases use their own tags and do not ship the app.
     if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
-    runs-on: windows-2022
+    runs-on: windows-latest
     timeout-minutes: 45
     defaults:
       run:
@@ -30,7 +30,7 @@ jobs:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -40,24 +40,38 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          import os, pathlib, re, tomllib
+          import datetime, os, pathlib, re, tomllib
           root = pathlib.Path('.')
           version = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['package']['version']
-          if not re.fullmatch(r'\d+\.\d+\.\d+', version):
-              raise SystemExit(f'Expected a numeric x.y.z version, got {version}')
+          if not re.fullmatch(r'[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*', version):
+              raise SystemExit(f'Expected year.monthday.build with no leading zeros, got {version}')
+          year, monthday, build = map(int, version.split('.'))
+          if any(part > 65535 for part in (year, monthday, build)):
+              raise SystemExit('Windows version fields must not exceed 65535')
+          try:
+              datetime.date(year, monthday // 100, monthday % 100)
+          except ValueError as error:
+              raise SystemExit(f'Invalid calendar date in version {version}: {error}')
           tag = os.environ.get('RELEASE_TAG', '')
           if tag and tag != f'v{version}':
-              raise SystemExit(f'Release tag {tag} must match Cargo.toml version v{version}')
+              raise SystemExit(f'Release tag {tag} must match Cargo.toml version v{version}. Prepare and commit the version files before publishing the matching release.')
+          packages = tomllib.loads((root / 'Cargo.lock').read_text())['package']
+          for name in ('lumo', 'lumo-core'):
+              if not any(p['name'] == name and p['version'] == version for p in packages):
+                  raise SystemExit(f'Cargo.lock must contain {name} version {version}')
           checks = {
               'installer/lumo.nsi': [f'!define VERSION "{version}"', f'VIProductVersion "{version}.0"'],
               'installer/lumo.iss': [f'#define AppVersion "{version}"'],
-              'crates/lumo/res/lumo.rc': [f'FILEVERSION {version.replace(".", ",")},0', f'PRODUCTVERSION {version.replace(".", ",")},0'],
+              'crates/lumo/res/lumo.rc': [f'FILEVERSION {version.replace(".", ",")},0', f'PRODUCTVERSION {version.replace(".", ",")},0', f'VALUE "FileVersion", "{version}\\0"', f'VALUE "ProductVersion", "{version}\\0"'],
+              'crates/lumo/res/lumo.manifest': [f'version="{version}.0"'],
           }
           for file, expected in checks.items():
-              contents = (root / file).read_text()
+              contents = (root / file).read_text(encoding='utf-8')
               for value in expected:
                   if value not in contents:
                       raise SystemExit(f'{file} must contain {value}')
+          if not (root / f'docs/release-notes/v{version}.md').is_file():
+              raise SystemExit(f'Missing docs/release-notes/v{version}.md')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'version={version}\n')
 
@@ -79,18 +93,16 @@ jobs:
         with:
           distro: negrutiu
           arch: amd64
+          version: latest
 
       - name: Package installer and portable app
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $exe = Join-Path $env:GITHUB_WORKSPACE 'target/x86_64-pc-windows-msvc/release/lumo.exe'
+          $exe = (Get-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'target/x86_64-pc-windows-msvc/release/lumo.exe')).FullName
           $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
-          $portable = Join-Path $dist 'Lumo'
-          New-Item -ItemType Directory -Force -Path $portable | Out-Null
-          Copy-Item -LiteralPath $exe -Destination $portable
-          Copy-Item -LiteralPath LICENSE, THIRD-PARTY-NOTICES.txt -Destination $portable
-          Compress-Archive -LiteralPath $portable -DestinationPath "$dist/Lumo-$env:APP_VERSION-portable.zip"
+          python tools/package_portable.py --exe "$exe" --out "$dist/Lumo-$env:APP_VERSION-portable.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Portable ZIP packaging failed' }
           makensis /V2 "/DEXE=$exe" "/DOUTDIR=$dist" installer/lumo.nsi
           if ($LASTEXITCODE -ne 0) { throw 'NSIS packaging failed' }
           $assets = @("$dist/Lumo-Setup-$env:APP_VERSION.exe", "$dist/Lumo-$env:APP_VERSION-portable.zip")
@@ -101,7 +113,7 @@ jobs:
             "$($file.Name): $($file.Length) bytes" | Add-Content $env:GITHUB_STEP_SUMMARY
           }
           $checksums | Set-Content -LiteralPath "$dist/SHA256SUMS.txt" -Encoding ascii
-          'App changes: none; new work at rest or per frame: none.' | Add-Content $env:GITHUB_STEP_SUMMARY
+          'Update checks: opt-in, twice a day; no permanent updater worker or per-frame animation. See smoke-out for idle memory and CPU metrics.' | Add-Content $env:GITHUB_STEP_SUMMARY
 
       - name: Check Windows desktop and idle costs
         run: ./tools/ci-smoke.ps1 -Exe ./target/x86_64-pc-windows-msvc/release/lumo.exe -Out smoke-out
@@ -113,7 +125,7 @@ jobs:
 
       - name: Save screenshots and metrics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lumo-screens
           path: |
@@ -122,7 +134,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Save installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lumo-setup
           path: dist/Lumo-Setup-*.exe
@@ -130,7 +142,7 @@ jobs:
           compression-level: 0
 
       - name: Save portable app and checksums
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lumo-portable
           path: |
@@ -152,11 +164,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: lumo-setup
           path: dist
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: lumo-portable
           path: dist

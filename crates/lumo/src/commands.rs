@@ -86,6 +86,8 @@ pub enum Command {
     SaveSettings,
     /// Open or restore the standalone Settings window.
     OpenSettings,
+    OpenUpdateSettings,
+    CheckUpdates,
     OpenLyricsWindow,
     CloseLyricsWindow,
     SetPage(PageKind),
@@ -97,8 +99,6 @@ pub enum Command {
     OpenUrl(String),
     /// Update to the offered version once Setup is downloaded, or open its release page.
     Update,
-    /// Install it the next time the app starts (Windows).
-    InstallOnNextStart,
     /// Start with Windows on or off (the Settings page's switch).
     SetAutostart(bool),
     /// Request an app's icon for the System page (arrives in `AppState::app_icons`).

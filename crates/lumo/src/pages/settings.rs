@@ -2,31 +2,20 @@
 //!
 //! Theme and idle look pickers, switches, and full-screen behavior.
 //! A change saves at once and applies the way the tray's does
-//! (`Command::SaveSettings`). While a later version is out, a last row
-//! across the page says so, with Update: that opens the Update sheet, which
-//! takes the rows' place (as the island's notice and the menu's "Update to"
-//! line do) until the island closes or Settings does.
+//! (`Command::SaveSettings`). Update controls live only in the standalone
+//! Settings window's About section.
 
-use crate::activities::{text_with_dim, text_with_dim_width};
 use crate::commands::Command;
 use crate::gfx::{TextStyle, Weight};
-use crate::icons::Icon;
 use crate::pill::status;
 use crate::state::AppState;
 use crate::ui::{wid, wid_n, PillStyle, Ui, PILL_SMALL};
 use lumo_core::geom::{palette, Color, Point, Rect};
-use lumo_core::phonedrop::fmt_bytes;
 use lumo_core::settings::{IdleStyle, Theme};
-use lumo_core::update::Release;
 
 /// Pickers, switches and choices, followed by the update row when available.
 const MUSIC_FOLDER_Y: f32 = SWITCHES_Y + ROWS as f32 * ROW_H;
 const MUSIC_FOLDER_H: f32 = 72.0;
-const SHEET_HEAD_H: f32 = 44.0;
-/// Update sheet icon and text column.
-const ICON: f32 = 36.0;
-const TEXT_X: f32 = 48.0;
-const RULE_Y: f32 = 54.0;
 const LABELS_Y: f32 = 0.0;
 const PICKERS_Y: f32 = 18.0;
 const SWITCHES_Y: f32 = 52.0;
@@ -71,7 +60,6 @@ enum Switch {
     Pronunciation,
     Sounds,
     Autostart,
-    Updates,
 }
 
 /// What a row of the two columns holds: a switch, or the full-screen choice
@@ -87,7 +75,6 @@ const LEFT: &[Row] = &[
     Row::Switch(Switch::Lyrics, "Lyrics on closed island"),
     Row::Switch(Switch::Pronunciation, "Lyrics pronunciation"),
     Row::Switch(Switch::Sounds, "Sounds"),
-    Row::Switch(Switch::Updates, if lumo_core::update::ENABLED { "Tell me about new versions" } else { "Updates (temporarily disabled)" }),
 ];
 const RIGHT: &[Row] = &[
     Row::Fullscreen,
@@ -104,19 +91,10 @@ const FULLSCREEN: [(bool, &str); 2] = [(true, "Hide"), (false, "Stay on top")];
 
 pub fn height(st: &AppState) -> f32 {
     let body = MUSIC_FOLDER_Y + music_folder_height(st);
-    match st.update.offer.as_ref().filter(|_| lumo_core::update::ENABLED) {
-        Some(_) if st.update.sheet => SHEET_H,
-        Some(_) => body + ROW_H,
-        None => body,
-    }
+    body
 }
 
 pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) {
-    if let Some(rel) = st.update.offer.clone().filter(|_| lumo_core::update::ENABLED && st.update.sheet) {
-        draw_sheet(ui, st, area, &rel);
-        return;
-    }
-
     let col_w = ((area.w - COL_GAP) / 2.0).max(0.0);
     let cols = [area.x, area.x + col_w + COL_GAP];
     let label_st = TextStyle::caption().weight(Weight::Semibold).color(palette::TEXT_FAINT);
@@ -199,9 +177,6 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) {
         }
     }
     draw_music_folder(ui, st, Rect::new(area.x, area.y + MUSIC_FOLDER_Y, area.w, music_folder_height(st)), card);
-    if let Some(rel) = st.update.offer.clone().filter(|_| lumo_core::update::ENABLED) {
-        draw_offer(ui, st, Rect::new(area.x, area.y + MUSIC_FOLDER_Y + music_folder_height(st), area.w, ROW_H), &rel);
-    }
 }
 
 fn music_folder_height(st: &AppState) -> f32 {
@@ -247,139 +222,6 @@ fn draw_music_folder(ui: &mut Ui, st: &mut AppState, r: Rect, card: Option<(Rect
     ui.c.text(&line, Rect::new(r.x, path_y, r.w, 17.0), &TextStyle::footnote().color(palette::TEXT_DIM));
 }
 
-/// The last row while a later version is out, across the page: "Update
-/// available 0.2.5", its headline, and Update (the sheet).
-fn draw_offer(ui: &mut Ui, st: &mut AppState, r: Rect, rel: &Release) {
-    let cy = r.center().y;
-    let w = ui.pill_width("Update", false, true);
-    let b = Rect::new(r.right() - w, cy - PILL_SMALL / 2.0, w, PILL_SMALL);
-    if ui.pill(wid("settings.update"), b, "Update", None, PillStyle::Primary(st.accent)).clicked {
-        st.update.sheet = true;
-    }
-    let right = b.x - 12.0;
-    let body = TextStyle::body();
-    let title = "Update available";
-    let tw = text_with_dim_width(ui, title, &rel.version, &body).ceil().min((right - r.x).max(0.0));
-    text_with_dim(ui, title, &rel.version, Rect::new(r.x, r.y, tw + 1.0, r.h), body);
-    let x = r.x + tw + 12.0;
-    if right > x {
-        ui.c.text(&rel.headline, Rect::new(x, r.y, right - x, r.h), &TextStyle::footnote().color(palette::TEXT_DIM));
-    }
-}
-
-// ---------------------------------------------------------------- the Update sheet
-
-/// The Update sheet: a disc, "Update available 0.2.5" over what the
-/// download is, Not now; a line; the release's headline under What's new;
-/// a card that gets it; and its notes. Once Windows has the Setup it reads
-/// "Update ready to install", with Install now and Install on next start,
-/// as Screen Studio's does.
-const SHEET_CAPTION_Y: f32 = 66.0;
-const SHEET_HEADLINE_Y: f32 = 82.0;
-const CARDS_Y: f32 = 114.0;
-const CARD_H: f32 = 58.0;
-const CARD_GAP: f32 = 10.0;
-const CARD_DISC: f32 = 30.0;
-const NOTES_Y: f32 = CARDS_Y + CARD_H + 12.0;
-const SHEET_H: f32 = NOTES_Y + PILL_SMALL;
-
-/// What a card of the sheet does when clicked.
-#[derive(Clone, Copy)]
-enum Get {
-    /// The release page, until Setup is downloaded.
-    Download,
-    /// Run the downloaded Setup now (Windows).
-    InstallNow,
-    /// Run it before the app opens next time (Windows).
-    NextStart,
-}
-
-pub(crate) fn draw_sheet(ui: &mut Ui, st: &mut AppState, area: Rect, rel: &Release) {
-    let head = Rect::new(area.x, area.y, area.w, SHEET_HEAD_H);
-    let cy = head.center().y;
-    let accent = st.accent;
-    let c = Point::new(head.x + ICON / 2.0, cy);
-    ui.c.fill_circle(c, ICON / 2.0, accent.with_alpha(0.22));
-    ui.c.icon(Icon::Download, Rect::from_center(c, 20.0, 20.0), accent);
-    let later_w = ui.pill_width("Not now", false, true);
-    let later = Rect::new(head.right() - later_w, cy - PILL_SMALL / 2.0, later_w, PILL_SMALL);
-    if ui.pill(wid("update.later"), later, "Not now", None, PillStyle::Utility).clicked {
-        st.update.sheet = false;
-        st.cmd(Command::Collapse);
-    }
-    let x = head.x + TEXT_X;
-    let w = (later.x - 16.0 - x).max(0.0);
-    let ready = st.update.ready;
-    let title = if ready { "Update ready to install" } else { "Update available" };
-    text_with_dim(ui, title, &rel.version, Rect::new(x, cy - 19.0, w, 20.0), TextStyle::headline());
-    let size = rel.download().map(|d| fmt_bytes(d.size)).unwrap_or_default();
-    let line = if ready {
-        "A new version of Lumo is ready to be installed.".to_string()
-    } else {
-        format!("A new version of Lumo is ready to download ({size}).")
-    };
-    ui.c.text(&line, Rect::new(x, cy + 1.0, w, 17.0), &TextStyle::footnote().color(palette::TEXT_DIM));
-
-    let px = 1.0 / ui.c.scale().max(0.5);
-    ui.c.fill_rect(Rect::new(area.x, area.y + RULE_Y, area.w, px), Color::white(0.10));
-    let label_st = TextStyle::caption().weight(Weight::Semibold).color(palette::TEXT_FAINT);
-    ui.c.text("WHAT'S NEW", Rect::new(area.x, area.y + SHEET_CAPTION_Y, area.w, 14.0), &label_st);
-    ui.c.text(&rel.headline, Rect::new(area.x, area.y + SHEET_HEADLINE_Y, area.w, 20.0), &TextStyle::body());
-
-    // With Setup downloaded: now or next start. Otherwise open the release page.
-    let cards: Vec<(Get, Icon, String, &str)> = if ready {
-        let next = if st.update.next_start {
-            (Get::NextStart, Icon::Check, "Installs on next start".to_string(), "Set: before it next opens")
-        } else {
-            (Get::NextStart, Icon::Reset, "Install on next start".to_string(), "Before it next opens")
-        };
-        vec![(Get::InstallNow, Icon::Download, "Install now".to_string(), "Closes, updates and opens again"), next]
-    } else {
-        vec![(Get::Download, Icon::Download, format!("Download {}", rel.version), "Opens its release page: run the Setup there, your settings stay.")]
-    };
-    let n = cards.len() as f32;
-    let card_w = ((area.w - (n - 1.0) * CARD_GAP) / n).max(0.0);
-    for (i, (get, icon, title, line)) in cards.iter().enumerate() {
-        let r = Rect::new(area.x + i as f32 * (card_w + CARD_GAP), area.y + CARDS_Y, card_w, CARD_H);
-        if card(ui, wid_n("update.card", i as u64), r, *icon, title, line, accent) {
-            match get {
-                Get::Download | Get::InstallNow => st.cmd(Command::Update),
-                Get::NextStart => st.cmd(Command::InstallOnNextStart),
-            }
-        }
-    }
-
-    let notes = format!("See what's new in Lumo {}", rel.version);
-    let nw = ui.pill_width(&notes, true, true).min(area.w);
-    let nr = Rect::new(area.x, area.y + NOTES_Y, nw, PILL_SMALL);
-    if ui.pill(wid("update.notes"), nr, &notes, Some(Icon::Open), PillStyle::Utility).clicked {
-        st.cmd(Command::OpenUrl(rel.notes.clone()));
-    }
-}
-
-/// One of the sheet's choices: a card with an icon, what it does in bold
-/// and how under it. True when clicked.
-fn card(ui: &mut Ui, id: u64, r: Rect, icon: Icon, title: &str, line: &str, accent: Color) -> bool {
-    let resp = ui.button(id, r);
-    let fill = if resp.pressed {
-        Color::white(0.14)
-    } else if resp.hovered {
-        Color::white(0.10)
-    } else {
-        Color::white(0.06)
-    };
-    ui.c.fill_rrect(r, 12.0, fill);
-    let c = Point::new(r.x + 14.0 + CARD_DISC / 2.0, r.center().y);
-    ui.c.fill_circle(c, CARD_DISC / 2.0, accent.with_alpha(0.22));
-    ui.c.icon(icon, Rect::from_center(c, 16.0, 16.0), accent);
-    let x = c.x + CARD_DISC / 2.0 + 12.0;
-    let w = (r.right() - 14.0 - x).max(0.0);
-    let cy = r.center().y;
-    ui.c.text(title, Rect::new(x, cy - 18.0, w, 20.0), &TextStyle::body().weight(Weight::Semibold));
-    ui.c.text(line, Rect::new(x, cy + 1.0, w, 16.0), &TextStyle::footnote().color(palette::TEXT_DIM));
-    resp.clicked
-}
-
 /// A choice's label with its picker where the other rows have their
 /// switch. Returns the choice clicked, if any.
 fn choice_row(ui: &mut Ui, r: Rect, label: &str, id: &str, names: &[&str], sel: usize) -> Option<usize> {
@@ -400,7 +242,6 @@ fn switch_on(st: &AppState, sw: Switch) -> Option<bool> {
         Switch::Pronunciation => Some(s.lyrics_pronunciation),
         Switch::Sounds => Some(s.sounds),
         Switch::Autostart => st.ui.autostart,
-        Switch::Updates => lumo_core::update::ENABLED.then_some(s.update_check),
     }
 }
 
@@ -410,10 +251,6 @@ fn flip(st: &mut AppState, sw: Switch, on: Option<bool>) {
         Switch::Lyrics => s.island_lyrics = !s.island_lyrics,
         Switch::Pronunciation => s.lyrics_pronunciation = !s.lyrics_pronunciation,
         Switch::Sounds => s.sounds = !s.sounds,
-        Switch::Updates => {
-            if !lumo_core::update::ENABLED { return; }
-            s.update_check = !s.update_check;
-        }
         Switch::Autostart => {
             if let Some(on) = on {
                 st.cmd(Command::SetAutostart(!on));
@@ -523,14 +360,16 @@ pub(crate) fn draw_switch(c: &mut crate::gfx::Canvas, r: Rect, on: bool, accent:
 }
 
 #[cfg(test)]
-mod disabled_update_tests {
+mod update_navigation_tests {
     use super::*;
     use lumo_core::{settings::Settings, store::Store};
     #[test]
-    fn old_enabled_preference_cannot_reactivate_updates() {
-        let mut st = AppState::new(Settings { update_check: true, ..Settings::default() }, Store::default());
-        assert_eq!(switch_on(&st, Switch::Updates), None);
-        flip(&mut st, Switch::Updates, Some(true));
-        assert!(st.cmds.is_empty());
+    fn update_notifications_route_to_about_without_changing_the_island_page() {
+        let mut st = AppState::new(Settings::default(), Store::default());
+        let page = st.page;
+        st.open_update();
+        assert_eq!(st.page, page);
+        assert!(st.cmds.contains(&Command::OpenUpdateSettings));
+        assert!(!st.update.sheet);
     }
 }

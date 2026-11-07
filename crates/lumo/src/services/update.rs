@@ -1,12 +1,6 @@
-//! New versions: reads the update file (`lumo_core::update::FEED_URL`, about
-//! 1 KB) and believes it only when its signature checks out with a built-in
-//! key. The check uses Windows CNG. It runs as a job on
-//! the add-on downloader's thread (`AddonService::run`), which sleeps the
-//! rest of the time; the app decides when (`crate::updates`).
-//!
-//! On Windows the same thread then downloads the new version's Setup, once
-//! per release, and keeps it only if its size and SHA-256 match the signed
-//! file's; [`install`] runs it silently.
+//! Reads stable releases from Lumo's own GitHub API over HTTPS. A requested
+//! worker exists only for the check/download; it keeps an installer only
+//! when its size and GitHub-provided SHA-256 match. `install` rechecks it.
 //!
 
 use crate::events::{AppEvent, EventSink};
@@ -24,9 +18,8 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(300);
 /// What the update file said.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateEvent {
-    /// The latest release (signature checked), or why the file couldn't be
-    /// read or believed.
-    Checked(Result<Release, String>),
+    /// Latest stable release with GitHub-verified installer metadata.
+    Checked(Result<Option<Release>, String>),
     /// The new version's Setup is on disk and checked, or why not.
     #[cfg(windows)]
     Downloaded(Result<std::path::PathBuf, String>),
@@ -37,23 +30,25 @@ pub fn check_job(sink: EventSink) -> Job {
     Box::new(move |client: Result<&Client, &str>| {
         let r = client.map_err(str::to_string).and_then(check);
         match &r {
-            Ok(rel) => crate::pinfo!("updates: the latest release is {} ({})", rel.version, rel.date),
-            Err(e) => crate::pinfo!("updates: couldn't read the update file ({e})"),
+            Ok(Some(rel)) => crate::pinfo!("updates: the latest release is {} ({})", rel.version, rel.date),
+            Ok(None) => crate::pinfo!("updates: no published Windows update"),
+            Err(e) => crate::pinfo!("updates: couldn't check releases ({e})"),
         }
         sink.send(AppEvent::Update(UpdateEvent::Checked(r)));
     })
 }
 
-fn check(client: &Client) -> Result<Release, String> {
+fn check(client: &Client) -> Result<Option<Release>, String> {
     if !update::ENABLED { return Err("Updates are temporarily disabled".into()); }
-    let (status, body) = client.get_bytes(update::FEED_URL, TIMEOUT, update::MAX_FILE_BYTES, |_| {}).map_err(|e| e.to_string())?;
+    let (status, body) = client.get_bytes(update::RELEASES_URL, TIMEOUT, update::MAX_RELEASE_BYTES, |_| {}).map_err(|e| e.to_string())?;
     if status != 200 {
-        return Err(format!("HTTP {status}"));
+        return Err(if status == 403 || status == 429 { "GitHub is limiting requests. Please try again later.".into() } else { format!("Couldn't check for updates (HTTP {status}). Try again.") });
     }
-    believe(std::str::from_utf8(&body).map_err(|_| "not text".to_string())?)
+    update::parse_releases(std::str::from_utf8(&body).map_err(|_| "GitHub returned an unreadable response".to_string())?)
 }
 
 /// The file's text to the release it describes, once its signature checks out.
+#[cfg(test)]
 pub fn believe(text: &str) -> Result<Release, String> {
     let signed = update::parse_file(text)?;
     if !verify(signed.payload.as_bytes(), &signed.signature, &signed.key) {
@@ -79,6 +74,7 @@ pub fn download_job(sink: EventSink, d: update::Download, path: std::path::PathB
 #[cfg(windows)]
 fn download(client: Result<&Client, &str>, d: &update::Download, path: &std::path::Path) -> Result<(), String> {
     if !update::ENABLED { return Err("Updates are temporarily disabled".into()); }
+    if !d.allowed() || path.file_name().is_none_or(|name| name != d.file_name()) { return Err("Untrusted update installer".into()); }
     use std::fs;
     // Downloaded on an earlier run: checked again, no request.
     if fs::read(path).is_ok_and(|b| d.matches(&b)) {
@@ -107,6 +103,7 @@ fn download(client: Result<&Client, &str>, d: &update::Download, path: &std::pat
 #[cfg(windows)]
 pub fn install(setup: &std::path::Path, d: &update::Download) -> Result<(), String> {
     if !update::ENABLED { return Err("Updates are temporarily disabled".into()); }
+    if !d.allowed() || setup.file_name().is_none_or(|name| name != d.file_name()) { return Err("Untrusted update installer".into()); }
     if !std::fs::read(setup).is_ok_and(|b| d.matches(&b)) {
         return Err("the downloaded Setup is gone or changed".into());
     }
@@ -114,7 +111,7 @@ pub fn install(setup: &std::path::Path, d: &update::Download) -> Result<(), Stri
 }
 
 /// ECDSA P-256 over SHA-256: `signature` is r and s, `key` an uncompressed point.
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn verify(message: &[u8], signature: &[u8; 64], key: &[u8; 65]) -> bool {
     use windows::Win32::Security::Cryptography::{
         BCryptCloseAlgorithmProvider, BCryptDestroyKey, BCryptImportKeyPair, BCryptOpenAlgorithmProvider, BCryptVerifySignature, BCRYPT_ALG_HANDLE,
@@ -146,6 +143,18 @@ fn verify(message: &[u8], signature: &[u8; 64], key: &[u8; 65]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "contacts the public GitHub releases API"]
+    fn checks_lumo_releases_live() {
+        let _com = crate::services::http::MtaGuard::new();
+        let client = Client::new(concat!("Lumo/", env!("CARGO_PKG_VERSION"))).unwrap();
+        let release = check(&client).expect("Lumo's public GitHub release list");
+        if let Some(release) = release {
+            assert!(release.allowed());
+            println!("Latest verified installer: {}", release.version);
+        } else { println!("No stable release with an uploaded, hashed installer yet"); }
+    }
 
     #[test]
     fn lumo_signature_verifies_and_rejects_changes() {

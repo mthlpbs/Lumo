@@ -68,9 +68,9 @@ impl Services {
         let clip = started("clipboard history", clipboard::ClipboardHistory::start(sink.clone(), settings.clipboard_history));
         // Asks nothing until a phone is paired.
         let pairdrop = started("pair drop", pairdrop::PairDropService::start(sink.clone()));
-        // Built-in add-ons need no worker. Keep the downloader dormant while
-        // updates are disabled and no supported add-on has files to fetch.
-        let addons = if lumo_core::update::ENABLED || lumo_core::addons::ALL.iter().any(|a| a.downloads()) {
+        // Built-in add-ons need no worker. Updates use a short-lived worker
+        // when requested, so there is no updater thread or HTTP client at rest.
+        let addons = if lumo_core::addons::ALL.iter().any(|a| a.downloads() && settings.addon_on(a.id)) {
             let on = lumo_core::addons::ALL.iter().filter(|a| settings.addon_on(a.id)).map(|a| a.id).collect();
             started("add-ons", addons::AddonService::start(sink.clone(), on))
         } else {
@@ -91,7 +91,15 @@ impl Services {
     /// Run a one-off download on the add-on thread (the update file).
     /// False when that thread couldn't start.
     pub fn run_job(&self, job: addons::Job) -> bool {
-        self.addons.as_ref().map(|a| a.run(job)).is_some()
+        if let Some(a) = self.addons.as_ref() { a.run(job); return true; }
+        // No permanent updater worker or WinRT client at startup. A requested
+        // check/download owns its client only until that one job has finished.
+        std::thread::Builder::new().name("lumo-update".into()).spawn(move || {
+            let _com = http::MtaGuard::new();
+            let client = http::Client::new(concat!("Lumo/", env!("CARGO_PKG_VERSION")));
+            let error = client.as_ref().err().map(ToString::to_string);
+            job(client.as_ref().map_err(|_| error.as_deref().unwrap_or("HTTP unavailable")));
+        }).is_ok()
     }
 
     /// An add-on was switched on (download its files) or off (delete them).

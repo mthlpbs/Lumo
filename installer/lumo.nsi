@@ -12,7 +12,7 @@ Target amd64-unicode
 SetCompressor /SOLID lzma
 
 !define APPNAME "Lumo"
-!define VERSION "0.2.8"
+!define VERSION "2026.1107.2"
 !define PUBLISHER "mthlpbs"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lumo"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
@@ -31,7 +31,7 @@ InstallDir "$LOCALAPPDATA\Programs\Lumo"
 InstallDirRegKey HKCU "Software\Lumo" "InstallDir"
 BrandingText "${APPNAME} ${VERSION}"
 
-VIProductVersion "0.2.8.0"
+VIProductVersion "2026.1107.2.0"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileDescription" "Lumo installer"
@@ -70,13 +70,13 @@ VIAddVersionKey "LegalCopyright" "Copyright (C) 2026 ${PUBLISHER}"
   nsExec::Exec '"$SYSDIR\taskkill.exe" /IM poni.exe /F'
   Sleep 200
 !macroend
-!define MUI_ICON "../crates/lumo/res/lumo.ico"
-!define MUI_UNICON "../crates/lumo/res/lumo.ico"
+!define MUI_ICON "..\crates\lumo\res\lumo.ico"
+!define MUI_UNICON "..\crates\lumo\res\lumo.ico"
 ; Supplied Lumo logo on the welcome and header pages (tools/make_brand.py).
-!define MUI_WELCOMEFINISHPAGE_BITMAP "art/nsis-welcome.bmp"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "art\nsis-welcome.bmp"
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_RIGHT
-!define MUI_HEADERIMAGE_BITMAP "art/nsis-header.bmp"
+!define MUI_HEADERIMAGE_BITMAP "art\nsis-header.bmp"
 !define MUI_ABORTWARNING
 !define MUI_COMPONENTSPAGE_SMALLDESC
 !define MUI_FINISHPAGE_RUN "$INSTDIR\lumo.exe"
@@ -99,7 +99,7 @@ Section "Lumo" SecMain
   SetOutPath "$INSTDIR"
   File "/oname=lumo.exe" "${EXE}"
   ; The licenses of what lumo.exe is built from (mecab-ipadic asks for its notice in every copy).
-  File "../THIRD-PARTY-NOTICES.txt"
+  File "..\THIRD-PARTY-NOTICES.txt"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   ; Remove obsolete shortcuts when upgrading to the new brand.
   Delete "$SMPROGRAMS\Poni.lnk"

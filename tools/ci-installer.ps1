@@ -74,7 +74,7 @@ $uninstKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Lumo"
 function LumoEntries {
     $roots = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall", "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
     @($roots | ForEach-Object { Get-ChildItem $_ -ErrorAction SilentlyContinue } |
-        ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -like "*Lumo*" -or $_.DisplayName -like "*Lumo*" })
+        ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -like "*Lumo*" })
 }
 
 # 1. The previous release, the way people have it today.
@@ -82,12 +82,16 @@ if ($Previous) {
     Start-Process -FilePath $Previous -ArgumentList "/S" -Wait
     Check "previous release installed" (Test-Path $exe) $Previous
     Check "previous Start menu shortcut" (Test-Path (Join-Path $programs "Lumo.lnk"))
-    # The 0.1.x versions from 0.1.2 on named the shortcut "Lumo": put one there too, the upgrade must remove it.
-    $old = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $programs "Lumo.lnk"))
-    $old.TargetPath = $exe
-    $old.Save()
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
     Set-Content -Path $marker -Value "settings and data must survive the upgrade"
+}
+
+# Seed the legacy shortcuts the installer promises to clean up on upgrade.
+$legacyShortcuts = @("Poni.lnk", "Oyen Poni.lnk", "Oyenza Studio.lnk")
+foreach ($shortcut in $legacyShortcuts) {
+    $old = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $programs $shortcut))
+    $old.TargetPath = $exe
+    $old.Save()
 }
 
 # 2. The new installer, page by page.
@@ -126,8 +130,9 @@ Check "Installed apps version" ($entry.DisplayVersion -eq $Version) "$($entry.Di
 $entries = LumoEntries
 Check "one Installed apps entry" ($entries.Count -eq 1) (($entries | ForEach-Object { $_.DisplayName }) -join ", ")
 Check "new Start menu shortcut" (Test-Path (Join-Path $programs "Lumo.lnk"))
-Check "old Start menu shortcut removed" (-not (Test-Path (Join-Path $programs "Lumo.lnk")))
-if ($Previous) { Check "Lumo shortcut removed" (-not (Test-Path (Join-Path $programs "Lumo.lnk"))) }
+foreach ($shortcut in $legacyShortcuts) {
+    Check "legacy shortcut removed: $shortcut" (-not (Test-Path (Join-Path $programs $shortcut)))
+}
 $vi = (Get-Item $exe -ErrorAction SilentlyContinue).VersionInfo
 Check "lumo.exe product name" ($vi.ProductName -eq "Lumo") "$($vi.ProductName)"
 Check "lumo.exe version" ($vi.ProductVersion -eq $Version) "$($vi.ProductVersion)"

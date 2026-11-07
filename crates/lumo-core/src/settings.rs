@@ -140,6 +140,8 @@ pub struct Settings {
     /// after start and then twice a day (docs/updates.md), and say on the
     /// island once when a new version is out.
     pub update_check: bool,
+    /// Download verified updates and install them on the next launch.
+    pub automatic_updates: bool,
 }
 
 impl Default for Settings {
@@ -184,6 +186,7 @@ impl Default for Settings {
             game_stats: false,
             game_peek: false,
             update_check: false,
+            automatic_updates: false,
         }
     }
 }

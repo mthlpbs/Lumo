@@ -21,7 +21,7 @@ mkdir -p "$ROOT/dist"
 cp "$EXE" "$ROOT/dist/lumo.exe"
 # Portable build inside its own folder, so lumo.exe never sits loose next to
 # other downloads (Windows looks for some DLLs in the exe's folder first).
-( cd "$ROOT/dist" && rm -rf Lumo "Lumo-$VERSION-portable.zip" && mkdir Lumo && cp lumo.exe "$ROOT/THIRD-PARTY-NOTICES.txt" Lumo/ && zip -qr "Lumo-$VERSION-portable.zip" Lumo && rm -rf Lumo )
+python3 "$ROOT/tools/package_portable.py" --exe "$EXE" --out "$ROOT/dist/Lumo-$VERSION-portable.zip"
 
 if [[ -n "${NSIS_HOST:-}" ]]; then
   REMOTE_DIR="lumo-pkg"

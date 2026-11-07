@@ -1,6 +1,6 @@
 # Lumo privacy
 
-Lumo is maintained by mthlpbs, based on Lumo by Jatevo Labs. It needs no account and has no ads, analytics, or tracking. Updates are temporarily disabled.
+Lumo is maintained by mthlpbs, based on Lumo by Jatevo Labs. It needs no account and has no ads, analytics, or tracking. Update checks are opt-in.
 
 ## What leaves your PC
 
@@ -18,7 +18,7 @@ To stop lookups, right-click the island or the tray icon and turn off **Synced l
 
 **Add-ons are built in.** Script reader and Clipboard history require no downloads. Switching either off stops that feature. Prayer times, Health, Money, and Japanese readings are not included.
 
-**Updates are temporarily disabled.** Lumo makes no update-feed requests, downloads no updates, and does not run a previously scheduled installer. The update code remains available for future use.
+**Updates, only when requested or enabled.** Settings > About can check Lumo's public GitHub releases without an account. The request sends your IP address and a User-Agent naming Lumo and its version to GitHub. With automatic updates or new-version notifications enabled, it checks twice a day, resting while locked, the display is off, or battery saver is on. Downloads come only from this repository's versioned installers and are checked against GitHub's size and SHA-256. Automatic updates install on the next launch; switching them off cancels that installation. Both switches are off by default. No settings, personal files, or usage history are sent.
 
 Nothing else is sent anywhere. Music, volume, Bluetooth battery levels, the date and calendar, and the system stats are all read from Windows on your PC.
 

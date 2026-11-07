@@ -1475,6 +1475,7 @@ impl SelfTest {
                 sheet: scene != Scene::SettingsUpdate,
                 ready: scene == Scene::UpdateReady,
                 next_start: false,
+                ..crate::state::UpdateView::default()
             },
             _ => crate::state::UpdateView::default(),
         };

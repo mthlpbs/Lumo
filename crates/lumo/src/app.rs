@@ -633,7 +633,8 @@ impl App {
             }
             self.try_add_tray();
             services::power::register_session(self.helper);
-            if lumo_core::update::ENABLED && !crate::autostart::packaged() {
+            self.st.update.managed = crate::autostart::packaged();
+            if lumo_core::update::ENABLED && !self.st.update.managed {
                 self.updater = Some(crate::updates::Updater::start(paths::data_dir().join("update.json"), &mut self.st, crate::updates::unix_now()));
                 self.schedule_update();
                 self.fetch_setup();
@@ -1487,11 +1488,12 @@ impl App {
         if let Some(window) = self.settings_window.as_ref() { window.invalidate(); }
         // Show over games and Hide in full-screen apps follow each other.
         self.st.settings.pair_game_stats(before);
-        if before.update_check != self.st.settings.update_check {
+        if before.update_check != self.st.settings.update_check || before.automatic_updates != self.st.settings.automatic_updates {
             if let Some(u) = self.updater.as_mut() {
                 u.switched(&mut self.st, crate::updates::unix_now());
             }
             self.schedule_update();
+            self.fetch_setup();
         }
         let now = &self.st.settings;
         if before.theme != now.theme {
@@ -1642,7 +1644,7 @@ impl App {
                 }
             }
             OpenDataFolder => shell::open(&paths::data_dir().to_string_lossy()),
-            About => shell::open(&crate::version::notes_url()),
+            About => self.st.open_update(),
             LyricsCredit => shell::open("https://lrclib.net"),
             AppleMusicToken => self.use_apple_music_token(),
             AppleMusicHelp => shell::open(APPLE_MUSIC_HELP_URL),
@@ -1973,6 +1975,7 @@ impl App {
                 if let Some(u) = self.updater.as_mut() {
                     u.fetched(&mut self.st, r);
                 }
+                self.schedule_update();
                 self.request_frame();
             }
             AppEvent::Log(s) => pinfo!("{s}"),
@@ -2778,7 +2781,7 @@ impl App {
         }
         // A new version's notice (or "Updated to") waits for the island to be
         // free. The first frame counts (the window shows at its end).
-        let free = !self.fullscreen_hidden && !self.locked && !self.display_off && !self.expanded && self.lyrics_window.is_none() && self.st.notice.is_none();
+        let free = !self.fullscreen_hidden && !self.locked && !self.display_off && !self.st.power.saver && !self.expanded && self.lyrics_window.is_none() && self.st.notice.is_none();
         if self.updater.as_mut().is_some_and(|u| u.announce(&mut self.st, free)) {
             self.request_frame();
         }
@@ -3288,7 +3291,7 @@ impl App {
     /// Arm the update file's timer for the next read, or stop it while the
     /// checks are off or a read runs.
     fn schedule_update(&mut self) {
-        let secs = self.updater.as_ref().and_then(|u| u.due_in(&self.st, crate::updates::unix_now()));
+        let secs = self.updater.as_ref().filter(|_| !self.locked && !self.display_off && !self.st.power.saver).and_then(|u| u.due_in(&self.st, crate::updates::unix_now()));
         unsafe {
             match secs {
                 // SetTimer waits at most about 24 days; reads are 12 hours apart.
@@ -3309,25 +3312,35 @@ impl App {
         let now = crate::updates::unix_now();
         let away = self.locked || self.display_off || self.st.power.saver;
         match self.updater.as_ref().and_then(|u| u.due_in(&self.st, now)) {
-            Some(0) if away => {}
-            Some(0) => {
-                let job = services::update::check_job(self.sink.clone());
-                let started = self.services.as_ref().is_some_and(|s| s.run_job(job));
-                if let Some(u) = self.updater.as_mut() {
-                    u.begin();
-                    if !started {
-                        u.checked(&mut self.st, Err("the add-on thread isn't running".into()), now);
-                        self.schedule_update();
-                    }
-                }
-            }
+            Some(0) if away => self.schedule_update(),
+            Some(0) => self.check_updates(),
             _ => self.schedule_update(),
         }
+        self.fetch_setup();
+    }
+
+    fn check_updates(&mut self) {
+        if self.st.update.managed { return; }
+        if !self.updater.as_mut().is_some_and(|u| u.begin(&mut self.st)) { return; }
+        let job = services::update::check_job(self.sink.clone());
+        if !self.services.as_ref().is_some_and(|s| s.run_job(job)) {
+            if let Some(u) = self.updater.as_mut() {
+                u.checked(&mut self.st, Err("Couldn't start the update check. Try again.".into()), crate::updates::unix_now());
+            }
+        }
+        self.schedule_update();
+        if let Some(window) = self.settings_window.as_ref() { window.invalidate(); }
     }
 
     /// The offered version's Setup, once per release, on the add-on thread
     /// (after a look at the file, and at start for one already offered).
     fn fetch_setup(&mut self) {
+        self.download_update(false);
+    }
+
+    fn download_update(&mut self, manual: bool) {
+        if self.st.update.managed || (!manual && (self.locked || self.display_off || self.st.power.saver)) { return; }
+        if matches!(self.st.update.status, crate::state::UpdateStatus::Checking) { return; }
         let Some((d, path)) = self.updater.as_mut().and_then(|u| u.want_setup(&mut self.st)) else { return };
         let job = services::update::download_job(self.sink.clone(), d, path);
         if !self.services.as_ref().is_some_and(|s| s.run_job(job)) {
@@ -3335,26 +3348,31 @@ impl App {
                 u.fetched(&mut self.st, Err("the add-on thread isn't running".into()));
             }
         }
+        self.schedule_update();
+        if let Some(window) = self.settings_window.as_ref() { window.invalidate(); }
     }
 
-    /// Install now (the Update sheet): run the downloaded Setup, which
-    /// closes this copy and opens the new version, and quit (saving, as on
-    /// any quit). Without one it opens the release's page.
+    /// About's update action downloads first, then installs and restarts on
+    /// the next explicit click. A failed install stays here with a retry.
     fn update_now(&mut self) {
+        if self.st.update.managed || matches!(self.st.update.status, crate::state::UpdateStatus::Checking | crate::state::UpdateStatus::Downloading | crate::state::UpdateStatus::Installing) { return; }
         if let Some((setup, d)) = self.updater.as_ref().and_then(|u| u.ready_setup(&self.st)) {
+            self.st.update.status = crate::state::UpdateStatus::Installing;
             match services::update::install(&setup, &d) {
                 Ok(()) => {
                     pinfo!("updates: installing {}", d.file_name());
                     self.quit(0);
                     return;
                 }
-                Err(e) => pwarn!("updates: couldn't run the Setup ({e}); opening the release page"),
+                Err(e) => {
+                    if let Some(u) = self.updater.as_mut() { u.installation_failed(&mut self.st, format!("Couldn't install the update: {e}")); }
+                    if let Some(window) = self.settings_window.as_ref() { window.invalidate(); }
+                    return;
+                }
             }
         }
-        if let Some(url) = self.updater.as_ref().and_then(|u| u.download_page(&self.st)) {
-            pinfo!("updates: opening {url}");
-            shell::open(&url);
-        }
+        if let Some(u) = self.updater.as_mut() { u.request_download(&mut self.st); }
+        self.download_update(true);
     }
 
     /// Run a notice's inline action in place (the island stays collapsed),
@@ -3372,7 +3390,7 @@ impl App {
             return;
         }
         if a == InlineAction::WhatsNew && self.st.notice.as_ref().is_some_and(|n| n.icon != Icon::Check) {
-            shell::open(&crate::version::notes_url());
+            self.st.open_update();
         }
         let st = &mut self.st;
         // Already done: the check mark is showing.
@@ -3589,6 +3607,8 @@ impl App {
                     services::ai::run(&mut self.st,a,SendHwnd::new(owner),self.sink.clone());
                 }
                 Command::OpenSettings => {self.open_settings();if self.st.page==PageKind::Ai {if let Some(w)=self.settings_window.as_mut(){w.show_ai();}}},
+                Command::OpenUpdateSettings => { self.open_settings(); if let Some(window) = self.settings_window.as_mut() { window.show_about(); } },
+                Command::CheckUpdates => self.check_updates(),
                 Command::OpenLyricsWindow => self.open_lyrics_window(),
                 Command::CloseLyricsWindow => {
                     if let Some(window) = self.lyrics_window.as_mut() { window.close(self.st.now); self.request_frame(); }
@@ -3677,11 +3697,6 @@ impl App {
                 Command::Play(s) => services::sound::play(s),
                 Command::OpenUrl(u) => shell::open(&u),
                 Command::Update => self.update_now(),
-                Command::InstallOnNextStart => {
-                    if let Some(u) = self.updater.as_mut() {
-                        u.install_on_next_start(&mut self.st);
-                    }
-                }
                 Command::SetAutostart(on) => {
                     self.st.ui.autostart = Some(on);
                     crate::autostart::report(self.sink.clone(), Some(on));
