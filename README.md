@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/music.png" width="880" alt="Lumo's Music page with album artwork, playback controls, a seek bar and synced lyrics">
+  <img src="docs/brand/readme/lumo/music-a65be8ef97c6.png" width="880" alt="Lumo's Music page with album artwork, playback controls, a seek bar and synced lyrics">
 </p>
 
 <p align="center"><sub>Windows 10 &amp; 11 · x64 · Free and open source · No Lumo account needed</sub></p>
@@ -29,7 +29,7 @@
 ## Install
 
 Get the [latest release](https://github.com/mthlpbs/Lumo/releases/latest),
-or download the current **2026.1107.2** build directly:
+or use these pinned **2026.1107.2** downloads:
 
 | Download | Get started |
 | :--- | :--- |
@@ -37,15 +37,48 @@ or download the current **2026.1107.2** build directly:
 | **[Portable ZIP](https://github.com/mthlpbs/Lumo/releases/download/2026.1107.2/Lumo-2026.1107.2-portable.zip)** | Extract the whole ZIP, then run `Lumo/lumo.exe`. |
 | [Checksums](https://github.com/mthlpbs/Lumo/releases/download/2026.1107.2/SHA256SUMS.txt) | Compare the download's SHA-256 with `SHA256SUMS.txt`. |
 
-**First time here?** Click the island to open it. Scroll over its header or
-swipe horizontally with two fingers on your touchpad to switch pages. The
-gear opens Settings; the pin keeps the island open.
+To build the current source, use the [local packaging script](docs/packaging.md).
+It creates a standalone EXE, portable ZIP and setup installer in `dist/<version>/`.
+
+WinGet and Scoop distribution is prepared but not yet published. Maintainers can
+follow the [one-time setup and automatic release updates](docs/package-managers.md).
+
+**First time here?** Click the island to open it. Scroll vertically over its
+header to switch pages. Swipe horizontally in either direction over the closed
+island to expand it into Search; swipe again to close it. The gear opens
+Settings; the pin keeps the island open.
 
 Over a maximized app, hover at the top edge to reveal the island, then click
 to open it. To open by hover over normal windows, choose **Settings > General >
 Open island with > Hover**.
 
 ## Features
+
+The main pages are **Music**, **Focus**, **Shelf**, **Tasks**, **System** and
+**Add-ons**. **Ask AI**, **Script reader** and **Clipboard history** appear
+when enabled. Open **Settings** from the gear in the header.
+
+### Search apps and Windows settings
+
+Swipe left or right over the closed island to expand it into Search. Swipe
+again anywhere over Search to collapse it. Open pages keep their normal
+horizontal navigation. The list shows frequently opened results first, with
+native Windows icons. When nothing matches, the island shrinks around a clear
+web-search card with your selected engine and query preview.
+
+**Settings > Search** controls applications, Windows Settings and optional web
+search. Right-click results for native Shell commands, including administrator
+actions where supported. Lumo commands and preference pages are excluded.
+
+Optional web search opens Bing, Google, DuckDuckGo or Brave inside the island,
+using the installed Edge WebView2 Runtime. It starts only when you choose a
+web search. Its rounded browser includes an address bar with loading progress,
+back/forward, refresh/stop and an option to continue in your default browser.
+No browser engine is bundled. [Search controls and scope](docs/search.md).
+
+<p align="center">
+  <img src="docs/brand/readme/lumo/search-ff4a6d099aad.png" width="680" alt="Search inside the Pill island with native Windows app icons and a compact result list">
+</p>
 
 ### Music that stays within reach
 
@@ -59,13 +92,16 @@ Korean and Chinese pronunciation can appear beneath the original text.
 
 ### Ask AI without leaving your desktop
 
-Open **Ask AI**, or hold <kbd>Ctrl</kbd> while hovering over the closed
+Turn on **AI companion** in **Add-ons**, then open **Ask AI**, or hold <kbd>Ctrl</kbd> while hovering over the closed
 island's trailing edge. Chat in the island, expand it, or open a full chat
 window. Bring your own provider, key and models; add images, PDFs or a screen
 snip when your model supports them.
 
+AI is off by default. Switching it off also hides its Settings section;
+your provider settings, saved key, models and chats stay for when you turn it back on.
+
 <p align="center">
-  <img src="docs/brand/readme/lumo/ai.png" width="880" alt="Ask AI inside Lumo, with a compact conversation, history, model selection and an attachment button">
+  <img src="docs/brand/readme/lumo/ai-b2b9678808b0.png" width="880" alt="Ask AI inside Lumo, with a compact conversation, history, model selection and an attachment button">
 </p>
 
 Replies support Markdown, tables and copyable code blocks. History is
@@ -80,7 +116,7 @@ its QR code to send files from your phone over Wi-Fi. Lumo asks before
 accepting an incoming transfer. Pair a phone once to send from other networks.
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/phone.png" width="880" alt="The Shelf showing an incoming phone transfer with separate Decline and Accept actions">
+  <img src="docs/brand/readme/lumo/phone-219381f90f1e.png" width="880" alt="The Shelf showing an incoming phone transfer with separate Decline and Accept actions">
 </p>
 
 Works through your phone's browser. [Paired phone drop](docs/paired-drop.md)
@@ -93,7 +129,7 @@ into one place. Open a module for its history and details. Optional game
 readouts show FPS, GPU and CPU information over borderless full-screen games.
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/system.png" width="880" alt="Lumo's System page with CPU gauges, usage history, per-core activity and a process list">
+  <img src="docs/brand/readme/lumo/system-c0ec9b9543f4.png" width="880" alt="Lumo's System page with CPU gauges, usage history, per-core activity and a process list">
 </p>
 
 Counters are active while their page or an enabled readout needs them.
@@ -105,12 +141,11 @@ Counters are active while their page or an enabled readout needs them.
 | :--- | :--- |
 | **Focus** | A Pomodoro timer, with its countdown on the closed island. |
 | **Tasks** | A small local to-do list. |
-| **Today** | The date and calendar. |
 | **Script reader** | A teleprompter beneath your webcam, enabled from Add-ons. |
 | **Clipboard history** | Copied text in memory, with password-manager privacy markers respected. |
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/focus.png" width="880" alt="Lumo's Focus page showing a Pomodoro session, timer controls and focus history">
+  <img src="docs/brand/readme/lumo/focus-922e0d5da670.png" width="880" alt="Lumo's Focus page showing a Pomodoro session, timer controls and focus history">
 </p>
 
 Script reader and Clipboard history are built in. Switch them on from the
@@ -123,7 +158,7 @@ space around it. Both themes keep the same pages and controls, with brief
 volume, charging and headset notices.
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/pill.png" width="880" alt="The Music page in Lumo's Pill theme, floating below the top edge with rounded corners">
+  <img src="docs/brand/readme/lumo/pill-5c0bee0a71c2.png" width="880" alt="The Music page in Lumo's Pill theme, floating below the top edge with rounded corners">
 </p>
 
 Change themes under **Settings > Appearance**. The rest of the app stays
@@ -250,7 +285,10 @@ brief peeks if you do not want a persistent readout.
 
 The tray menu contains **Start with Windows**, **Settings** and **Exit**.
 Right-clicking the island has no action. Settings changes save immediately,
-and horizontal touchpad swipes also switch Settings categories.
+and horizontal touchpad swipes on the closed island open Search. A second
+swipe over Search closes it. Open pages and Settings keep their horizontal
+page and category navigation. **Settings > Search > Open with horizontal
+scroll** controls only the closed-island opening gesture.
 
 </details>
 
@@ -291,6 +329,10 @@ Use Rust stable with the Windows MSVC toolchain:
 cargo test --workspace --locked
 cargo build -p lumo --release --locked
 ```
+
+To update the product version and build the standalone EXE, portable ZIP and
+setup installer together, run `./tools/package.ps1`. Outputs go to
+`dist/<version>/`. [Packaging options and checks](docs/packaging.md).
 
 The executable is `target/release/lumo.exe`. For a GNU cross-build with a
 MinGW toolchain, `cargo wcheck` checks the Windows target and `cargo wbuild`

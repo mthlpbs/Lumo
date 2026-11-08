@@ -1,17 +1,17 @@
-//! Optional features. Nothing runs for Script reader until it is enabled.
+//! Optional features. Disabled add-ons stay asleep.
 
 use crate::commands::Command;
 use crate::gfx::TextStyle;
 use crate::state::AppState;
 use crate::ui::{wid, Ui};
-use lumo_core::addons::{CLIPBOARD_HISTORY, SCRIPT_READER};
+use lumo_core::addons::ALL;
 use lumo_core::geom::{palette, Color, Rect};
 
 const HEIGHT: f32 = 64.0;
 const GAP: f32 = 24.0;
 const INSET: f32 = 8.0;
 
-pub fn height(_st: &AppState) -> f32 { HEIGHT }
+pub fn height(_st: &AppState) -> f32 { HEIGHT * 2.0 + GAP }
 
 fn toggle(st: &mut AppState, id: &str) {
     let on = st.settings.addon_on(id);
@@ -21,11 +21,10 @@ fn toggle(st: &mut AppState, id: &str) {
 
 pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) {
     let width = (area.w - GAP) / 2.0;
-    // Two equal columns use the island's width instead of adding another
-    // tall row. Each whole feature is a click target, including its blurb.
-    for (i, addon) in [SCRIPT_READER, CLIPBOARD_HISTORY].iter().enumerate() {
-        let cell = Rect::new(area.x + i as f32 * (width + GAP), area.y, width, HEIGHT);
-        let id = if addon.id == SCRIPT_READER.id { wid("addons.script") } else { wid("addons.clipboard") };
+    // Two equal columns; each whole feature is a click target.
+    for (i, addon) in ALL.iter().enumerate() {
+        let cell = Rect::new(area.x + (i % 2) as f32 * (width + GAP), area.y + (i / 2) as f32 * (HEIGHT + GAP), width, HEIGHT);
+        let id = wid(match addon.id { "script" => "addons.script", "clipboard" => "addons.clipboard", _ => "addons.ai" });
         let response = ui.button(id, cell);
         if response.clicked { toggle(st, addon.id); }
         if response.hovered || response.pressed {
@@ -53,5 +52,26 @@ mod tests {
         assert!(matches!(st.cmds.last(), Some(Command::SaveSettings)));
         toggle(&mut st, "script");
         assert!(!st.settings.addon_on("script"));
+    }
+
+    #[test]
+    fn ai_switch_keeps_configuration_across_disable_and_reload() {
+        let mut st = AppState::new(Settings::default(), Store::default());
+        st.settings.ai.default_model = "saved/model".into();
+        st.settings.ai.models_url = "https://example.org/models".into();
+        st.settings.ai.reasoning_efforts.insert("saved/model".into(), "high".into());
+        let config = st.settings.ai.clone();
+        assert!(!st.ai_on());
+        toggle(&mut st, "ai");
+        assert!(st.ai_on());
+        toggle(&mut st, "ai");
+        let saved = serde_json::to_string(&st.settings).unwrap();
+        let settings: Settings = serde_json::from_str(&saved).unwrap();
+        let mut reloaded = AppState::new(settings.sanitized(), Store::default());
+        assert!(!reloaded.ai_on());
+        assert_eq!(reloaded.settings.ai, config);
+        toggle(&mut reloaded, "ai");
+        assert!(reloaded.ai_on());
+        assert_eq!(reloaded.settings.ai, config);
     }
 }

@@ -87,8 +87,18 @@ pub const CLIPBOARD_HISTORY: Addon = Addon {
     files: &[],
 };
 
+/// Optional AI companion. Disabling it hides its surfaces without removing
+/// provider settings, credentials, cached models or saved conversations.
+pub const AI_COMPANION: Addon = Addon {
+    id: "ai",
+    title: "AI companion",
+    blurb: "Ask your AI provider without leaving your desktop.",
+    tag: "",
+    files: &[],
+};
+
 /// Every add-on, in the order the Add-ons page lists them.
-pub const ALL: [&Addon; 2] = [&SCRIPT_READER, &CLIPBOARD_HISTORY];
+pub const ALL: [&Addon; 3] = [&SCRIPT_READER, &CLIPBOARD_HISTORY, &AI_COMPANION];
 
 /// Where an add-on stands, as the Add-ons page shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

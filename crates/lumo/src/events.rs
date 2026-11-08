@@ -79,6 +79,8 @@ pub enum LyricsResult {
 }
 
 pub enum AppEvent {
+    Search(crate::search::Event),
+    SearchIcons(crate::search::IconEvent),
     Ai(crate::ai::Event),
     /// The current media session changed (None = nothing playing / no session).
     Media(Option<MediaSession>),

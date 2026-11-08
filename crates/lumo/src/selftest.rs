@@ -51,11 +51,9 @@ const SETTLE_TIMEOUT: f64 = 3.0;
 const SOFT_GPU_SETTLE_TIMEOUT: f64 = 8.0;
 /// Seconds to wait for a simulated tab click to switch the page.
 const CLICK_TIMEOUT: f64 = 1.5;
-/// Stop visiting scenes after this many seconds. The 85 scenes take about
-/// theme with Japanese lyrics is the slowest run, about 53 s (it reached the
-/// old 50 s at scene 80 once the Today scenes came in). The CI and Store test
-/// steps wait 120 s for the whole run (this plus the writers' 3.5 s, and 40 s
-/// more for the animation runs, stays under it), the Wine runner 180 s.
+/// Stop visiting scenes after this many seconds. The CI and Store test steps
+/// wait 120 s for the whole run; this leaves room for PNG writers and optional
+/// animation recordings. The Wine runner allows 180 s.
 const SCENE_DEADLINE: f64 = 65.0;
 /// Allow PNG writers to finish after the last scene.
 const WRITE_DEADLINE: f64 = SCENE_DEADLINE + 3.5;
@@ -557,9 +555,9 @@ enum Scene {
     ShelfPhoneAsk,
     /// Files coming in from the iPhone.
     ShelfPhoneReceive,
-    /// Click the first header tab on the Today page; expect the Music page.
+    /// Click the first header tab on the Clipboard page; expect the Music page.
     TabClick,
-    /// Click the gear in the header on Today; expect Settings.
+    /// Click the gear in the header on Music; expect Settings.
     GearClick,
     /// System page on a desktop (no battery): Memory and its apps.
     SystemMemory,
@@ -661,7 +659,7 @@ const SAMPLE_SCRIPT: &str = "Hi everyone, this one takes two minutes. Today I'll
 Drop any file on the island and it waits on the Shelf. Press the phone button, scan the code, and the file is on your phone. \
 No cable, no account, nothing to install on the phone.\n\nThat's it. Thanks for watching.";
 
-const SCENES: [Scene; 57] = [
+const SCENES: [Scene; 56] = [
     Scene::IdleClock,
     Scene::IdleEyes,
     Scene::Media,
@@ -681,7 +679,6 @@ const SCENES: [Scene; 57] = [
     Scene::ShelfEmpty,
     Scene::Page(PageKind::Tasks),
     Scene::Page(PageKind::Clipboard),
-    Scene::Page(PageKind::Today),
     Scene::TabClick,
     Scene::GearClick,
     Scene::Page(PageKind::System),
@@ -1437,7 +1434,7 @@ impl SelfTest {
     /// before each capture so clocks (track position, countdown) are pinned.
     fn apply(&self, app: &mut App, scene: Scene) {
         let now = clock::mono();
-        if matches!(scene,Scene::Page(PageKind::Ai)){let sample=crate::ai_window::sample_state_for_selftest();app.st.ai=sample.ai;app.st.settings.ai=sample.settings.ai;}
+        if matches!(scene,Scene::Page(PageKind::Ai)){let sample=crate::ai_window::sample_state_for_selftest();app.st.ai=sample.ai;app.st.settings.ai=sample.settings.ai;app.st.settings.set_addon("ai",true);}
         let st = &mut app.st;
         st.settings.idle_style = match scene {
             Scene::IdleEyes => IdleStyle::Eyes,

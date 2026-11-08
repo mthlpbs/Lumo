@@ -54,6 +54,15 @@ pub enum MusicPick {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    OpenSearch,
+    RefreshSearchApps,
+    ExecuteSearch(lumo_core::search::Target),
+    SearchIcons(Vec<(String, lumo_core::search::Target)>),
+    CloseSearchWeb,
+    SearchWeb(crate::search_web::Action),
+    NavigateSearchWeb(String),
+    ToggleSearchKeepOpen,
+    ToggleSearchResume,
     Ai(crate::ai::Action),
     OpenAiWindow,
     AiHeight(f32),

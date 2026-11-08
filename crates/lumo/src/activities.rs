@@ -267,7 +267,7 @@ const BLINK_PERIOD: f64 = 5.5;
 const BLINK_LEN: f64 = 0.14;
 
 pub fn draw(ui: &mut Ui, st: &mut AppState, m: &Mode, body: Rect) {
-    if ui.input.ctrl && !matches!(m,Mode::Aside|Mode::Expanded(_)|Mode::Hud(_)|Mode::Notice) && ui.hovered(body) {
+    if st.ai_on() && ui.input.ctrl && !matches!(m,Mode::Aside|Mode::Expanded(_)|Mode::Hud(_)|Mode::Notice) && ui.hovered(body) {
         let width=body.w.min(118.0);let r=Rect::new(body.right()-width,body.y,width,body.h);
         if ui.hovered(r){
             // A shortcut occupies only the trailing part; the rest opens the current page.

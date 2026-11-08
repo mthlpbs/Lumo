@@ -32,6 +32,7 @@ pub const STORE_VERSION: u32 = 1;
 #[serde(default)]
 pub struct Store {
     pub version: u32,
+    pub search_usage: BTreeMap<String, crate::search::Usage>,
     pub tasks: TaskList,
     /// Drinks logged by the retired Water page. Kept
     /// exactly as it was, so an update never throws a person's history away.
@@ -49,6 +50,7 @@ impl Default for Store {
     fn default() -> Self {
         Self {
             version: STORE_VERSION,
+            search_usage: BTreeMap::new(),
             tasks: TaskList::default(),
             water: serde_json::Value::Null,
             shelf: Shelf::default(),

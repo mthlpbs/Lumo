@@ -243,6 +243,7 @@ impl State {
     }
 }
 pub fn ensure(st: &mut AppState) {
+    if !st.ai_on() { return; }
     if !st.ai.loaded && !st.ai.loading {
         st.ai.initialize();
         st.cmd(Command::Ai(Action::Load));
@@ -592,6 +593,18 @@ pub fn clear_ready(st: &mut AppState) {
 mod tests {
     use super::*;
     #[test]
+    fn disabled_ai_does_not_load_history_or_fetch_models() {
+        let mut st = AppState::new(Default::default(), Default::default());
+        st.settings.ai.models_url = "https://example.org/models".into();
+        ensure(&mut st);
+        assert!(st.cmds.is_empty());
+        assert!(!st.ai.loading);
+        st.settings.set_addon("ai", true);
+        ensure(&mut st);
+        assert!(st.cmds.contains(&Command::Ai(Action::Load)));
+        assert!(st.cmds.contains(&Command::Ai(Action::EnsureModels)));
+    }
+    #[test]
     fn image_paste_targets_the_prompt_and_preserves_text_paste_elsewhere() {
         let mut st = state();
         st.ai.draft = "Keep this draft".into();
@@ -658,6 +671,7 @@ mod tests {
     }
     fn state() -> AppState {
         let mut st = AppState::new(Default::default(), Default::default());
+        st.settings.set_addon("ai", true);
         st.ai.loaded = true;
         st.ai.current = Chat {
             id: 17,

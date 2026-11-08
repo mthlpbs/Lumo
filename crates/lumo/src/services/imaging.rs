@@ -100,6 +100,39 @@ fn wic_factory() -> WinResult<IWICImagingFactory> {
     unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
 }
 
+/// Resolve Search icons through Windows' system image list, as Explorer does.
+/// WIC decodes HICON's alpha AND mask, avoiding the black/opaque bitmap
+/// backgrounds and lost colours produced by some GetImage providers.
+pub fn search_icons(items:Vec<(String,lumo_core::search::Target)>,cancel:&std::sync::atomic::AtomicBool)->Vec<(String,Option<Image>)>{
+    let _com=ComInit::new(COINIT_APARTMENTTHREADED);
+    let Ok(factory)=wic_factory()else{return items.into_iter().map(|(id,_)|(id,None)).collect();};
+    items.into_iter().take(6).take_while(|_|!cancel.load(std::sync::atomic::Ordering::Relaxed)).map(|(id,target)|{
+        let image=unsafe{(||->WinResult<Image>{
+            use windows::{core::PCWSTR,Win32::{Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES,UI::{Controls::{IImageList,ILD_TRANSPARENT},Shell::{SHGetFileInfoW,SHGetImageList,SHFILEINFOW,SHGFI_PIDL,SHGFI_SYSICONINDEX,SHIL_EXTRALARGE,SHCreateItemFromIDList},WindowsAndMessaging::{DestroyIcon,HICON}}}};
+            let pidl:*const windows::Win32::UI::Shell::Common::ITEMIDLIST=match &target {lumo_core::search::Target::App(app)=>app.id_list().as_ptr().cast(),_=>return Err(E_INVALIDARG.into())};
+            let mut info=SHFILEINFOW::default();
+            let got=SHGetFileInfoW(PCWSTR(pidl.cast()),FILE_FLAGS_AND_ATTRIBUTES(0),Some(&mut info),std::mem::size_of::<SHFILEINFOW>() as u32,SHGFI_PIDL|SHGFI_SYSICONINDEX);
+            let source=if got!=0 {
+                let list:IImageList=SHGetImageList(SHIL_EXTRALARGE as i32)?;
+                let icon=list.GetIcon(info.iIcon,ILD_TRANSPARENT.0)?;
+                struct OwnedIcon(HICON);impl Drop for OwnedIcon{fn drop(&mut self){unsafe{let _=DestroyIcon(self.0);}}}let icon=OwnedIcon(icon);
+                factory.CreateBitmapFromHICON(icon.0)?.cast::<IWICBitmapSource>()?
+            }else{
+                let item:IShellItemImageFactory=SHCreateItemFromIDList(pidl)?;
+                let hbmp=OwnedBitmap(item.GetImage(SIZE{cx:48,cy:48},SIIGBF_ICONONLY|SIIGBF_BIGGERSIZEOK)?);
+                factory.CreateBitmapFromHBITMAP(hbmp.0,HPALETTE::default(),WICBitmapUsePremultipliedAlpha)?.cast::<IWICBitmapSource>()?
+            };
+            let size=source_size(&source)?;let target=fit_within(size.0,size.1,48);
+            let pixels=to_pbgra(&factory,&source,size,target)?;
+            // Keep the native transparent canvas and aspect ratio. Never
+            // force all-zero alpha to opaque or crop the actual app artwork.
+            Ok(ImageData::new(48,48,center_on_canvas(&pixels,target.0,target.1,48,48)))
+        })().ok()};(id,image)
+    }).collect()
+}
+#[cfg(test)]
+pub fn application_icons(items:Vec<(String,lumo_core::search::Application)>,cancel:&std::sync::atomic::AtomicBool)->Vec<(String,Option<Image>)>{search_icons(items.into_iter().map(|(id,app)|(id,lumo_core::search::Target::App(app))).collect(),cancel)}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }

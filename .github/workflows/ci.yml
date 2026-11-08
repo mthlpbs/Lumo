@@ -152,6 +152,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: lumo-screens
+          retention-days: 7
           path: |
             smoke-out/
             installer-out/
@@ -161,6 +162,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: lumo-setup
+          retention-days: 7
           path: dist/Lumo-Setup-*.exe
           if-no-files-found: error
           compression-level: 0
@@ -169,6 +171,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: lumo-portable
+          retention-days: 7
           path: |
             dist/Lumo-*-portable.zip
             dist/SHA256SUMS.txt
@@ -205,3 +208,16 @@ jobs:
           cd dist
           sha256sum --check SHA256SUMS.txt
           gh release upload "$RELEASE_TAG" --repo "$GH_REPO" --clobber -- Lumo-Setup-*.exe Lumo-*-portable.zip SHA256SUMS.txt
+
+  package-managers:
+    # A release event fires before the build assets exist. Wait for upload;
+    # calling the workflow directly also works with GITHUB_TOKEN-created releases.
+    needs: upload
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    uses: ./.github/workflows/package-managers.yml
+    with:
+      release_tag: ${{ github.event.release.tag_name }}
+      publish: true
+    secrets:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}

@@ -11,7 +11,8 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
-    files = [args.exe, root / "LICENSE", root / "THIRD-PARTY-NOTICES.txt"]
+    files = [args.exe, root / "LICENSE", root / "THIRD-PARTY-NOTICES.txt",
+             root / "crates/lumo/vendor/webview2/WebView2Loader.dll"]
     for file in files:
         if not file.is_file():
             parser.error(f"Missing portable file: {file}")

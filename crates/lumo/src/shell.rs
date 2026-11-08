@@ -9,10 +9,10 @@
 //! only two kinds are handed to the shell: existing absolute local or UNC
 //! file-system paths, and `http`/`https` URLs. Anything else (`ms-settings:`,
 //! `javascript:`, `shell:`, relative names that would be searched on `PATH`)
-//! is logged and refused. Two fixed exceptions: Settings > Apps > Startup
-//! ([`open_startup_settings`]), a constant URI, and Lumo Recorder's
-//! own action links ([`open_recorder_link`]): its fixed scheme and one
-//! percent-encoded value, as `lumo_core::recorder` builds them.
+//! is logged and refused. Separate entry points accept fixed Windows Settings
+//! destinations, validated Applications-folder items, and Lumo Recorder's
+//! own action links: its fixed scheme and one percent-encoded value, as
+//! `lumo_core::recorder` builds them. Search text is never a shell command.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use windows::core::{w, HSTRING};
@@ -80,6 +80,23 @@ pub fn open_startup_settings() {
         if (r.0 as isize) <= 32 {
             crate::pwarn!("open failed ({}): ms-settings:startupapps", r.0 as isize);
         }
+    });
+}
+
+/// Only fixed Windows Settings destinations, never a URI built from a query.
+pub fn open_windows_setting(setting:lumo_core::search::WindowsSetting) {
+    run("settings",move||{let uri=HSTRING::from(setting.uri());let result=unsafe{ShellExecuteW(None,w!("open"),&uri,None,None,SW_SHOWNORMAL)};if (result.0 as isize)<=32{crate::pwarn!("Windows Settings could not open ({})",result.0 as isize);}});
+}
+/// Open a catalog item through its shell ID, preserving Store-app activation
+/// and desktop shortcut arguments. The search query is never shell input.
+pub fn open_application(application:&lumo_core::search::Application) {
+    let application=application.clone();
+    run("application",move||unsafe{
+        use windows::Win32::UI::Shell::{SHELLEXECUTEINFOW,ShellExecuteExW,SEE_MASK_IDLIST,SEE_MASK_NOASYNC};
+        // This short-lived STA worker has no message loop: wait for Shell
+        // activation to finish before releasing the catalog item and thread.
+        let mut info=SHELLEXECUTEINFOW{cbSize:std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,fMask:SEE_MASK_IDLIST|SEE_MASK_NOASYNC,nShow:SW_SHOWNORMAL.0,lpIDList:application.id_list().as_ptr().cast_mut().cast(),..Default::default()};
+        if let Err(error)=ShellExecuteExW(&mut info){crate::pwarn!("application could not open: {error}");}
     });
 }
 

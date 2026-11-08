@@ -346,6 +346,7 @@ pub struct ForegroundApp {
 }
 
 pub struct AppState {
+    pub search: crate::search::State,
     pub ai: crate::ai::State,
     pub foreground_app: Option<ForegroundApp>,
     pub settings: Settings,
@@ -431,7 +432,8 @@ impl AppState {
         self.phone_holds_island() || self.script_holds_island()
     }
 
-    pub fn new(settings: Settings, store: Store) -> Self {
+    pub fn new(settings: Settings, mut store: Store) -> Self {
+        store.search_usage.retain(|id,_|!id.starts_with("file:"));
         let pomodoro = Pomodoro::new(settings.pomodoro.clone());
         let page = PageKind::from_key(if settings.remember_page && !store.last_page.is_empty() {
             &store.last_page
@@ -439,6 +441,7 @@ impl AppState {
             &settings.start_page
         });
         let mut st = Self {
+            search: crate::search::State::default(),
             ai: crate::ai::State::default(),
             settings,
             foreground_app: None,
@@ -484,9 +487,9 @@ impl AppState {
             let on = st.settings.addon_on(a.id);
             st.addons.insert(a.id, if !on { AddonStatus::Off } else if a.downloads() { AddonStatus::Checking } else { AddonStatus::Ready });
         }
-        // Last open on the Script or Clipboard page, since switched off: open
+        // Last open on an optional page, since switched off: open
         // where a new island does.
-        if (st.page == PageKind::Script && !st.script_on()) || (st.page == PageKind::Clipboard && !st.settings.clipboard_history) {
+        if (st.page == PageKind::Script && !st.script_on()) || (st.page == PageKind::Clipboard && !st.settings.clipboard_history) || (st.page == PageKind::Ai && !st.ai_on()) {
             st.page = PageKind::ALL[0];
         }
         st
@@ -500,6 +503,10 @@ impl AppState {
     /// The Script reader add-on is on: the Script tab shows.
     pub fn script_on(&self) -> bool {
         self.addon(lumo_core::addons::SCRIPT_READER.id) == AddonStatus::Ready
+    }
+
+    pub fn ai_on(&self) -> bool {
+        self.settings.addon_on(lumo_core::addons::AI_COMPANION.id)
     }
 
     pub fn cmd(&mut self, c: Command) {

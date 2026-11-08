@@ -39,7 +39,6 @@ Point at the island or click it to open it, then scroll over the header to switc
 - Shelf: drop files on the island to keep them handy, then open them or drag them back out
 - Tasks: a tiny to-do list
 - Clipboard: recent copied text, kept in memory only
-- Today: the date and calendar
 - Add-ons: switches for Script reader and Clipboard history; no downloads required
 
 Native and light: no web view, no account, and no CPU use while nothing moves. Your data stays on your PC.

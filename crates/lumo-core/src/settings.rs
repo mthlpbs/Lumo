@@ -59,6 +59,7 @@ pub enum MaximizedRule {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub search: crate::search::Config,
     pub ai: crate::ai::Config,
     /// Missing in files written before versioning (treated as 0).
     #[serde(default = "version_zero")]
@@ -114,7 +115,7 @@ pub struct Settings {
     pub hud_bluetooth: bool,
     pub clipboard_history: bool,
     pub sounds: bool,
-    /// Page shown first when expanding ("media", "focus", "shelf", "tasks", "clipboard", "today").
+    /// Page shown first when expanding ("media", "focus", "shelf", "tasks", "clipboard").
     pub start_page: String,
     /// Remember the last page instead of `start_page`.
     pub remember_page: bool,
@@ -147,6 +148,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            search: crate::search::Config::default(),
             settings_version: SETTINGS_VERSION,
             ai: crate::ai::Config::default(),
             theme: Theme::Classic,
@@ -253,6 +255,10 @@ impl Settings {
 
     /// Clamp values a user may have hand-edited into nonsense.
     pub fn sanitized(mut self) -> Self {
+        // Retired calendar pages open Music when restoring older preferences.
+        if matches!(self.start_page.trim().to_ascii_lowercase().as_str(), "today" | "calendar" | "calendars") {
+            self.start_page = "media".into();
+        }
         // Retired add-ons must never restart from an older settings file.
         self.addons.retain(|id, _| !matches!(id.as_str(), "sholat" | "ja" | "health" | "money" | "oyenza"));
         // The former master switch now controls the closed island only.

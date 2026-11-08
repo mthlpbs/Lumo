@@ -26,6 +26,7 @@ impl Context {
 
     pub fn page(&self, st: &AppState, now: f64) -> PageKind {
         let available = |page| match page {
+            PageKind::Ai => st.ai_on(),
             PageKind::Settings => false,
             PageKind::Script => st.script_on(),
             PageKind::Clipboard => st.settings.clipboard_history,
@@ -82,6 +83,7 @@ mod tests {
 
     fn music() -> AppState {
         let mut st = AppState::new(Settings::default(), Store::default());
+        st.settings.set_addon("ai", true);
         st.now = 100.0;
         st.page = PageKind::Ai;
         st.media = Some(MediaSession {
@@ -133,9 +135,9 @@ mod tests {
         st.ai.full_open = true;
         assert_eq!(context.page(&st, 110.0), PageKind::Media);
         st.ai.full_open = false;
-        st.page = PageKind::Today;
+        st.page = PageKind::Tasks;
         context.interacted(st.page, 100.0);
-        assert_eq!(context.page(&st, 110.0), PageKind::Today);
+        assert_eq!(context.page(&st, 110.0), PageKind::Tasks);
         assert_eq!(context.page(&st, 191.0), PageKind::Media);
         context.selected();
         assert_eq!(context.page(&st, 110.0), PageKind::Media, "switching tabs ends the previous continuation");
@@ -157,12 +159,14 @@ mod tests {
         assert_eq!(context.page(&st, 100.0), PageKind::System);
         st.game.active = false;
         st.pomodoro.reset();
-        for page in [PageKind::Clipboard, PageKind::Script, PageKind::Settings] {
+        st.settings.set_addon("ai", false);
+        st.ai.draft = "Saved draft".into();
+        for page in [PageKind::Ai, PageKind::Clipboard, PageKind::Script, PageKind::Settings] {
             st.page = page;
             assert_eq!(context.page(&st, 100.0), PageKind::Media);
         }
-        st.page = PageKind::Today;
-        assert_eq!(context.page(&st, 100.0), PageKind::Today);
+        st.page = PageKind::Tasks;
+        assert_eq!(context.page(&st, 100.0), PageKind::Tasks);
     }
 
     #[test]

@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: "mthlpbs.Lumo"
+PackageVersion: "2026.1107.2"
+InstallerLocale: "en-US"
+InstallerType: "nullsoft"
+Scope: "user"
+MinimumOSVersion: "10.0.0.0"
+UpgradeBehavior: "install"
+InstallerSwitches:
+  Silent: "/S"
+  SilentWithProgress: "/S"
+AppsAndFeaturesEntries:
+  - DisplayName: "Lumo"
+    Publisher: "mthlpbs"
+    DisplayVersion: "2026.1107.2"
+    ProductCode: "Lumo"
+Installers:
+  - Architecture: "x64"
+    InstallerUrl: "https://github.com/mthlpbs/Lumo/releases/download/2026.1107.2/Lumo-Setup-2026.1107.2.exe"
+    InstallerSha256: "9BA43274B339F6A585712D91A6E1B7C58A61D2DE9445991C0CDF518E35D5E8EF"
+ManifestType: "installer"
+ManifestVersion: "1.6.0"

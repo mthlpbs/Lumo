@@ -12,7 +12,7 @@ Target amd64-unicode
 SetCompressor /SOLID lzma
 
 !define APPNAME "Lumo"
-!define VERSION "2026.1107.2"
+!define VERSION "2026.1109.1"
 !define PUBLISHER "mthlpbs"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lumo"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
@@ -31,7 +31,7 @@ InstallDir "$LOCALAPPDATA\Programs\Lumo"
 InstallDirRegKey HKCU "Software\Lumo" "InstallDir"
 BrandingText "${APPNAME} ${VERSION}"
 
-VIProductVersion "2026.1107.2.0"
+VIProductVersion "2026.1109.1.0"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileDescription" "Lumo installer"
@@ -98,6 +98,7 @@ Section "Lumo" SecMain
   !insertmacro StopLumo
   SetOutPath "$INSTDIR"
   File "/oname=lumo.exe" "${EXE}"
+  File "..\crates\lumo\vendor\webview2\WebView2Loader.dll"
   ; The licenses of what lumo.exe is built from (mecab-ipadic asks for its notice in every copy).
   File "..\THIRD-PARTY-NOTICES.txt"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -153,6 +154,7 @@ FunctionEnd
 Section "Uninstall"
   !insertmacro StopLumo
   Delete "$INSTDIR\lumo.exe"
+  Delete "$INSTDIR\WebView2Loader.dll"
   Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"

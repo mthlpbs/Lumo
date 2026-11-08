@@ -20,13 +20,30 @@ To stop lookups, right-click the island or the tray icon and turn off **Synced l
 
 **Updates, only when requested or enabled.** Settings > About can check Lumo's public GitHub releases without an account. The request sends your IP address and a User-Agent naming Lumo and its version to GitHub. With automatic updates or new-version notifications enabled, it checks twice a day, resting while locked, the display is off, or battery saver is on. Downloads come only from this repository's versioned installers and are checked against GitHub's size and SHA-256. Automatic updates install on the next launch; switching them off cancels that installation. Both switches are off by default. No settings, personal files, or usage history are sent.
 
-Nothing else is sent anywhere. Music, volume, Bluetooth battery levels, the date and calendar, and the system stats are all read from Windows on your PC.
+Nothing else is sent anywhere. Music, volume, Bluetooth battery levels, the date, and the system stats are all read from Windows on your PC.
 
 **Show over games reads Windows' frame log, only while it's on and a game is in front.** To count frames per second, Lumo reads Windows' own log of the frames apps hand to the screen (event tracing, as PresentMon and Xbox Game Bar do) and keeps only the full-screen game's: when each frame came and which window it was for, the last two seconds of them, in memory. Nothing is loaded into the game, nothing is saved and nothing is sent anywhere. The one-time OK adds your Windows account to Windows' Performance Log Users group, which lets programs you run read Windows' performance logs; remove your account from that group to undo it (see the README).
 
 **The Glass theme reads the screen behind the island, only while it's on.** To bend what's under the island, Lumo copies the part of your screen behind its window (the island and the space it opens into) whenever something there changes. It doesn't copy while the island is hidden, while a full-screen app is in front, or while the PC is locked. The copy stays in your PC's memory and on its graphics card, and each new copy replaces the last. It is never saved, never shown anywhere else and never sent anywhere. While Glass is on, Windows leaves Lumo out of screenshots, screen recordings and screen sharing. Switch to Classic or Oyen to stop both.
 
 ## What stays on your PC
+
+**Local Search.** Windows app names and opaque launch identifiers, plus a
+bounded set of native app icons, are cached in memory. Search covers registered
+apps and Windows Settings; file/folder search and custom locations are removed.
+Query text is discarded after Search closes and is not logged or saved.
+Frequently opened app/setting identifiers, counts and last-use times are saved
+in data.json. Remove them individually from a result's context menu or clear
+them in Settings > Search. Retired file-result counts are filtered from the
+loaded history, and old file-search configuration is ignored.
+
+**Optional web search.** Off by default. Choosing the explicit web-search action
+sends the query to your selected Bing, Google, DuckDuckGo or Brave provider.
+Typing in local Search does not send it. Pages use the installed Edge WebView2
+Runtime inside Lumo and follow the provider's privacy policy. WebView2 keeps
+cookies and browser data in its separate SearchWeb profile under Lumo's local
+cache. Closing Search closes its browser controller; the profile remains on
+disk. The packages include Microsoft's small loader, not a bundled browser.
 
 | What | Where |
 |---|---|

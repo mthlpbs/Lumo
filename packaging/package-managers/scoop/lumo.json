@@ -1,0 +1,25 @@
+{
+    "version": "2026.1107.2",
+    "description": "A desktop island for music, focus and quick tools on Windows.",
+    "homepage": "https://github.com/mthlpbs/Lumo",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/mthlpbs/Lumo/releases/download/2026.1107.2/Lumo-2026.1107.2-portable.zip",
+            "hash": "3b96225dacd8941acef60793ba8c7d8d9f5c24564bf388d86748920d185facac"
+        }
+    },
+    "extract_dir": "Lumo",
+    "bin": "lumo.exe",
+    "shortcuts": [
+        [
+            "lumo.exe",
+            "Lumo"
+        ]
+    ],
+    "pre_install": "if (Get-Process lumo -ErrorAction SilentlyContinue) { throw 'Close Lumo before installing or updating it with Scoop.' }",
+    "notes": [
+        "Settings stay in %APPDATA%\\Lumo.",
+        "Use scoop update lumo for this installation; the built-in Setup updater installs a separate per-user copy."
+    ]
+}

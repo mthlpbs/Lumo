@@ -1896,6 +1896,21 @@ impl<'a> Canvas<'a> {
         unsafe{if layout.HitTestTextPosition(utf16,false,&mut x,&mut y,&mut metrics).is_ok(){(x,y,metrics.height.max(st.size))}else{(0.0,0.0,st.size*1.3)}}
     }
 
+    /// Pointer and selection geometry share the editor's DirectWrite layout,
+    /// including Unicode clusters and proportional glyph advances.
+    pub fn text_position(&mut self,s:&str,st:&TextStyle,x:f32)->usize{
+        let Ok(layout)=self.g.layout(s,&st.top(),10000.0,10000.0)else{return 0;};
+        let(mut trailing,mut inside)=(windows::Win32::Foundation::BOOL(0),windows::Win32::Foundation::BOOL(0));let mut hit=DWRITE_HIT_TEST_METRICS::default();
+        unsafe{if layout.HitTestPoint(x,st.size/2.0,&mut trailing,&mut inside,&mut hit).is_err(){return 0;}}
+        let end=hit.textPosition+if trailing.as_bool(){hit.length}else{0};let mut units=0;
+        s.chars().take_while(|c|{units+=c.len_utf16()as u32;units<=end}).count()
+    }
+    pub fn text_selection(&mut self,s:&str,st:&TextStyle,start:usize,end:usize)->Vec<Rect>{
+        let Ok(layout)=self.g.layout(s,&st.top(),10000.0,10000.0)else{return vec![];};
+        let from=s.chars().take(start).map(|c|c.len_utf16()as u32).sum::<u32>();let len=s.chars().skip(start).take(end.saturating_sub(start)).map(|c|c.len_utf16()as u32).sum::<u32>();
+        if len==0{return vec![];}unsafe{let mut count=0;let _=layout.HitTestTextRange(from,len,0.0,0.0,None,&mut count);if count==0||count>256{return vec![];}let mut hits=vec![DWRITE_HIT_TEST_METRICS::default();count as usize];if layout.HitTestTextRange(from,len,0.0,0.0,Some(&mut hits),&mut count).is_err(){return vec![];}hits.into_iter().take(count as usize).map(|m|Rect::new(m.left,m.top,m.width,m.height)).collect()}
+    }
+
     /// Draw an image cover-fitted into `r` with rounded corners.
     pub fn image(&mut self, img: &Image, r: Rect, radius: f32) {
         if img.width == 0 || img.height == 0 || r.w <= 0.0 || r.h <= 0.0 {
@@ -1919,6 +1934,21 @@ impl<'a> Canvas<'a> {
             brush.SetOpacity(self.alpha);
             let rr = D2D1_ROUNDED_RECT { rect: rectf(r), radiusX: radius, radiusY: radius };
             self.g.rt.FillRoundedRectangle(&rr, &brush);
+        }
+    }
+
+    /// The GPU pixels live in a transparent owned window above the island's
+    /// input window. Leave an aperture for the native WebView2 child below
+    /// it. The software path keeps one alpha step for parent hit testing.
+    pub fn web_aperture(&mut self,r:Rect,radius:f32){
+        let color=if self.on_gpu(){CLEAR}else{D2D1_COLOR_F{r:0.0,g:0.0,b:0.0,a:1.0/255.0}};
+        unsafe{self.g.rt.PushAxisAlignedClip(&rectf(r),D2D1_ANTIALIAS_MODE_ALIASED);self.g.rt.Clear(Some(&color));self.g.rt.PopAxisAlignedClip();}
+        // Restore the four outside corners after Clear (which ignores the
+        // geometric layer mask). The rounded native host clips pixels/input
+        // underneath; these antialiased curves finish the visual surface.
+        let q=radius.min(r.w/2.0).min(r.h/2.0);
+        for (x,y,sx,sy) in [(r.x,r.y,1.0,1.0),(r.right(),r.y,-1.0,1.0),(r.right(),r.bottom(),-1.0,-1.0),(r.x,r.bottom(),1.0,-1.0)] {
+            self.path(&[Seg::MoveTo(x,y),Seg::LineTo(x+sx*q,y),Seg::ArcTo(q,q,0.0,false,sx*sy<0.0,x,y+sy*q),Seg::Close],Some(Color::black(1.0)),None);
         }
     }
 

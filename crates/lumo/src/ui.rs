@@ -47,6 +47,12 @@ pub enum KeyInput {
     End,
     /// Ctrl+V (paste from clipboard; the app supplies the text as chars).
     SelectAll,
+    SelectLeft,
+    SelectRight,
+    SelectHome,
+    SelectEnd,
+    Copy,
+    Cut,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +96,13 @@ pub struct Input {
     /// Caret position (chars) inside the focused field.
     pub caret: usize,
     pub selection_all:bool,
+    pub selection_anchor:Option<usize>,
+    pub selection_owner:Option<WidgetId>,
+    pub text_scroll:f32,
+    pub shift:bool,
+    pub double_click:bool,
+    pub text_word_drag:bool,
+    pub clipboard_write:Option<String>,
     pub high_surrogate:Option<u16>,
 }
 
@@ -99,6 +112,7 @@ impl Input {
         self.clicked = None;
         self.released = None;
         self.just_pressed = false;
+        self.double_click=false;
         self.wheel = 0.0;
         self.keys.clear();
     }
@@ -376,12 +390,98 @@ impl<'a, 'g> Ui<'a, 'g> {
     pub fn text_input_row(&mut self, id: WidgetId, r: Rect, buf: &mut String, placeholder: &str, max_chars: usize, accent: Color, icon: Option<Icon>) -> TextInputResp {
         self.text_input_styled(id, r, buf, placeholder, max_chars, InputLook::Row { accent, icon })
     }
+    pub fn text_input_capsule(&mut self, id: WidgetId, r: Rect, buf: &mut String, placeholder: &str, max_chars: usize, accent: Color) -> TextInputResp {
+        self.search_editor(id, r, buf, placeholder, max_chars, accent, false)
+    }
+    /// Browser address field, with space reserved for its trailing reload control.
+    pub fn address_input(&mut self, id: WidgetId, r: Rect, buf: &mut String, accent: Color) -> TextInputResp {
+        self.search_editor(id, r, buf, "Search or enter an address", 2048, accent, true)
+    }
 
     pub fn text_secret(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize)->TextInputResp {
         self.text_input_styled(id,r,buf,placeholder,max_chars,InputLook::Secret)
     }
     pub fn text_area(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize)->TextInputResp {
         self.text_input_styled(id,r,buf,placeholder,max_chars,InputLook::Area)
+    }
+
+    fn search_editor(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize,accent:Color,address:bool)->TextInputResp{
+        // Keep the reload hit target outside the editable region.
+        self.interact(id,Rect::new(r.x,r.y,r.w-if address{36.0}else{0.0},r.h),CursorKind::Text);
+        let inner=Rect::new(r.x+if address{36.0}else{43.0},r.y,(r.w-if address{76.0}else{58.0}).max(1.0),r.h);
+        let style=TextStyle::new(crate::gfx::ts::BODY);
+        let press=self.input.just_pressed&&self.input.pressed_id==Some(id);
+        let release=self.input.released.filter(|(owner,_)|*owner==id);
+        let mut out=TextInputResp::default();
+        if self.input.selection_owner!=Some(id)&&self.input.focused==Some(id){self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.text_scroll=0.0;}
+        if press{
+            if self.input.focused!=Some(id){self.input.focused=Some(id);self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.text_scroll=0.0;self.wants_focus=Some(true);}
+            let at=self.input.press_pos.or(self.input.mouse).unwrap_or(inner.center());
+            let caret=self.c.text_position(buf,&style,at.x-inner.x+self.input.text_scroll);
+            let old=self.input.caret.min(buf.chars().count());
+            self.input.selection_anchor=Some(if self.input.shift{self.input.selection_anchor.unwrap_or(old)}else{caret});
+            self.input.caret=caret;self.input.selection_all=false;self.input.text_word_drag=self.input.double_click;
+            if self.input.double_click{
+                let chars:Vec<_>=buf.chars().collect();let mut start=caret.min(chars.len().saturating_sub(1));let mut end=start;
+                if let Some(c)=chars.get(start){let word=c.is_alphanumeric()||*c=='_';while start>0&&(chars[start-1].is_alphanumeric()||chars[start-1]=='_')==word{start-=1;}while end<chars.len()&&(chars[end].is_alphanumeric()||chars[end]=='_')==word{end+=1;}}
+                self.input.selection_anchor=Some(start);self.input.caret=end;
+            }
+            self.repaint=true;
+        }
+        let focused=self.input.focused==Some(id);out.focused=focused;
+        if focused{
+            if self.input.selection_all{self.input.selection_anchor=Some(0);self.input.caret=buf.chars().count();}
+            if !self.input.text_word_drag && ((self.input.pressed_id==Some(id)&&self.input.down&&!press)||release.is_some()){
+                if let Some(at)=release.map(|(_,p)|p).or(self.input.mouse){self.input.caret=self.c.text_position(buf,&style,at.x-inner.x+self.input.text_scroll);self.input.selection_all=false;self.repaint=true;}
+            }
+            let mut chars:Vec<char>=buf.chars().collect();let mut caret=self.input.caret.min(chars.len());let mut anchor=self.input.selection_anchor.map(|p|p.min(chars.len()));
+            for key in std::mem::take(&mut self.input.keys){
+                let selected=anchor.filter(|a|*a!=caret).map(|a|a.min(caret)..a.max(caret));
+                match key{
+                    KeyInput::Char(c) if !c.is_control()=>{
+                        if let Some(range)=selected{caret=range.start;chars.drain(range);}
+                        anchor=None;if chars.len()<max_chars{chars.insert(caret,c);caret+=1;out.changed=true;}
+                    },
+                    KeyInput::Backspace|KeyInput::Delete|KeyInput::Cut=>{
+                        if key==KeyInput::Cut{if let Some(range)=selected.clone(){self.input.clipboard_write=Some(chars[range].iter().collect());}}
+                        if let Some(range)=selected{caret=range.start;chars.drain(range);anchor=None;out.changed=true;}
+                        else if key==KeyInput::Backspace&&caret>0{caret-=1;chars.remove(caret);anchor=None;out.changed=true;}
+                        else if key==KeyInput::Delete&&caret<chars.len(){chars.remove(caret);anchor=None;out.changed=true;}
+                    },
+                    KeyInput::Copy=>{if let Some(range)=selected{self.input.clipboard_write=Some(chars[range].iter().collect());}},
+                    KeyInput::SelectAll=>{anchor=Some(0);caret=chars.len();},
+                    KeyInput::Left|KeyInput::Right|KeyInput::Home|KeyInput::End|KeyInput::SelectLeft|KeyInput::SelectRight|KeyInput::SelectHome|KeyInput::SelectEnd=>{
+                        let extend=matches!(key,KeyInput::SelectLeft|KeyInput::SelectRight|KeyInput::SelectHome|KeyInput::SelectEnd);
+                        let next=match key{KeyInput::Left if selected.is_some()=>selected.as_ref().unwrap().start,KeyInput::Right if selected.is_some()=>selected.as_ref().unwrap().end,KeyInput::Left|KeyInput::SelectLeft=>caret.saturating_sub(1),KeyInput::Right|KeyInput::SelectRight=>(caret+1).min(chars.len()),KeyInput::Home|KeyInput::SelectHome=>0,_=>chars.len()};
+                        if extend{anchor=Some(anchor.unwrap_or(caret));}else{anchor=None;}caret=next;
+                    },
+                    KeyInput::Enter=>out.submitted=true,
+                    KeyInput::Escape=>out.cancelled=true,
+                    _=>{},
+                }
+            }
+            *buf=chars.into_iter().collect();self.input.caret=caret;self.input.selection_anchor=anchor;
+            self.input.selection_all=anchor==Some(0)&&caret==buf.chars().count()&&caret>0;
+            if out.changed||out.submitted||out.cancelled{self.repaint=true;}
+        }
+        let radius=if address{12.0}else{r.h/2.0};
+        self.c.fill_rrect(r,radius,Color::white(if focused{0.10}else{0.055}));
+        if focused||address{self.c.stroke_rrect(r.inset(0.5,0.5),radius,if focused{accent.mul_alpha(0.65)}else{Color::white(0.09)},1.0);}
+        self.c.icon(if address{Icon::Globe}else{Icon::Search},Rect::new(r.x+if address{12.0}else{15.0},r.center().y-8.0,16.0,16.0),palette::TEXT_DIM);
+        let compact=address&&!focused;let location=if compact{crate::search_web::display_address(buf)}else{String::new()};let display=if compact{&location}else{buf};
+        let (cx,_,height)=self.c.text_caret(display,&style,10000.0,if focused{self.input.caret}else{0});let y=inner.center().y-height/2.0;
+        let width=self.c.measure(display,&style,10000.0).0;
+        if focused{
+            if cx<self.input.text_scroll{self.input.text_scroll=cx;}else if cx>self.input.text_scroll+inner.w-3.0{self.input.text_scroll=cx-inner.w+3.0;}
+            self.input.text_scroll=self.input.text_scroll.clamp(0.0,(width-inner.w+3.0).max(0.0));
+        }
+        let scroll=if focused{self.input.text_scroll}else{0.0};self.c.clip(inner);
+        if focused{if let Some(a)=self.input.selection_anchor{for hit in self.c.text_selection(display,&style,a.min(self.input.caret),a.max(self.input.caret)){self.c.fill_rect(Rect::new(inner.x+hit.x-scroll,y+hit.y,hit.w,hit.h),accent.mul_alpha(0.35));}}}
+        let text_style=if compact{style.center()}else{style};
+        if display.is_empty(){self.c.text(placeholder,inner,&style.color(palette::TEXT_FAINT));}
+        else{self.c.text(display,Rect::new(inner.x-scroll,inner.y,if focused{width.max(inner.w)+1.0}else{inner.w},inner.h),&text_style);}
+        if focused{self.c.line(Point::new(inner.x+cx-scroll+0.5,y+2.0),Point::new(inner.x+cx-scroll+0.5,y+height-2.0),palette::TEXT,1.5);}
+        self.c.unclip();out
     }
 
     fn text_input_styled(&mut self, id: WidgetId, r: Rect, buf: &mut String, placeholder: &str, max_chars: usize, look: InputLook) -> TextInputResp {

@@ -1,4 +1,4 @@
-//! Calendar helpers. The Windows layer supplies the local wall-clock time
+//! Date and time helpers. The Windows layer supplies the local wall-clock time
 //! (`GetLocalTime`); everything here is pure arithmetic.
 
 use serde::{Deserialize, Serialize};
@@ -119,20 +119,6 @@ pub fn fmt_countdown(secs: f64) -> String {
     format!("{:02}:{:02}", s / 60, s % 60)
 }
 
-/// Month grid with weeks starting on Monday: 6 rows × 7 columns of day
-/// numbers (`None` outside the month).
-pub fn month_grid(year: i32, month: u8) -> [[Option<u8>; 7]; 6] {
-    let mut grid = [[None; 7]; 6];
-    let first_wd = weekday_from_days(days_from_civil(year, month, 1)); // 0 = Sun
-    let offset = (first_wd as usize + 6) % 7; // Monday-first column
-    let n = days_in_month(year, month) as usize;
-    for day in 1..=n {
-        let cell = offset + day - 1;
-        grid[cell / 7][cell % 7] = Some(day as u8);
-    }
-    grid
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,13 +161,4 @@ mod tests {
         assert_eq!(fmt_countdown(0.0), "00:00");
     }
 
-    #[test]
-    fn grid_layout() {
-        // October 2026 starts on a Thursday → Monday-first column 3.
-        let g = month_grid(2026, 10);
-        assert_eq!(g[0][3], Some(1));
-        assert_eq!(g[0][2], None);
-        let last = g.iter().flatten().filter_map(|d| *d).max().unwrap();
-        assert_eq!(last, 31);
-    }
 }

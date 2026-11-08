@@ -27,7 +27,7 @@ const CARD: Color = Color::rgba(0.155, 0.155, 0.165, 1.0);
 const GREEN: Color = Color::rgba(0.16, 0.77, 0.36, 1.0);
 const WM_MOUSELEAVE_: u32 = 0x02a3;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Section {
     #[default]
     General,
@@ -37,14 +37,18 @@ pub(crate) enum Section {
     Ai,
     Focus,
     Notifications,
+    Search,
     About,
 }
 
 impl Section {
-    const ALL: [Self; 8] = [Self::General, Self::Display, Self::Appearance, Self::Music, Self::Ai, Self::Focus, Self::Notifications, Self::About];
-    fn title(self) -> &'static str {
+    pub(crate) const ALL: [Self; 9] = [Self::General, Self::Display, Self::Appearance, Self::Music, Self::Ai, Self::Focus, Self::Notifications, Self::Search, Self::About];
+    pub(crate) fn key(self)->&'static str {match self{Self::General=>"general",Self::Display=>"display",Self::Appearance=>"appearance",Self::Music=>"music",Self::Ai=>"ai",Self::Focus=>"focus",Self::Notifications=>"notifications",Self::Search=>"search",Self::About=>"about"}}
+    pub(crate) fn visible(self, ai_on: bool) -> bool { self != Self::Ai || ai_on }
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Ai => "AI companion",
+            Self::Search => "Search",
             Self::General => "General", Self::Display => "Display", Self::Appearance => "Appearance",
             Self::Music => "Music & lyrics", Self::Focus => "Focus", Self::Notifications => "Notifications", Self::About => "About",
         }
@@ -52,6 +56,7 @@ impl Section {
     fn description(self) -> &'static str {
         match self {
             Self::Ai => "Your provider, models and local chat history.",
+            Self::Search => "Find apps, Lumo actions and settings in one place.",
             Self::General => "Make Lumo fit your everyday routine.",
             Self::Display => "Choose where the island appears and when it stays visible.",
             Self::Appearance => "Give your island a look that feels like you.",
@@ -64,6 +69,7 @@ impl Section {
     fn icon(self) -> Icon {
         match self {
             Self::Ai => Icon::Sparkles,
+            Self::Search => Icon::Search,
             Self::General => Icon::Gear, Self::Display => Icon::App, Self::Appearance => Icon::Moon,
             Self::Music => Icon::Music, Self::Focus => Icon::Timer, Self::Notifications => Icon::Volume, Self::About => Icon::Circle,
         }
@@ -71,6 +77,7 @@ impl Section {
     fn color(self) -> Color {
         match self {
             Self::Ai => Color::rgba(0.3,0.55,0.9,1.0),
+            Self::Search => Color::rgba(0.42,0.62,0.92,1.0),
             Self::General | Self::About => Color::rgba(0.52, 0.53, 0.56, 1.0),
             Self::Display => Color::rgba(0.39, 0.35, 0.9, 1.0), Self::Appearance => Color::rgba(0.62, 0.38, 0.82, 1.0),
             Self::Music => Color::rgba(0.94, 0.22, 0.4, 1.0), Self::Focus => Color::rgba(0.96, 0.49, 0.18, 1.0),
@@ -85,6 +92,7 @@ pub struct SettingsWindow {
     input: Input,
     hits: Vec<Hit>,
     section: Section,
+    ai_on: bool,
     keyboard_focus: Option<u64>,
     raised_for_open: bool,
     horizontal_pager: lumo_core::navigation::WheelPager,
@@ -134,11 +142,12 @@ impl SettingsWindow {
                 Ok(gfx) => gfx,
                 Err(e) => { let _ = DestroyWindow(hwnd); return Err(e); }
             };
-            Ok(Self { hwnd, gfx, input: Input::default(), hits: Vec::new(), section: Section::General, keyboard_focus: None, raised_for_open: false, horizontal_pager: Default::default(), scroll: 0.0, max_scroll: 0.0, scroll_section: Section::General })
+            Ok(Self { hwnd, gfx, input: Input::default(), hits: Vec::new(), section: Section::General, ai_on: false, keyboard_focus: None, raised_for_open: false, horizontal_pager: Default::default(), scroll: 0.0, max_scroll: 0.0, scroll_section: Section::General })
         }
     }
 
     pub fn show_ai(&mut self) {self.section=Section::Ai;self.show();}
+    pub fn show_section(&mut self,key:&str){self.section=Section::ALL.into_iter().find(|s|s.key()==key).unwrap_or(Section::General);self.scroll=0.0;self.show();}
     pub fn show_about(&mut self) { self.section = Section::About; self.scroll = 0.0; self.show(); }
 
     pub fn show(&mut self) {
@@ -196,6 +205,12 @@ impl SettingsWindow {
 
     pub fn dismiss_model_picker(&mut self){self.input.focused=None;self.keyboard_focus=None;self.invalidate();}
     pub fn draw(&mut self, st: &mut AppState) -> Result<()> {
+        self.ai_on = st.ai_on();
+        if !self.section.visible(self.ai_on) {
+            self.section = Section::General;
+            self.input = Input::default();
+            self.keyboard_focus = None;
+        }
         let mut bounds = RECT::default();
         unsafe { GetWindowRect(self.hwnd, &mut bounds)?; }
         let width = bounds.right - bounds.left;
@@ -213,8 +228,8 @@ impl SettingsWindow {
         ui.c.stroke_rrect(area.inset(1.0, 1.0), 16.0, Color::white(0.10), 1.0);
         ui.c.text("Lumo", Rect::new(24.0, 16.0, SIDE - 40.0, 24.0), &TextStyle::headline());
         ui.c.text("Settings", Rect::new(24.0, 40.0, SIDE - 40.0, 18.0), &TextStyle::footnote().color(palette::TEXT_DIM));
-        for (i, section) in Section::ALL.iter().copied().enumerate() {
-            let y = if section == Section::About { area.h - 62.0 } else { 82.0 + i as f32 * 46.0 };
+        for (row_index, (i, section)) in Section::ALL.iter().copied().enumerate().filter(|(_, s)| s.visible(self.ai_on)).enumerate() {
+            let y = if section == Section::About { area.h - 62.0 } else { 82.0 + row_index as f32 * 46.0 };
             let row = Rect::new(12.0, y, SIDE - 24.0, 40.0);
             let response = ui.button(wid_n("preferences.section", i as u64), row);
             if response.clicked { self.section = section; st.update.sheet = false; }
@@ -264,7 +279,7 @@ impl SettingsWindow {
         if let Some(hit) = self.keyboard_focus.and_then(|id| ui.hits.iter().find(|hit| hit.id == id)) {
             ui.c.stroke_rrect(hit.rect.inset(2.0, 2.0), 7.0, Color::white(0.7), 1.0);
         }
-        unsafe {let _=KillTimer(self.hwnd,71);if let Some(t)=crate::pages::ai::next_wake(st){SetTimer(self.hwnd,71,((t-st.now)*1000.0).ceil().max(1.0) as u32,None);}}
+        unsafe {let _=KillTimer(self.hwnd,71);if self.section==Section::Ai {if let Some(t)=crate::pages::ai::next_wake(st){SetTimer(self.hwnd,71,((t-st.now)*1000.0).ceil().max(1.0) as u32,None);}}}
         let repaint=ui.repaint_requested();
         self.input.end_frame();
         self.gfx.end()?;
@@ -304,10 +319,11 @@ impl SettingsWindow {
                 WM_MOUSEHWHEEL => {
                     let delta = (wp.0 >> 16) as u16 as i16;
                     if let Some(forward) = self.horizontal_pager.feed(delta, crate::clock::mono()) {
-                        let current = Section::ALL.iter().position(|s| *s == self.section).unwrap_or(0);
-                        let next = if forward { (current + 1).min(Section::ALL.len() - 1) }
+                        let sections: Vec<_> = Section::ALL.into_iter().filter(|s| s.visible(self.ai_on)).collect();
+                        let current = sections.iter().position(|s| *s == self.section).unwrap_or(0);
+                        let next = if forward { (current + 1).min(sections.len() - 1) }
                             else { current.saturating_sub(1) };
-                        self.section = Section::ALL[next];
+                        self.section = sections[next];
                         self.keyboard_focus = None;
                     }
                 }
@@ -429,6 +445,26 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
     let before = st.settings.clone();
     let mut f = Form::new(area);
     match section {
+        Section::Search => {
+            f.group(ui,"Open Search",1);
+            if f.toggle(ui,"preferences.search-gesture","Open with horizontal scroll","Swipe the closed island to open Search",Some(st.settings.search.horizontal_scroll)){st.settings.search.horizontal_scroll=!st.settings.search.horizontal_scroll;}
+            f.end();
+            if ui.pill(wid("preferences.open-search"),Rect::new(f.x+4.0,f.y,148.0,32.0),"Open Search",Some(Icon::Search),PillStyle::Primary(st.accent)).clicked {st.cmd(Command::OpenSearch);}
+            f.y+=48.0;
+            f.group(ui,"Search sources",2);
+            if f.toggle(ui,"preferences.search-apps","Applications","Registered desktop and Microsoft Store apps",Some(st.settings.search.apps)){st.settings.search.apps=!st.settings.search.apps;}
+            if f.toggle(ui,"preferences.search-settings","Windows settings","Display, Wi-Fi, sound, privacy and other system pages",Some(st.settings.search.settings)){st.settings.search.settings=!st.settings.search.settings;}
+            f.end();
+            if st.settings.search.apps && ui.pill(wid("preferences.refresh-search"),Rect::new(f.x+4.0,f.y,166.0,30.0),"Refresh applications",None,PillStyle::Utility).clicked {st.cmd(Command::RefreshSearchApps);}
+            f.y+=44.0;
+            f.group(ui,"Web search",if st.settings.search.web{2}else{1});
+            if f.toggle(ui,"preferences.search-web","Search the web when nothing matches","Open results inside Lumo using installed Edge WebView2",Some(st.settings.search.web)){st.settings.search.web=!st.settings.search.web;}
+            if st.settings.search.web {let engines=lumo_core::search::Engine::ALL;let labels=engines.map(|e|e.name());if let Some(i)=f.choices(ui,"preferences.search-engine","Search engine",&labels,engines.iter().position(|e|*e==st.settings.search.engine).unwrap_or(0)){st.settings.search.engine=engines[i];}}
+            f.end();
+            if ui.pill(wid("preferences.search-clear-history"),Rect::new(f.x+4.0,f.y,194.0,30.0),"Clear frequent results",None,PillStyle::Utility).clicked {st.store.search_usage.clear();st.save();crate::search::refresh(st);}
+            f.y+=46.0;
+            ui.c.text("Frequent results reflect what you open, not a saved query history. Web search sends a query only when you choose it. The browser closes with Search.",Rect::new(f.x+4.0,f.y,f.w-8.0,60.0),&TextStyle::footnote().color(palette::TEXT_DIM).wrap().top());f.y+=70.0;
+        }
         Section::Ai => { f.y=crate::pages::ai::settings(ui,st,area); }
         Section::General => {
             f.group(ui, "Startup", 2);
@@ -603,6 +639,40 @@ mod tests {
     use super::*;
     use lumo_core::{settings::Settings, store::Store};
 
+    #[test] #[ignore="requires a Windows desktop"]
+    fn search_preferences_configure_gestures_sources_and_explicit_actions(){
+        let mut st=AppState::new(Settings::default(),Store::default());let mut window=SettingsWindow::new(HWND::default()).unwrap();window.section=Section::Search;window.draw(&mut st).unwrap();
+        assert!(st.cmds.is_empty(),"opening preferences does not start discovery");
+        for id in ["preferences.search-gesture","preferences.search-apps","preferences.search-web","preferences.search-settings"]{window.input.clicked=Some((wid(id),MouseButton::Left));window.draw(&mut st).unwrap();}
+        assert!(!st.settings.search.horizontal_scroll&&!st.settings.search.apps&&st.settings.search.web&&!st.settings.search.settings);
+        window.input.clicked=Some((wid("preferences.open-search"),MouseButton::Left));window.draw(&mut st).unwrap();assert!(st.cmds.contains(&Command::OpenSearch));
+        st.settings.search=Default::default();window.draw(&mut st).unwrap();window.input.clicked=Some((wid("preferences.refresh-search"),MouseButton::Left));window.draw(&mut st).unwrap();assert!(st.cmds.contains(&Command::RefreshSearchApps));
+        if let Some(dir)=std::env::var_os("LUMO_SEARCH_QA"){let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();window.scroll=0.0;let(w,h,p,_,_)=window.selftest_capture(&mut st,Section::Search).unwrap();crate::png::save_rgba(dir.join("search-preferences.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+    }
+
+    #[test]
+    #[ignore = "requires a Windows desktop"]
+    fn disabled_ai_is_hidden_from_settings_and_swipe_navigation() {
+        let mut st = AppState::new(Settings::default(), Store::default());
+        let mut window = SettingsWindow::new(HWND::default()).unwrap();
+        window.section = Section::Music;
+        window.draw(&mut st).unwrap();
+        assert!(!window.hits.iter().any(|h| h.id == wid_n("preferences.section", 4)));
+        window.message(WM_MOUSEHWHEEL, WPARAM(120usize << 16), LPARAM(0));
+        assert!(window.section == Section::Focus);
+        st.settings.set_addon("ai", true);
+        st.ai.loaded = true;
+        window.show_ai();
+        window.draw(&mut st).unwrap();
+        assert!(window.section == Section::Ai);
+        assert!(window.hits.iter().any(|h| h.id == wid_n("preferences.section", 4)));
+        st.settings.set_addon("ai", false);
+        window.draw(&mut st).unwrap();
+        assert!(window.section == Section::General);
+        assert!(!window.hits.iter().any(|h| h.id == wid_n("preferences.section", 4)));
+        assert!(!window.hits.iter().any(|h| h.id == wid("ai.key")));
+    }
+
     #[test]
     #[ignore = "requires a Windows desktop"]
     fn about_update_controls_and_states() {
@@ -702,6 +772,7 @@ mod tests {
     #[ignore = "requires a Windows desktop"]
     fn settings_window_renders_and_reopens() {
         let mut st = AppState::new(Settings::default(), Store::default());
+        st.settings.set_addon("ai", true);
         st.ui.autostart = Some(false);
         st.ai.loaded=true;
         let mut window = SettingsWindow::new(HWND::default()).unwrap();

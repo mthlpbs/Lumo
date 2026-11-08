@@ -11,3 +11,4 @@
 
 # Local validation toolchain
 /.tools/
+__pycache__/

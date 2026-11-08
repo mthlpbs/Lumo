@@ -59,6 +59,12 @@ mod state;
 #[cfg(windows)]
 mod settings_window;
 #[cfg(windows)]
+mod search;
+#[cfg(windows)]
+mod search_web;
+#[cfg(windows)]
+mod search_menu;
+#[cfg(windows)]
 mod tray;
 #[cfg(windows)]
 mod ui;

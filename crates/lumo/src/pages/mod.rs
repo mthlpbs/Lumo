@@ -21,7 +21,6 @@ pub mod settings;
 pub mod shelf;
 pub mod system;
 pub mod tasks;
-pub mod today;
 
 use crate::commands::Command;
 use crate::gfx::{TextStyle, Weight};
@@ -55,7 +54,6 @@ pub enum PageKind {
     Tasks,
     /// Only while Clipboard history is on (an add-on since 0.2.7, [`tabs`]).
     Clipboard,
-    Today,
     System,
     /// The teleprompter: a script read under the webcam.
     Script,
@@ -66,13 +64,12 @@ pub enum PageKind {
 }
 
 impl PageKind {
-    pub const ALL: [PageKind; 11] = [
+    pub const ALL: [PageKind; 10] = [
         PageKind::Media,
         PageKind::Focus,
         PageKind::Shelf,
         PageKind::Tasks,
         PageKind::Clipboard,
-        PageKind::Today,
         PageKind::System,
         PageKind::Script,
         PageKind::Ai,
@@ -88,7 +85,6 @@ impl PageKind {
             PageKind::Shelf => "shelf",
             PageKind::Tasks => "tasks",
             PageKind::Clipboard => "clipboard",
-            PageKind::Today => "today",
             PageKind::System => "system",
             PageKind::Script => "script",
             PageKind::Addons => "addons",
@@ -109,7 +105,6 @@ impl PageKind {
             PageKind::Shelf => "Shelf",
             PageKind::Tasks => "Tasks",
             PageKind::Clipboard => "Clipboard",
-            PageKind::Today => "Today",
             PageKind::System => "System",
             PageKind::Script => "Script",
             PageKind::Addons => "Add-ons",
@@ -125,7 +120,6 @@ impl PageKind {
             PageKind::Shelf => Icon::Tray,
             PageKind::Tasks => Icon::ListChecks,
             PageKind::Clipboard => Icon::Clipboard,
-            PageKind::Today => Icon::Calendar,
             PageKind::System => Icon::Gauge,
             PageKind::Script => Icon::Script,
             PageKind::Addons => Icon::Plus,
@@ -153,6 +147,7 @@ pub fn tabs(st: &AppState) -> Vec<PageKind> {
     PageKind::ALL
         .into_iter()
         .filter(|p| match p {
+            PageKind::Ai => st.ai_on(),
             PageKind::Script => st.script_on(),
             PageKind::Clipboard => st.settings.clipboard_history,
             p => p.tabbed(),
@@ -176,7 +171,6 @@ pub fn content_height(p: PageKind, st: &AppState) -> f32 {
         PageKind::Shelf => shelf::height(st),
         PageKind::Tasks => tasks::height(st),
         PageKind::Clipboard => clipboard::height(st),
-        PageKind::Today => today::height(st),
         PageKind::System => system::height(st),
         PageKind::Script => script::height(st),
         PageKind::Addons => addons::height(st),
@@ -219,6 +213,7 @@ const TABS_END: f32 = 1.0;
 /// one fades in; the old page is drawn without input (it can't be clicked).
 /// `body` is the island at its final size, so nothing reflows while it opens.
 pub fn draw_expanded(ui: &mut Ui, st: &mut AppState, body: Rect, page: PageKind, transition: Option<PageTransition>) {
+    if st.search.view.is_some() { crate::search::draw(ui, st, body); return; }
     if crate::pill::expanded::draw(ui, st, body, page, transition) {
         return;
     }
@@ -295,7 +290,6 @@ pub(crate) fn draw_page(ui: &mut Ui, st: &mut AppState, area: Rect, page: PageKi
         PageKind::Shelf => shelf::draw(ui, st, area),
         PageKind::Tasks => tasks::draw(ui, st, area),
         PageKind::Clipboard => clipboard::draw(ui, st, area),
-        PageKind::Today => today::draw(ui, st, area),
         PageKind::System => system::draw(ui, st, area),
         PageKind::Script => script::draw(ui, st, area),
         PageKind::Addons => addons::draw(ui, st, area),
@@ -420,8 +414,7 @@ pub(crate) fn draw_header(ui: &mut Ui, st: &mut AppState, r: Rect, page: PageKin
     }
 
     // Right side: the clock ends on the content column's right edge (where
-    // every page's trailing control ends). Today already shows the date
-    // large, so the header leaves it out there.
+    // every page's trailing control ends).
     let right = r.right() - 6.0;
     let time = fmt_clock(&st.local, st.settings.use_24h);
     let time_st = TextStyle::body().weight(Weight::Semibold).tabular().right();
@@ -429,8 +422,6 @@ pub(crate) fn draw_header(ui: &mut Ui, st: &mut AppState, r: Rect, page: PageKin
     ui.c.text(&time, Rect::new(right - tw - 4.0, r.y, tw + 4.0, r.h), &time_st);
     let mut left = right - tw;
 
-    let shows_date = |p: PageKind| if p == PageKind::Today { 0.0 } else { 1.0 };
-    let date_k = lerp(shows_date(from), shows_date(page), e);
     let date = fmt_date_short(&st.local);
     let date_st = TextStyle::footnote().color(palette::TEXT_DIM).right();
     let dw = ui.c.measure(&date, &date_st, 200.0).0;
@@ -439,10 +430,10 @@ pub(crate) fn draw_header(ui: &mut Ui, st: &mut AppState, r: Rect, page: PageKin
     // gives up its optional space before any action disappears.
     let has_visible_app = st.foreground_app.as_ref().is_some_and(|app| app.maximized_here);
     let tools_w = PIN + GEAR + GEAR_GAP + PIN_GAP + 8.0 + if has_visible_app { PIN + GEAR_GAP } else { 0.0 };
-    if date_k > 0.0 && date_left > tabs_end + tools_w {
+    if date_left > tabs_end + tools_w {
         let date_r = Rect::new(date_left - 2.0, r.y, dw + 2.0, r.h);
-        ui.c.with_alpha(date_k, |c| c.text(&date, date_r, &date_st));
-        left = lerp(left, date_left, date_k);
+        ui.c.text(&date, date_r, &date_st);
+        left = date_left;
     }
 
     let gear_r = Rect::new(snap(left - PIN_GAP - GEAR, scale), cy - GEAR / 2.0, GEAR, GEAR);
@@ -624,6 +615,19 @@ mod tests {
         assert!(!tabs(&st).contains(&PageKind::Clipboard), "off by default since 0.2.7");
         st.settings.set_addon(lumo_core::addons::CLIPBOARD_HISTORY.id, true);
         assert!(tabs(&st).contains(&PageKind::Clipboard));
+    }
+
+    #[test]
+    fn disabled_ai_has_no_tab_and_cannot_restore_a_saved_page() {
+        let mut settings = Settings { start_page: "ai".into(), ..Settings::default() };
+        let store = Store { last_page: "ai".into(), ..Store::default() };
+        let st = AppState::new(settings.clone(), store.clone());
+        assert!(!tabs(&st).contains(&PageKind::Ai));
+        assert_eq!(st.page, PageKind::Media);
+        settings.set_addon("ai", true);
+        let st = AppState::new(settings, store);
+        assert!(tabs(&st).contains(&PageKind::Ai));
+        assert_eq!(st.page, PageKind::Ai);
     }
 
     #[test]

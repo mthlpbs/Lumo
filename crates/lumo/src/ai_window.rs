@@ -985,6 +985,7 @@ mod tests {
 }
 pub(crate) fn sample_state_for_selftest() -> AppState {
     let mut st = AppState::new(Default::default(), Default::default());
+    st.settings.set_addon("ai", true);
     st.now = 100.0;
     st.ai.loaded = true;
     st.settings.ai.default_model = "sample/fast".into();

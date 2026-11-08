@@ -32,6 +32,7 @@ pub mod recorder;
 pub mod romanize;
 pub mod script;
 pub mod settings;
+pub mod search;
 pub mod sha256;
 pub mod shelf;
 pub mod spring;

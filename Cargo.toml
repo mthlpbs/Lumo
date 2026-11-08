@@ -4,7 +4,7 @@ members = ["crates/lumo-core", "crates/lumo"]
 
 [workspace.package]
 # Date-based Windows build: year.monthday.build (increment build on the same day).
-version = "2026.1107.2"
+version = "2026.1109.1"
 edition = "2021"
 publish = false
 authors = ["mthlpbs"]
@@ -43,4 +43,11 @@ opt-level = "s"
 [profile.release.package.serde_json]
 opt-level = "s"
 [profile.release.package.qrcodegen]
+opt-level = "s"
+
+# Optional Search web results use the installed Edge runtime. These bindings
+# run only during browser setup and callbacks, never on island frames.
+[profile.release.package.webview2-com]
+opt-level = "s"
+[profile.release.package.webview2-com-sys]
 opt-level = "s"

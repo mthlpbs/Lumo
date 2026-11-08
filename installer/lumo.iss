@@ -11,7 +11,7 @@
 ; survive uninstalling (only the cache in %LOCALAPPDATA%\Lumo is removed).
 
 #ifndef AppVersion
-  #define AppVersion "2026.1107.2"
+  #define AppVersion "2026.1109.1"
 #endif
 #ifndef ExeSource
   #define ExeSource "..\target\release\lumo.exe"
@@ -68,6 +68,7 @@ Name: "autostart"; Description: "Start with Windows"; GroupDescription: "Startup
 
 [Files]
 Source: "{#ExeSource}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\crates\lumo\vendor\webview2\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]

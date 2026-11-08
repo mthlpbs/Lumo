@@ -4,6 +4,19 @@ fn main() {
     println!("cargo:rerun-if-changed=res/lumo.ico");
     // Only Windows targets get the icon, manifest (Per-Monitor-V2 DPI) and version info.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rerun-if-changed=vendor/webview2/WebView2Loader.dll");
+        // This is Microsoft's 165 KiB locator, not the browser engine. It is
+        // loaded only when web search is explicitly opened. Copy beside the
+        // EXE for direct Cargo runs as well as the portable/setup packages.
+        let loader = std::path::Path::new("vendor/webview2/WebView2Loader.dll");
+        let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+        if let Some(bin_dir) = output.ancestors().nth(3) {
+            let destination = bin_dir.join("WebView2Loader.dll");
+            let source = std::fs::read(loader).expect("Microsoft WebView2 loader is missing");
+            if std::fs::read(&destination).ok().as_ref() != Some(&source) {
+                std::fs::write(destination, source).expect("could not copy the WebView2 loader beside Lumo");
+            }
+        }
         // Panics with a clear message if rc.exe / x86_64-w64-mingw32-windres is missing.
         embed_resource::compile("res/lumo.rc", embed_resource::NONE);
         // MSVC builds: resolve statically imported non-KnownDLLs (d2d1, dwrite,
@@ -20,26 +33,47 @@ fn main() {
 /// its commit, and anything else is a local build (no commit or day, so a
 /// local rebuild never shows a stale one).
 fn build_info() {
-    for var in ["GITHUB_ACTIONS", "GITHUB_REF_TYPE", "GITHUB_REF_NAME", "GITHUB_SHA"] {
+    for var in [
+        "GITHUB_ACTIONS",
+        "GITHUB_REF_TYPE",
+        "GITHUB_REF_NAME",
+        "GITHUB_SHA",
+    ] {
         println!("cargo:rerun-if-env-changed={var}");
     }
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     let ci = env("GITHUB_ACTIONS") == "true";
     let tag = env("GITHUB_REF_NAME");
     let version = env("CARGO_PKG_VERSION");
-    let release = ci && env("GITHUB_REF_TYPE") == "tag" && tag.strip_prefix('v').unwrap_or(&tag) == version;
-    let kind = if release { "release" } else if ci { "test" } else { "local" };
-    let commit: String = if ci { env("GITHUB_SHA").chars().take(7).collect() } else { String::new() };
+    let release =
+        ci && env("GITHUB_REF_TYPE") == "tag" && tag.strip_prefix('v').unwrap_or(&tag) == version;
+    let kind = if release {
+        "release"
+    } else if ci {
+        "test"
+    } else {
+        "local"
+    };
+    let commit: String = if ci {
+        env("GITHUB_SHA").chars().take(7).collect()
+    } else {
+        String::new()
+    };
     let day = if ci { utc_day() } else { String::new() };
     println!("cargo:rustc-env=LUMO_BUILD_KIND={kind}");
-    println!("cargo:rustc-env=LUMO_BUILD_TAG={}", if release { tag.as_str() } else { "" });
+    println!(
+        "cargo:rustc-env=LUMO_BUILD_TAG={}",
+        if release { tag.as_str() } else { "" }
+    );
     println!("cargo:rustc-env=LUMO_BUILD_COMMIT={commit}");
     println!("cargo:rustc-env=LUMO_BUILD_DAY={day}");
 }
 
 /// Today in UTC as "25 Oct 2026" (Howard Hinnant's days-to-civil).
 fn utc_day() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let z = (secs / 86_400) as i64 + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -49,6 +83,8 @@ fn utc_day() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     format!("{d} {} {y}", MONTHS[(m - 1) as usize])
 }
