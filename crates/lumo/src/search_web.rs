@@ -12,13 +12,13 @@ use webview2_com::{
     DOMContentLoadedEventHandler, FocusChangedEventHandler, HistoryChangedEventHandler,
     Microsoft::Web::WebView2::Win32::*, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    PermissionRequestedEventHandler, SourceChangedEventHandler,
+    PermissionRequestedEventHandler, SourceChangedEventHandler, DocumentTitleChangedEventHandler,
 };
 use windows::{
     core::{s, Interface, HRESULT, HSTRING, PCWSTR, PWSTR},
     Win32::{
         Foundation::*,
-        Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn},
+        Graphics::Gdi::{CreateRoundRectRgn, CreateRectRgn, CombineRgn, RGN_AND, DeleteObject, SetWindowRgn},
         System::{LibraryLoader::*, WinRT::EventRegistrationToken},
         UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
     },
@@ -63,6 +63,7 @@ impl Action {
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct Navigation {
     pub url: String,
+    pub title:String,
     pub loading: bool,
     /// Milestones from real navigation events; no idle timer or fake percentage.
     pub progress: f32,
@@ -96,12 +97,15 @@ fn loader() -> Result<Create, String> {
 }
 struct State {
     owner: HWND,
+    parent: HWND,
     host: HWND,
     closed: bool,
     controller: Option<ICoreWebView2Controller>,
     web: Option<ICoreWebView2>,
     error: String,
     bounds: Option<RECT>,
+    cover_top:i32,
+    region_dirty:bool,
     visible: bool,
     navigation: Navigation,
     navigation_id: u64,
@@ -333,12 +337,15 @@ impl Browser {
         };
         let state = Rc::new(RefCell::new(State {
             owner,
+            parent: owner,
             host,
             closed: false,
             controller: None,
             web: None,
             error: String::new(),
             bounds: None,
+            cover_top:0,
+            region_dirty:true,
             visible: false,
             navigation: Navigation {
                 url: url.into(),
@@ -380,6 +387,9 @@ impl Browser {
                         }
                         unsafe {
                             let _ = controller.SetIsVisible(false);
+                            // Start at real size, including profiles used by
+                            // older builds that fitted pages with zoom.
+                            let _ = controller.SetZoomFactor(1.0);
                             if let Ok(c) = controller.cast::<ICoreWebView2Controller2>() {
                                 let _ = c.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR {
                                     A: 255,
@@ -508,6 +518,13 @@ impl Browser {
                                 &mut token,
                             );
                             let weak = Rc::downgrade(&complete);
+                            let title_state=Rc::downgrade(&complete);
+                            let _=web.add_DocumentTitleChanged(&DocumentTitleChangedEventHandler::create(Box::new(move|web,_|{
+                                if let (Some(state),Some(web))=(title_state.upgrade(),web){
+                                    let mut title=PWSTR::null();web.DocumentTitle(&mut title)?;let title=take_string(title);
+                                    let mut st=state.borrow_mut();if !st.closed{st.navigation.title=title.chars().take(512).collect();notify(st.owner);}
+                                }Ok(())
+                            })),&mut token);
                             let _ = web.add_HistoryChanged(
                                 &HistoryChangedEventHandler::create(Box::new(move |web, _| {
                                     if let (Some(state), Some(web)) = (weak.upgrade(), web) {
@@ -645,10 +662,32 @@ impl Browser {
         let st = self.state.borrow();
         (st.web.is_some(), st.error.clone())
     }
+    pub fn reparent(&mut self, parent: HWND) -> Result<(), String> {
+        let (host, controller) = { let st=self.state.borrow(); (st.host,st.controller.clone()) };
+        self.hook=None;
+        {let mut st=self.state.borrow_mut();st.bounds=None;st.visible=false;}
+        unsafe {
+            let _=ShowWindow(host,SW_HIDE);
+            if let Some(controller)=controller.as_ref(){let _=controller.SetIsVisible(false);}
+            SetParent(host,parent).map_err(|e|e.to_string())?;
+            if let Some(controller)=controller { let _=controller.NotifyParentWindowPositionChanged(); }
+        }
+        let mut st=self.state.borrow_mut(); st.parent=parent; st.bounds=None; st.visible=false;
+        Ok(())
+    }
+    pub fn parent_moved(&self) {
+        let controller=self.state.borrow().controller.clone();
+        if let Some(controller)=controller {unsafe{let _=controller.NotifyParentWindowPositionChanged();}}
+    }
     pub fn place(&mut self, bounds: RECT, visible: bool) {
+        let parent=self.state.borrow().parent;
+        let scale=unsafe{windows::Win32::UI::HiDpi::GetDpiForWindow(parent)} as f32/96.0;
+        self.place_scaled(bounds,visible,scale);
+    }
+    pub fn place_scaled(&mut self, bounds: RECT, visible: bool, scale: f32) {
         // COM/Win32 calls can dispatch completion callbacks synchronously.
         // Never hold the shared state borrow while entering those APIs.
-        let (controller, host, owner, moved, visibility) = {
+        let (controller, host, owner, parent, moved, visibility,region_dirty,cover_top) = {
             let mut st = self.state.borrow_mut();
             let Some(controller) = st.controller.clone() else {
                 return;
@@ -657,7 +696,8 @@ impl Browser {
             let visibility = st.visible != visible;
             st.bounds = Some(bounds);
             st.visible = visible;
-            (controller, st.host, st.owner, moved, visibility)
+            let dirty=st.region_dirty;st.region_dirty=false;
+            (controller, st.host, st.owner, st.parent, moved, visibility,dirty,st.cover_top)
         };
         unsafe {
             if moved {
@@ -672,17 +712,25 @@ impl Browser {
                     height,
                     SWP_NOACTIVATE | SWP_NOZORDER,
                 );
-                let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(owner) as f32 / 96.0;
-                let diameter = (36.0 * dpi).round() as i32;
+            }
+            if moved || region_dirty {
+                let width=(bounds.right-bounds.left).max(1);let height=(bounds.bottom-bounds.top).max(1);
+                let diameter = (36.0 * scale).round() as i32;
                 let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
+                if cover_top>0 && !region.is_invalid(){
+                    let clip=CreateRectRgn(0,cover_top.min(height),width+1,height+1);
+                    if !clip.is_invalid(){let _=CombineRgn(region,region,clip,RGN_AND);let _=DeleteObject(clip);}
+                }
                 if !region.is_invalid() && SetWindowRgn(host, region, true) == 0 {
                     let _ = DeleteObject(region);
                 }
+            }
+            if moved {
                 let _ = controller.SetBounds(RECT {
                     left: 0,
                     top: 0,
-                    right: width,
-                    bottom: height,
+                    right: (bounds.right-bounds.left).max(1),
+                    bottom: (bounds.bottom-bounds.top).max(1),
                 });
             }
             if visibility {
@@ -690,12 +738,13 @@ impl Browser {
                 let _ = ShowWindow(host, if visible { SW_SHOWNA } else { SW_HIDE });
             }
         }
-        if visible && self.hook.is_none() {
+        if visible && parent==owner && self.hook.is_none() {
             self.hook = SwipeHook::new(owner).ok();
         } else if !visible {
             self.hook = None;
         }
     }
+    pub fn cover_top(&self,pixels:i32){let mut st=self.state.borrow_mut();let pixels=pixels.max(0);if st.cover_top!=pixels{st.cover_top=pixels;st.region_dirty=true;}}
     #[cfg(test)]
     pub fn test_web(&self) -> Option<ICoreWebView2> {
         self.state.borrow().web.clone()

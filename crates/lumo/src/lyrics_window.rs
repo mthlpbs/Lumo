@@ -85,7 +85,6 @@ struct Scene {
     scroll_target: f32,
     manual: bool,
     keyboard_scroll: f32,
-    close_k: f32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -185,7 +184,6 @@ impl LyricsWindow {
 
     pub fn draw(&mut self, st: &mut AppState, animate: bool) -> Result<Frame> {
         let now = st.now;
-        let dt = (now - self.last_draw).clamp(0.0, 0.05) as f32;
         self.last_draw = now;
         let closing = self.closing_at.map(|t| (now - t) / CLOSE_S);
         if closing.is_some_and(|t| !animate || t >= 1.0) { return Ok(Frame { moving: false, live: false, closed: true }); }
@@ -203,7 +201,7 @@ impl LyricsWindow {
         let (input, hits) = (&mut self.input, &mut self.hits);
         let (moving, live, repaint) = c.with_alpha(alpha, |c| {
             let mut ui = Ui::new(c, input, hits, now);
-            let result = scene.paint(&mut ui, st, area, dt, animate);
+            let result = scene.paint(&mut ui, st, area, animate);
             if let Some(hit) = self.focus.and_then(|id| ui.hits.iter().find(|hit| hit.id == id)) {
                 ui.c.stroke_rrect(hit.rect.inset(-2.0, -2.0), 8.0, Color::white(0.65), 1.0);
             }
@@ -349,7 +347,7 @@ impl Scene {
         self.scroll_from = if animate { self.scroll_at(now) } else { target };
         self.scroll = self.scroll_from; self.scroll_target = target; self.scroll_at = now;
     }
-    fn paint(&mut self, ui: &mut Ui, st: &mut AppState, area: Rect, dt: f32, animate: bool) -> (bool, bool, bool) {
+    fn paint(&mut self, ui: &mut Ui, st: &mut AppState, area: Rect, animate: bool) -> (bool, bool, bool) {
         let now = st.now;
         let m = st.media.as_ref();
         if let Some(m) = m {
@@ -490,16 +488,14 @@ impl Scene {
             ui.c.text("Nothing playing", layout.lyrics, &TextStyle::new(28.0).weight(Weight::Semibold).color(Color::white(0.7)));
         }
         let close = Rect::new(area.w-44.0, 10.0, 34.0, 30.0);
-        let response = ui.button(wid("lyrics.close"), close);
-        let goal = if response.hovered { 1.0 } else { 0.0 };
-        let step = dt/0.12;
-        self.close_k = if !animate { goal } else if self.close_k < goal { (self.close_k+step).min(goal) } else { (self.close_k-step).max(goal) };
-        moving |= self.close_k != goal;
-        ui.c.fill_circle(close.center(), 5.0, Color::white(0.55*(1.0-self.close_k)));
-        ui.c.with_alpha(self.close_k, |c| {
-            c.fill_circle(close.center(), 13.0, Color::white(0.13)); c.icon(Icon::Close, close.inset(8.0, 6.0), Color::white(0.95));
-        });
+        // Always show the return action; a hover must not be needed to find it.
+        let response = ui.icon_button(wid("lyrics.close"), close, Icon::ExitMiniPlayer, Color::white(0.85), 20.0);
         if response.clicked { st.cmd(Command::CloseLyricsWindow); }
+        if response.hovered {
+            let hint = Rect::new(close.right()-138.0, close.bottom()+6.0, 138.0, 26.0);
+            ui.c.fill_rrect(hint, 7.0, Color::hex(0x303030));
+            ui.c.text("Exit mini player", hint, &TextStyle::footnote().center());
+        }
         // An understated grip, in addition to resizing from all window edges.
         for n in 0..3 { let d = 4.0+n as f32*4.0; ui.c.line(Point::new(area.w-9.0-d, area.h-9.0), Point::new(area.w-9.0, area.h-9.0-d), Color::white(0.3), 1.0); }
         ui.c.stroke_rrect(area.inset(1.0, 1.0), 24.0, Color::white(0.14), 1.0);
@@ -681,7 +677,6 @@ mod tests {
         assert!(!window.hits.iter().any(|hit| hit.id == wid_n("lyrics.line", 0)), "unsynced lyrics cannot seek");
         window.input.mouse = Some(Point::new(313.0,25.0));
         for _ in 0..3 { st.now += 0.05; window.draw(&mut st, true).unwrap(); }
-        assert!(window.scene.close_k > 0.9);
         window.input.clicked = Some((wid("lyrics.close"), MouseButton::Left));
         window.draw(&mut st, true).unwrap();
         assert!(st.cmds.contains(&Command::CloseLyricsWindow));

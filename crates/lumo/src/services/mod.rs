@@ -17,6 +17,7 @@ pub mod lyrics;
 pub mod media;
 pub mod music_files;
 pub mod search;
+pub mod search_integrations;
 pub mod pairdrop;
 pub mod phonedrop;
 pub mod power;

@@ -133,6 +133,59 @@ pub fn search_icons(items:Vec<(String,lumo_core::search::Target)>,cancel:&std::s
 #[cfg(test)]
 pub fn application_icons(items:Vec<(String,lumo_core::search::Application)>,cancel:&std::sync::atomic::AtomicBool)->Vec<(String,Option<Image>)>{search_icons(items.into_iter().map(|(id,app)|(id,lumo_core::search::Target::App(app))).collect(),cancel)}
 
+pub(crate) fn export_application_icon(app:&lumo_core::search::Application)->Result<(u32,u32,Vec<u8>),String>{
+    let _com=ComInit::new(COINIT_APARTMENTTHREADED);
+    unsafe{(||->WinResult<_>{
+        let factory=wic_factory()?;
+        let item:windows::Win32::UI::Shell::IShellItemImageFactory=windows::Win32::UI::Shell::SHCreateItemFromIDList(app.id_list().as_ptr().cast())?;
+        let bitmap=OwnedBitmap(item.GetImage(SIZE{cx:256,cy:256},windows::Win32::UI::Shell::SIIGBF_ICONONLY|windows::Win32::UI::Shell::SIIGBF_BIGGERSIZEOK)?);
+        let source:IWICBitmapSource=factory.CreateBitmapFromHBITMAP(bitmap.0,HPALETTE::default(),WICBitmapUsePremultipliedAlpha)?.cast()?;
+        let size=source_size(&source)?;let target=fit_within(size.0,size.1,256);let pixels=to_pbgra(&factory,&source,size,target)?;
+        Ok((target.0,target.1,crate::png::pbgra_to_rgba(&pixels)))
+    })().map_err(|_|"Windows could not extract this application's icon.".to_owned())}
+}
+fn icon_file(width:u32,height:u32,png:&[u8])->Vec<u8>{
+    let mut bytes=vec![];for value in [0u16,1,1]{bytes.extend(value.to_le_bytes());}
+    bytes.extend([if width>=256{0}else{width as u8},if height>=256{0}else{height as u8},0,0]);
+    bytes.extend(1u16.to_le_bytes());bytes.extend(32u16.to_le_bytes());bytes.extend((png.len() as u32).to_le_bytes());bytes.extend(22u32.to_le_bytes());bytes.extend(png);bytes
+}
+fn dibv5(width:u32,height:u32,rgba:&[u8])->Vec<u8>{
+    let mut bytes=vec![0u8;124];let mut set=|at:usize,value:u32|bytes[at..at+4].copy_from_slice(&value.to_le_bytes());
+    set(0,124);set(4,width);set(8,(-(height as i32)) as u32);set(12,(32u32<<16)|1);set(16,3);set(20,width*height*4);
+    set(40,0x00ff0000);set(44,0x0000ff00);set(48,0x000000ff);set(52,0xff000000);set(56,0x73524742);set(108,4);
+    for pixel in rgba.chunks_exact(4){bytes.extend([pixel[2],pixel[1],pixel[0],pixel[3]]);}bytes
+}
+fn drop_file(path:&std::path::Path)->Vec<u8>{
+    use std::os::windows::ffi::OsStrExt;
+    let mut bytes=vec![0u8;20];bytes[0..4].copy_from_slice(&20u32.to_le_bytes());bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
+    for unit in path.as_os_str().encode_wide().chain([0,0]){bytes.extend(unit.to_le_bytes());}bytes
+}
+pub fn copy_application_icon(app:lumo_core::search::Application,title:String,file:bool,sink:EventSink){
+    let fallback=sink.clone();
+    if std::thread::Builder::new().name("lumo-copy-icon".into()).spawn(move||{
+        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||->Result<String,String>{
+            let(width,height,rgba)=export_application_icon(&app)?;let png=crate::png::encode_rgba(width,height,&rgba);
+            let mut exported=None;
+            let formats=if file{
+                let dir=crate::paths::cache_dir().join("icon-exports");std::fs::create_dir_all(&dir).map_err(|_|"The icon export folder could not be created.")?;
+                let name:String=title.chars().filter(|c|c.is_alphanumeric()||matches!(c,' '|'-'|'_')).take(40).collect();let hash=lumo_core::sha256::hex(&lumo_core::sha256::sha256(&png));
+                let path=dir.join(format!("App-{}-{}.ico",name.trim(),&hash[..12]));let existed=path.exists();std::fs::write(&path,icon_file(width,height,&png)).map_err(|_|"The icon file could not be written.")?;exported=Some((path.clone(),existed));
+                let effect=unsafe{windows::Win32::System::DataExchange::RegisterClipboardFormatW(windows::core::w!("Preferred DropEffect"))};
+                vec![(15,drop_file(&path)),(effect,1u32.to_le_bytes().to_vec())]
+            }else{
+                let png_format=unsafe{windows::Win32::System::DataExchange::RegisterClipboardFormatW(windows::core::w!("PNG"))};vec![(png_format,png),(17,dibv5(width,height,&rgba))]
+            };
+            if let Err(error)=super::clipboard::set_formats(sink.hwnd().hwnd(),formats){if let Some((path,false))=exported{let _=std::fs::remove_file(path);}return Err(error);}
+            if let Some((path,_))=exported{if let Some(dir)=path.parent(){
+                let mut old:Vec<_>=std::fs::read_dir(dir).into_iter().flatten().filter_map(Result::ok).filter(|e|e.file_name().to_string_lossy().starts_with("App-")&&e.path().extension().is_some_and(|e|e=="ico")&&e.path()!=path).collect();
+                old.sort_by_key(|e|e.metadata().and_then(|m|m.modified()).ok());let count=old.len().saturating_sub(31);for entry in old.into_iter().take(count){let _=std::fs::remove_file(entry.path());}
+            }}
+            Ok(if file{"Icon file copied. Paste it into a folder."}else{"Icon image copied."}.into())
+        })).unwrap_or_else(|_|Err("The application icon could not be copied.".into()));
+        sink.send(AppEvent::SearchAction{result,refresh:false});
+    }).is_err(){fallback.send(AppEvent::SearchAction{result:Err("The icon copy action could not start.".into()),refresh:false});}
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -733,6 +786,20 @@ fn center_on_canvas(src: &[u8], w: u32, h: u32, cw: u32, ch: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exported_icon_file_and_clipboard_formats_preserve_alpha(){
+        let rgba=[255,0,0,128,0,255,0,255,0,0,255,64,0,0,0,0];let png=crate::png::encode_rgba(2,2,&rgba);let ico=icon_file(2,2,&png);
+        assert_eq!(&ico[..6],&[0,0,1,0,1,0]);assert_eq!(u32::from_le_bytes(ico[18..22].try_into().unwrap()),22);assert_eq!(&ico[22..],png);
+        let dib=dibv5(2,2,&rgba);assert_eq!(dib.len(),124+rgba.len());assert_eq!(&dib[124..128],&[0,0,255,128]);assert_eq!(i32::from_le_bytes(dib[8..12].try_into().unwrap()),-2);
+        let files=drop_file(std::path::Path::new("C:/Icons/App.ico"));assert_eq!(&files[..4],&20u32.to_le_bytes());assert_eq!(&files[files.len()-4..],&[0,0,0,0]);
+    }
+    #[test]#[ignore="extracts an icon from the test executable; never changes the clipboard"]
+    fn native_application_icon_exports_as_a_real_ico(){unsafe{
+        let _com=ComInit::new(COINIT_APARTMENTTHREADED);let path=std::env::current_exe().unwrap();let item:windows::Win32::UI::Shell::IShellItem=windows::Win32::UI::Shell::SHCreateItemFromParsingName(&HSTRING::from(path.as_os_str()),None).unwrap();
+        let pidl=windows::Win32::UI::Shell::SHGetIDListFromObject(&item).unwrap();let size=windows::Win32::UI::Shell::ILGetSize(Some(pidl));let data=std::slice::from_raw_parts(pidl.cast::<u8>(),size as usize).to_vec();windows::Win32::System::Com::CoTaskMemFree(Some(pidl.cast()));
+        let app=lumo_core::search::Application::from_id_list(data).unwrap();let(w,h,rgba)=export_application_icon(&app).unwrap();assert!(w>0&&w<=256&&h>0&&h<=256);assert!(rgba.chunks_exact(4).any(|p|p[3]>0));
+        let png=crate::png::encode_rgba(w,h,&rgba);let ico=icon_file(w,h,&png);assert_eq!(&ico[22..30],b"\x89PNG\r\n\x1a\n");
+    }}
     use super::*;
 
     #[test]

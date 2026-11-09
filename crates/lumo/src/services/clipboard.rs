@@ -351,6 +351,24 @@ pub fn set_text(hwnd: HWND, text: &str) {
     }
 }
 
+/// Publish prepared image/file formats for an explicit copy action. Allocate
+/// first so allocation failure never clears the person's existing clipboard.
+pub fn set_formats(hwnd:HWND,formats:Vec<(u32,Vec<u8>)>)->Result<(),String>{
+    struct Block(HGLOBAL);impl Drop for Block{fn drop(&mut self){if !self.0.is_invalid(){unsafe{let _=GlobalFree(self.0);}}}}
+    if formats.is_empty() || formats.len()>4{return Err("No clipboard data was produced.".into());}
+    let mut blocks=vec![];
+    for (format,bytes) in formats{
+        if format==0 || bytes.is_empty() || bytes.len()>4*1024*1024{return Err("The icon clipboard format or size is invalid.".into());}
+        unsafe{let block=Block(GlobalAlloc(GMEM_MOVEABLE,bytes.len()).map_err(|_|"Clipboard memory could not be allocated.")?);
+            let dst=GlobalLock(block.0).cast::<u8>();if dst.is_null(){return Err("Clipboard memory could not be locked.".into());}
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(),dst,bytes.len());let _=GlobalUnlock(block.0);blocks.push((format,block));}
+    }
+    let _open=OpenGuard::open(hwnd).ok_or("The clipboard is busy. Try copying again.")?;
+    unsafe{EmptyClipboard().map_err(|_|"The clipboard could not be cleared.")?;
+        for (format,mut block) in blocks{SetClipboardData(format,HANDLE(block.0.0)).map_err(|_|"Windows could not copy this icon.")?;block.0=HGLOBAL::default();}
+    }Ok(())
+}
+
 /// An open clipboard; closed on drop.
 struct OpenGuard;
 

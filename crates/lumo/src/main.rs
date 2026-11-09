@@ -63,7 +63,11 @@ mod search;
 #[cfg(windows)]
 mod search_web;
 #[cfg(windows)]
+mod browser_window;
+#[cfg(windows)]
 mod search_menu;
+#[cfg(windows)]
+mod native_menu;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]

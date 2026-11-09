@@ -255,6 +255,7 @@ impl Settings {
 
     /// Clamp values a user may have hand-edited into nonsense.
     pub fn sanitized(mut self) -> Self {
+        self.search.sanitize();
         // Retired calendar pages open Music when restoring older preferences.
         if matches!(self.start_page.trim().to_ascii_lowercase().as_str(), "today" | "calendar" | "calendars") {
             self.start_page = "media".into();

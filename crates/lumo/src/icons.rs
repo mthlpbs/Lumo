@@ -32,6 +32,8 @@ pub enum Icon {
     Lyrics,
     PopOut,
     PopIn,
+    MiniPlayer,
+    ExitMiniPlayer,
     Backward,
     Forward,
     Timer,
@@ -149,6 +151,8 @@ pub fn parts(icon: Icon) -> &'static [Part] {
         ],
         PopOut => p![s("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7")],
         PopIn => p![s("M20 4l-6 6M14 4v6h6M4 20l6-6M4 14h6v6")],
+        MiniPlayer => p![s("M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM6 7l4 4M10 7v4H6"), f("M12 12h6v5h-6z")],
+        ExitMiniPlayer => p![s("M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM10 11L6 7M6 11V7h4"), f("M12 12h6v5h-6z")],
         Backward => p![
             f("M11.5 5.5v13l-10-6.5z"), f("M22 5.5v13L12 12z"),
         ],
@@ -270,7 +274,7 @@ mod tests {
     use super::*;
 
     const ALL: &[Icon] = &[
-        Icon::Play, Icon::Pause, Icon::Next, Icon::Prev, Icon::Music, Icon::Lyrics, Icon::PopOut, Icon::PopIn, Icon::Timer, Icon::Coffee,
+        Icon::Play, Icon::Pause, Icon::Next, Icon::Prev, Icon::Music, Icon::Lyrics, Icon::PopOut, Icon::PopIn, Icon::MiniPlayer, Icon::ExitMiniPlayer, Icon::Timer, Icon::Coffee,
         Icon::Tray, Icon::ListChecks, Icon::Check, Icon::CheckCircle, Icon::Circle, Icon::Plus, Icon::Minus,
         Icon::Close, Icon::Clipboard, Icon::Copy, Icon::Search, Icon::Globe, Icon::ArrowRight, Icon::ArrowLeft, Icon::ChevronLeft, Icon::ChevronRight, Icon::Refresh, Icon::ExternalLink, Icon::ResumePage, Icon::Clock, Icon::Cpu, Icon::Memory, Icon::Disk,
         Icon::Battery, Icon::Bolt, Icon::Bluetooth, Icon::Headphones, Icon::Volume, Icon::VolumeLow, Icon::VolumeMute,

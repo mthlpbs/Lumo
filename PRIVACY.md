@@ -30,20 +30,63 @@ Nothing else is sent anywhere. Music, volume, Bluetooth battery levels, the date
 
 **Local Search.** Windows app names and opaque launch identifiers, plus a
 bounded set of native app icons, are cached in memory. Search covers registered
-apps and Windows Settings; file/folder search and custom locations are removed.
-Query text is discarded after Search closes and is not logged or saved.
-Frequently opened app/setting identifiers, counts and last-use times are saved
+apps, Windows Settings and optional local integrations; general file/folder
+search and custom search locations are removed.
+Query text is not logged or saved. Resume page can retain the current query
+in memory; clearing that Search state discards it.
+Frequently opened result identifiers, counts and last-use times are saved
 in data.json. Remove them individually from a result's context menu or clear
 them in Settings > Search. Retired file-result counts are filtered from the
 loaded history, and old file-search configuration is ignored.
 
+**Application icon copying.** Only an explicit result-menu action extracts an
+app icon through Windows. Copy icon image publishes PNG and a Windows bitmap
+to the clipboard. Copy icon file creates an ICO under
+`%LOCALAPPDATA%\Lumo\icon-exports\` and places that file on the clipboard for
+pasting in Explorer. Lumo keeps at most 32 generated exports, cleaning older
+exports after successful file copies. Nothing is uploaded. Windows clipboard
+history/sync follows your Windows preferences.
+
+**Optional local search integrations.** Windows services are off by default.
+PowerToys tools and VS Code commands are enabled by
+default and can be switched off independently in Settings > Search. These
+sources read only when Search opens or you refresh them. Services are read
+through Windows' service manager; starting or stopping one requires an explicit
+action and may show Windows' administrator prompt. Lumo does not change startup
+types or stop dependent services.
+
+VS Code command discovery reads open Code/Code Insiders window titles and
+temporary window/process identifiers. Commands use an existing window and
+never launch VS Code. PowerToys activation uses its existing local tool events.
+Search text is never a shell command.
+
+Browser bookmark/tab discovery, browser actions and saved custom app actions
+have been removed. Lumo does not read your browser's bookmark files, tab strip,
+history, password store or cookies for local Search. Retired browser-content
+and custom-action preferences are ignored and omitted when settings are saved.
+The previous App actions toggle migrates to VS Code commands.
+
 **Optional web search.** Off by default. Choosing the explicit web-search action
 sends the query to your selected Bing, Google, DuckDuckGo or Brave provider.
-Typing in local Search does not send it. Pages use the installed Edge WebView2
+Typing in local Search does not send it unless you enable Google suggestions
+as described below. Pages use the installed Edge WebView2
 Runtime inside Lumo and follow the provider's privacy policy. WebView2 keeps
 cookies and browser data in its separate SearchWeb profile under Lumo's local
 cache. Closing Search closes its browser controller; the profile remains on
 disk. The packages include Microsoft's small loader, not a bundled browser.
+
+**Google suggestions, only if you enable them.** Off by default in
+**Settings > Search**. When local search has no matches, or you type a search
+in the focused address editor, Lumo sends that text to
+`suggestqueries.google.com` after typing pauses for 350 ms. Website addresses
+are excluded. Clicking a page title without typing does not request suggestions.
+Google receives that text and your IP address under its privacy policy.
+Suggestions are held in memory, never logged or saved by Lumo. Changing the
+query, leaving address editing, closing Search or the mini browser, switching
+suggestions off, locking the session,
+turning off the display or entering battery saver cancels pending work.
+Suggestions do not start the embedded browser. Nothing is requested while
+Search is closed, except when you explicitly edit a detached mini browser.
 
 | What | Where |
 |---|---|

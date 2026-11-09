@@ -26,27 +26,45 @@ new images instead of reusing older cached assets:
 
 | README image | Capture | Theme |
 | --- | --- | --- |
-| `music-a65be8ef97c6.png` | `*-page-media.png` | Classic |
+| `music-028b39114adb.png` | `*-page-media.png` | Classic |
 | `ai-b2b9678808b0.png` | `*-page-ai.png` | Classic |
 | `phone-219381f90f1e.png` | `*-page-shelf-phone-ask.png` | Classic |
 | `system-c0ec9b9543f4.png` | `*-page-system.png` | Classic |
 | `focus-922e0d5da670.png` | `*-page-focus.png` | Classic |
-| `pill-5c0bee0a71c2.png` | `*-page-media.png` | Pill |
+| `pill-e2d7cae1be61.png` | `*-page-media.png` | Pill |
 
-Search uses an unmodified native launcher-check capture in Pill, with icons
-from the Windows app catalog: search-ff4a6d099aad.png. Run the ignored
-app::tests::inline_search_renders_icons_keyboard_filters_and_collapses_in_both_themes
-test with LUMO_SEARCH_QA set to its output directory to refresh it.
+Search uses unmodified native launcher-check captures in Pill, with icons
+from the Windows app catalog:
 
-The compact empty state uses the unmodified Pill capture `search-empty-6d7da2b04cc4.png`
-from the same native Search check.
+- `search-2fc837ec498f.png`: frequent results.
+- `search-single-6045b9e9789c.png`: one matching result.
+- `search-empty-dbb7ccf50536.png`: the compact web-search action.
+- `search-suggestions-2662ff4cf84f.png`: opt-in suggestions with injected demo results.
 
-The embedded-browser preview `search-browser-7e75ac302428.png` is a native screen capture in Pill,
-using the installed WebView2 Runtime and a public Google query. It is captured
-by `app::tests::web_results_render_inside_the_layered_island_and_close_with_it`
-with `LUMO_SEARCH_QA` set and optional `LUMO_BROWSER_QA_URL`. The fixture
-runs below the screen edge to keep other running islands out of the capture.
+Run the ignored
+`app::tests::inline_search_renders_icons_keyboard_filters_and_collapses_in_both_themes`
+test with `LUMO_SEARCH_QA` set to an output directory to refresh them.
 
-The unpackaged Search changes use `search-browser-fe983f733aa2.png`, captured by the same native
-browser check in Pill with Keep open and Resume page enabled. The earlier
-preview is retained as the 2026.1108.9 package reference.
+The browser preferences capture `browser-preferences-b1370d7150ce.png` comes from
+`settings_window::tests::search_preferences_configure_gestures_sources_and_explicit_actions`
+with the same output variable. It shows a customized Wide layout; Tall
+is the default, pages stay at normal size, and Google suggestions default to off.
+Older browser screenshots are retained as historical package references.
+
+The mini player preview `mini-player-f7c19e5dd0f8.png` is the unmodified
+430x640-DIP capture from
+`lyrics_window::tests::lyrics_player_renders_resizes_controls_scrolls_and_follows_the_current_track`.
+Run it with `LUMO_LYRICS_QA` set to an output directory.
+
+`search-visit-b8f75856755c.png` comes from the native launcher check and shows
+a bare domain opening directly through Visit.
+
+`search-sources-1b1967aab3b0.png` shows customized source toggles from the native
+Settings check. Windows services default to off; VS Code commands default to on.
+The retired browser-content and custom-action controls are absent.
+`search-service-3aeea0b85788.png` uses a fictional service in the native launcher
+check; the test validates the Stop command without executing it.
+
+`native-context-menu-0b599d71a06b.png` is the unmodified native HMENU capture from
+`native_menu::tests::native_menu_renders_and_dismisses_without_invoking`.
+It previews app actions without invoking a command or changing the clipboard.

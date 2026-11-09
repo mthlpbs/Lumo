@@ -73,6 +73,23 @@ pub fn start_icons(
         }));
     }
 }
+const SUGGESTIONS_TIMEOUT: Duration = Duration::from_secs(8);
+const SUGGESTIONS_HEADERS: &[(&str,&str)] = &[("Cache-Control","no-store"),("Pragma","no-cache")];
+pub fn start_suggestions(request:u64,query:String,cancel:Arc<super::http::Cancel>,sink:EventSink){
+    let fallback=sink.clone();let failed_query=query.clone();
+    if std::thread::Builder::new().name("lumo-search-suggestions".into()).spawn(move||{
+        let items=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||super::http::with_cancel(cancel.clone(),||{
+            if cancel.cancelled(){return None;}
+            let _mta=super::http::MtaGuard::new();
+            let url=lumo_core::search::google_suggestions_url(&query)?;
+            let client=super::http::Client::new(concat!("Lumo/",env!("CARGO_PKG_VERSION"))).ok()?;
+            if cancel.cancelled(){return None;}
+            let response=client.send_bounded(super::http::Method::Get,&url,SUGGESTIONS_HEADERS,None,SUGGESTIONS_TIMEOUT,32768).ok()?;
+            (response.status==200 && !cancel.cancelled()).then(||lumo_core::search::parse_google_suggestions(&response.body,&query))
+        }))).ok().flatten().unwrap_or_default();
+        sink.send(AppEvent::SearchSuggestions(crate::search::SuggestionsEvent{request,query,items}));
+    }).is_err(){fallback.send(AppEvent::SearchSuggestions(crate::search::SuggestionsEvent{request,query:failed_query,items:vec![]}));}
+}
 unsafe fn take_string(value: PWSTR) -> String {
     let result = value.to_string().unwrap_or_default();
     CoTaskMemFree(Some(value.0.cast()));
@@ -165,6 +182,17 @@ pub(crate) fn scan(cancel: &AtomicBool) -> Result<Vec<Entry>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore="requires access to Google suggestions"]
+    fn google_endpoint_returns_bounded_utf8_suggestions(){
+        let _mta=super::super::http::MtaGuard::new();
+        let client=super::super::http::Client::new("Lumo suggestion check").unwrap();
+        let url=lumo_core::search::google_suggestions_url("weather").unwrap();
+        let response=client.send_bounded(super::super::http::Method::Get,&url,super::SUGGESTIONS_HEADERS,None,super::SUGGESTIONS_TIMEOUT,32768).unwrap();
+        assert_eq!(response.status,200);
+        let items=lumo_core::search::parse_google_suggestions(&response.body,"weather");
+        assert!(!items.is_empty() && items.len()<=lumo_core::search::MAX_SUGGESTIONS);
+    }
     use super::*;
     #[test]
     #[ignore = "requires the Windows Applications folder"]

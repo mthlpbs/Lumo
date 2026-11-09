@@ -8,10 +8,19 @@ pub struct Config {
     pub horizontal_scroll: bool,
     pub apps: bool,
     pub settings: bool,
+    pub services: bool,
+    pub powertoys: bool,
+    #[serde(alias="app_actions")]
+    pub vscode_commands: bool,
     pub web: bool,
     pub engine: Engine,
     pub keep_open: bool,
     pub resume_page: bool,
+    pub browser_wide: bool,
+    pub browser_height: u16,
+    pub google_suggestions: bool,
+    pub mini_width: u16,
+    pub mini_height: u16,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -19,12 +28,48 @@ impl Default for Config {
             horizontal_scroll: true,
             apps: true,
             settings: true,
+            services: false,
+            powertoys: true,
+            vscode_commands: true,
             web: false,
             engine: Engine::Bing,
             keep_open: false,
             resume_page: false,
+            browser_wide: false,
+            browser_height: 680,
+            google_suggestions: false,
+            mini_width: 560,
+            mini_height: 680,
         }
     }
+}
+impl Config {
+    pub fn sanitize(&mut self) {
+        self.browser_height=self.browser_height.clamp(360,1200);
+        self.mini_width=self.mini_width.clamp(280,8192);
+        self.mini_height=self.mini_height.clamp(200,8192);
+    }
+}
+
+pub const MAX_SUGGESTIONS: usize = 4;
+pub fn google_suggestions_url(query:&str)->Option<String> {
+    let query=query.trim();
+    if query.chars().count()<2 || query.chars().any(char::is_control){return None;}
+    let search=Engine::Google.url(query)?;
+    Some(format!("https://suggestqueries.google.com/complete/search?client=firefox&ie=UTF-8&oe=UTF-8&q={}",search.split_once("?q=")?.1))
+}
+pub fn parse_google_suggestions(body:&str,query:&str)->Vec<String> {
+    if body.len()>32768{return vec![];}
+    let Ok(value)=serde_json::from_str::<serde_json::Value>(body)else{return vec![];};
+    if value.get(0).and_then(|v|v.as_str())!=Some(query){return vec![];}
+    let Some(items)=value.get(1).and_then(|v|v.as_array())else{return vec![];};
+    let mut out:Vec<String>=vec![];
+    for item in items.iter().take(20) {
+        let Some(text)=item.as_str().map(str::trim)else{continue;};
+        if text.is_empty() || text.chars().count()>128 || text.chars().any(char::is_control) || out.iter().any(|s|s.eq_ignore_ascii_case(text)){continue;}
+        out.push(text.into());if out.len()==MAX_SUGGESTIONS{break;}
+    }
+    out
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Engine {
@@ -71,6 +116,9 @@ impl Engine {
 pub enum Group {
     App,
     Settings,
+    Service,
+    PowerToys,
+    VSCode,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowsSetting {
@@ -248,6 +296,17 @@ pub enum Target {
     App(Application),
     Windows(WindowsSetting),
     Web { query: String, url: String },
+    Service(Service),
+    Launch {path:String,arguments:String},
+    PowerToy {event:String},
+    AppCommand {window:u64,pid:u32,keys:Vec<u16>},
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Service {pub name:String,pub state:u32,pub accepts_stop:bool}
+impl Service {
+    pub fn status(&self)->&'static str{match self.state{1=>"Stopped",2=>"Starting",3=>"Stopping",4=>"Running",5=>"Continuing",6=>"Pausing",7=>"Paused",_=>"Unknown"}}
+    pub fn can_start(&self)->bool{self.state==1}
+    pub fn can_stop(&self)->bool{matches!(self.state,4|7)&&self.accepts_stop}
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -282,6 +341,9 @@ impl Entry {
         match self.group {
             Group::App => cfg.apps,
             Group::Settings => cfg.settings,
+            Group::Service => cfg.services,
+            Group::PowerToys => cfg.powertoys,
+            Group::VSCode => cfg.vscode_commands,
         }
     }
 }
@@ -439,6 +501,20 @@ impl Application {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn service_controls_and_retired_preferences_are_safe(){
+        let stopped=Service{name:"fixture".into(),state:1,accepts_stop:false};assert!(stopped.can_start()&&!stopped.can_stop());
+        let running=Service{state:4,accepts_stop:true,..stopped.clone()};assert!(running.can_stop()&&!running.can_start());
+        assert!(!Service{accepts_stop:false,..running}.can_stop());
+        for state in [2,3,5,6]{let service=Service{state,..stopped.clone()};assert!(!service.can_start()&&!service.can_stop());}
+        let config:Config=serde_json::from_str(r#"{"app_actions":false,"browser_content":true,"custom_actions":[{"name":"old","target":"vscode://settings/editor.fontSize"}]}"#).unwrap();
+        assert!(!config.vscode_commands && !config.services);
+        let saved=serde_json::to_string(&config).unwrap();
+        for retired in ["app_actions","browser_content","custom_actions"]{assert!(!saved.contains(retired));}
+        assert_eq!(serde_json::from_str::<Config>(&saved).unwrap(),config);
+        assert!(Config::default().vscode_commands);
+
+    }
     use super::*;
     #[test]
     fn retired_file_preferences_are_ignored_without_changing_web_preferences() {
@@ -509,6 +585,21 @@ mod tests {
             assert!(!url.contains(' '));
             assert!(engine.url(" ").is_none());
         }
+    }
+    #[test]
+    fn suggestions_are_opt_in_bounded_and_match_the_requested_query(){
+        let old:Config=serde_json::from_str(r#"{"web":true}"#).unwrap();
+        assert!(!old.google_suggestions && !old.browser_wide);
+        let retired:Config=serde_json::from_str(r#"{"desktop_sites":true}"#).unwrap();
+        assert_eq!(retired,Config::default());
+        assert!(google_suggestions_url("x").is_none());assert!(google_suggestions_url("ab\ncd").is_none());
+        assert!(google_suggestions_url("cat & dog").unwrap().ends_with("q=cat%20%26%20dog"));
+        let body=r#"["cat",["cat food","CAT FOOD","cat videos","cat\ncommand","cat toys","cats","cat six"],[]]"#;
+        assert_eq!(parse_google_suggestions(body,"cat"),["cat food","cat videos","cat toys","cats"]);
+        assert!(parse_google_suggestions(body,"dog").is_empty());
+        for malformed in ["null","{}",r#"["cat",{}]"#,"not json"]{assert!(parse_google_suggestions(malformed,"cat").is_empty());}
+        let mut c=old;c.mini_width=0;c.mini_height=65535;c.browser_height=1;c.sanitize();
+        assert_eq!((c.mini_width,c.mini_height,c.browser_height),(280,8192,360));
     }
     #[test]
     fn gesture_suppresses_inertia() {

@@ -54,11 +54,15 @@ pub enum MusicPick {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    SearchBrowserMenu(lumo_core::geom::Point),
+    SearchService {name:String,start:bool},
     OpenSearch,
     RefreshSearchApps,
     ExecuteSearch(lumo_core::search::Target),
     SearchIcons(Vec<(String, lumo_core::search::Target)>),
     CloseSearchWeb,
+    ToggleMiniBrowser,
+    CloseMiniBrowser,
     SearchWeb(crate::search_web::Action),
     NavigateSearchWeb(String),
     ToggleSearchKeepOpen,

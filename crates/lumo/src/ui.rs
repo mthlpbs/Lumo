@@ -391,11 +391,11 @@ impl<'a, 'g> Ui<'a, 'g> {
         self.text_input_styled(id, r, buf, placeholder, max_chars, InputLook::Row { accent, icon })
     }
     pub fn text_input_capsule(&mut self, id: WidgetId, r: Rect, buf: &mut String, placeholder: &str, max_chars: usize, accent: Color) -> TextInputResp {
-        self.search_editor(id, r, buf, placeholder, max_chars, accent, false)
+        self.search_editor(id, r, buf, placeholder, max_chars, accent, false, None)
     }
     /// Browser address field, with space reserved for its trailing reload control.
-    pub fn address_input(&mut self, id: WidgetId, r: Rect, buf: &mut String, accent: Color) -> TextInputResp {
-        self.search_editor(id, r, buf, "Search or enter an address", 2048, accent, true)
+    pub fn address_input(&mut self, id: WidgetId, r: Rect, buf: &mut String, accent: Color, progress: Option<f32>) -> TextInputResp {
+        self.search_editor(id, r, buf, "Search or enter an address", 2048, accent, true, progress)
     }
 
     pub fn text_secret(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize)->TextInputResp {
@@ -405,10 +405,10 @@ impl<'a, 'g> Ui<'a, 'g> {
         self.text_input_styled(id,r,buf,placeholder,max_chars,InputLook::Area)
     }
 
-    fn search_editor(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize,accent:Color,address:bool)->TextInputResp{
-        // Keep the reload hit target outside the editable region.
-        self.interact(id,Rect::new(r.x,r.y,r.w-if address{36.0}else{0.0},r.h),CursorKind::Text);
-        let inner=Rect::new(r.x+if address{36.0}else{43.0},r.y,(r.w-if address{76.0}else{58.0}).max(1.0),r.h);
+    fn search_editor(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize,accent:Color,address:bool,progress:Option<f32>)->TextInputResp{
+        // Editing an address uses the whole field; browser controls are hidden.
+        self.interact(id,r,CursorKind::Text);
+        let inner=Rect::new(r.x+if address{14.0}else{43.0},r.y,(r.w-if address{28.0}else{58.0}).max(1.0),r.h);
         let style=TextStyle::new(crate::gfx::ts::BODY);
         let press=self.input.just_pressed&&self.input.pressed_id==Some(id);
         let release=self.input.released.filter(|(owner,_)|*owner==id);
@@ -421,7 +421,9 @@ impl<'a, 'g> Ui<'a, 'g> {
             let old=self.input.caret.min(buf.chars().count());
             self.input.selection_anchor=Some(if self.input.shift{self.input.selection_anchor.unwrap_or(old)}else{caret});
             self.input.caret=caret;self.input.selection_all=false;self.input.text_word_drag=self.input.double_click;
-            if self.input.double_click{
+            if self.input.double_click && address{
+                self.input.selection_anchor=Some(0);self.input.caret=buf.chars().count();self.input.selection_all=true;
+            }else if self.input.double_click{
                 let chars:Vec<_>=buf.chars().collect();let mut start=caret.min(chars.len().saturating_sub(1));let mut end=start;
                 if let Some(c)=chars.get(start){let word=c.is_alphanumeric()||*c=='_';while start>0&&(chars[start-1].is_alphanumeric()||chars[start-1]=='_')==word{start-=1;}while end<chars.len()&&(chars[end].is_alphanumeric()||chars[end]=='_')==word{end+=1;}}
                 self.input.selection_anchor=Some(start);self.input.caret=end;
@@ -466,8 +468,18 @@ impl<'a, 'g> Ui<'a, 'g> {
         }
         let radius=if address{12.0}else{r.h/2.0};
         self.c.fill_rrect(r,radius,Color::white(if focused{0.10}else{0.055}));
-        if focused||address{self.c.stroke_rrect(r.inset(0.5,0.5),radius,if focused{accent.mul_alpha(0.65)}else{Color::white(0.09)},1.0);}
-        self.c.icon(if address{Icon::Globe}else{Icon::Search},Rect::new(r.x+if address{12.0}else{15.0},r.center().y-8.0,16.0,16.0),palette::TEXT_DIM);
+        if let Some(progress) = progress {
+            // Actual navigation milestones fill the entire field behind its
+            // text and controls. No timer, pulsing or simulated progress.
+            self.c.push_outline_mask(&crate::pill::shape::segments(r, radius));
+            self.c.fill_rect(r, accent.mul_alpha(0.035));
+            let width = r.w * progress.clamp(0.0, 1.0);
+            self.c.fill_rect(Rect::new(r.x, r.y, width, r.h), accent.mul_alpha(0.14));
+            self.c.fill_rect(Rect::new(r.x, r.bottom()-2.0, width, 2.0), accent);
+            self.c.pop_shape_mask();
+        }
+        self.c.stroke_rrect(r.inset(0.5,0.5),radius,Color::white(if focused{0.16}else{0.09}),1.0);
+        if !address{self.c.icon(Icon::Search,Rect::new(r.x+15.0,r.center().y-8.0,16.0,16.0),palette::TEXT_DIM);}
         let compact=address&&!focused;let location=if compact{crate::search_web::display_address(buf)}else{String::new()};let display=if compact{&location}else{buf};
         let (cx,_,height)=self.c.text_caret(display,&style,10000.0,if focused{self.input.caret}else{0});let y=inner.center().y-height/2.0;
         let width=self.c.measure(display,&style,10000.0).0;

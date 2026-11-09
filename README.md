@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/music-a65be8ef97c6.png" width="880" alt="Lumo's Music page with album artwork, playback controls, a seek bar and synced lyrics">
+  <img src="docs/brand/readme/lumo/music-028b39114adb.png" width="880" alt="Lumo's Music page with album artwork, playback controls, a seek bar and synced lyrics">
 </p>
 
 <p align="center"><sub>Windows 10 &amp; 11 · x64 · Free and open source · No Lumo account needed</sub></p>
@@ -62,30 +62,71 @@ when enabled. Open **Settings** from the gear in the header.
 
 Swipe left or right over the closed island to expand it into Search. Swipe
 again anywhere over Search to collapse it. Open pages keep their normal
-horizontal navigation. The list shows frequently opened results first, with
-native Windows icons. When nothing matches, the island shrinks around a clear
-web-search card with your selected engine and query preview.
+horizontal navigation. Clicking outside closes Search unless its Keep open
+pin is enabled, including after dismissing a result's context menu. The compact
+list shows frequently opened results first, with native Windows icons and a
+clear selection marker. The island fits the
+number of results, so a single match uses just one row. When nothing matches,
+the island shrinks around a web-search card with your selected engine and
+query preview. Optional Google suggestions can appear beneath it; turn them
+on in **Settings > Search**. They send unmatched text or address-bar search text to Google after you pause
+typing and are off by default. Website addresses are excluded.
 
 **Settings > Search** controls applications, Windows Settings and optional web
-search. Right-click results for native Shell commands, including administrator
-actions where supported. Lumo commands and preference pages are excluded.
+search. Right-click results for dark native Windows menus with administrator
+actions where supported, copy-path and separate icon-file/icon-image copying.
+Frequent results can be removed individually. Lumo commands and preference pages are excluded.
+
+Search can also find **Windows services**, installed **PowerToys tools**, and
+**VS Code commands**. Enable services to see their last-read state and explicit
+Start/Stop buttons; Windows asks for administrator access when needed.
+PowerToys results include tool settings and enabled tools from its running app.
+VS Code commands appear only for open Code or Code Insiders windows. Selecting
+a command uses that existing window; Lumo never starts VS Code for it. Closed
+windows are discarded from cached search results.
+These extra sources refresh on opening Search or through **Refresh search
+sources**. Each source has its own toggle in **Settings > Search**.
 
 Optional web search opens Bing, Google, DuckDuckGo or Brave inside the island,
 using the installed Edge WebView2 Runtime. It starts only when you choose a
-web search. Its rounded browser includes an address bar with loading progress,
-back/forward, refresh/stop and an option to continue in your default browser.
+web action, or press <kbd>Ctrl+Enter</kbd> to search the current query with your
+chosen engine (an empty field opens its home page). The neutral search field has
+no browser button. A unified address bar contains navigation, refresh/stop,
+default-browser, mini-browser, pin and resume icons. It shows the webpage title
+while browsing; click or press <kbd>Ctrl+L</kbd> to edit the full URL with all icons
+hidden. Double-click selects the entire URL, including slashes. Optional Google
+suggestions also work while typing an address-bar search. Loading fills the
+rounded bar and follows its bottom edge. Search has no close button; press
+<kbd>Esc</kbd> or swipe horizontally to close it.
+The browser expands vertically at the same width as Search by default.
+**Settings > Search > Browser** offers Tall or Wide layout and height presets.
+Pages open at their normal size with a desktop user agent; Lumo does not zoom
+them to fit the window. Type a URL or bare domain such as `hirunews.lk` to see
+**Visit** and open it directly instead of searching for it.
+The mini browser icon moves the current page into a separate, resizable window
+that stays on top. Return it to the island with the matching return icon;
+the page and its history stay intact. Local app search remains available
+while the mini browser is open. Resize it freely from 280 × 200 up to your
+screen's available space; its size is remembered. Loading progress fills the
+address field, and the search-to-browser transition fades smoothly.
 No browser engine is bundled. [Search controls and scope](docs/search.md).
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/search-ff4a6d099aad.png" width="680" alt="Search inside the Pill island with native Windows app icons and a compact result list">
+  <img src="docs/brand/readme/lumo/search-2fc837ec498f.png" width="680" alt="Search inside the Pill island with native Windows app icons and a compact result list">
 </p>
 
 ### Music that stays within reach
 
 Control the music apps that use Windows media controls, seek through a track,
 and follow matched lyrics from LRCLIB or your local library. The current line
-can stay on the closed island. A separate, resizable lyrics window gives the
-song more room when you want it.
+can stay on the closed island. Select the mini player icon in Music to open a
+separate, resizable player with lyrics. Its exit mini player icon returns to
+Music in the island; the same icon is available in Music while the mini player
+is open.
+
+<p align="center">
+  <img src="docs/brand/readme/lumo/mini-player-f7c19e5dd0f8.png" width="320" alt="Lumo mini player with synced lyrics, playback controls and the exit mini player icon at the top right">
+</p>
 
 Korean and Chinese pronunciation can appear beneath the original text.
 [Music setup and local files](#guides) are covered below.
@@ -158,7 +199,7 @@ space around it. Both themes keep the same pages and controls, with brief
 volume, charging and headset notices.
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/pill-5c0bee0a71c2.png" width="880" alt="The Music page in Lumo's Pill theme, floating below the top edge with rounded corners">
+  <img src="docs/brand/readme/lumo/pill-e2d7cae1be61.png" width="880" alt="The Music page in Lumo's Pill theme, floating below the top edge with rounded corners">
 </p>
 
 Change themes under **Settings > Appearance**. The rest of the app stays

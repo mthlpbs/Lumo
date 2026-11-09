@@ -589,7 +589,7 @@ fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &F
     }
     if toggle_popup { st.cmd(if st.lyrics_popup_open { Command::CloseLyricsWindow } else { Command::OpenLyricsWindow }); }
     if st.media.as_ref().is_some_and(|m| m.music_source.is_some()) { lyrics_toggle_tip(ui, st, lrc_r, area); }
-    if popup_available { button_tip(ui, pop_r, if st.lyrics_popup_open { "Return to island" } else { "Open lyrics" }); }
+    if popup_available { button_tip(ui, pop_r, if st.lyrics_popup_open { "Exit mini player" } else { "Open mini player" }); }
     // The same switch as Settings: download the readings, then read again.
 }
 
@@ -606,7 +606,7 @@ pub(crate) fn popup_button(ui: &mut Ui, r: Rect, open: bool) -> bool {
     let response = ui.button(wid("media.lyrics-popup"), r);
     let alpha = if response.pressed { 0.24 } else if response.hovered { 0.18 } else { 0.11 };
     ui.c.fill_circle(r.center(), r.w.min(r.h)/2.0, Color::white(alpha));
-    ui.c.icon(if open { Icon::PopIn } else { Icon::PopOut }, r.inset(5.0,5.0), Color::white(if response.hovered { 0.95 } else { 0.72 }));
+    ui.c.icon(if open { Icon::ExitMiniPlayer } else { Icon::MiniPlayer }, r.inset(5.0,5.0), Color::white(if response.hovered { 0.95 } else { 0.72 }));
     response.clicked
 }
 

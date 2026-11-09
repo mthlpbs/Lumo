@@ -11,7 +11,7 @@
 ; survive uninstalling (only the cache in %LOCALAPPDATA%\Lumo is removed).
 
 #ifndef AppVersion
-  #define AppVersion "2026.1109.1"
+  #define AppVersion "2026.1109.9"
 #endif
 #ifndef ExeSource
   #define ExeSource "..\target\release\lumo.exe"

@@ -56,7 +56,7 @@ impl Section {
     fn description(self) -> &'static str {
         match self {
             Self::Ai => "Your provider, models and local chat history.",
-            Self::Search => "Find apps, Lumo actions and settings in one place.",
+            Self::Search => "Find apps, settings, services and VS Code commands.",
             Self::General => "Make Lumo fit your everyday routine.",
             Self::Display => "Choose where the island appears and when it stays visible.",
             Self::Appearance => "Give your island a look that feels like you.",
@@ -451,19 +451,33 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
             f.end();
             if ui.pill(wid("preferences.open-search"),Rect::new(f.x+4.0,f.y,148.0,32.0),"Open Search",Some(Icon::Search),PillStyle::Primary(st.accent)).clicked {st.cmd(Command::OpenSearch);}
             f.y+=48.0;
-            f.group(ui,"Search sources",2);
+            f.group(ui,"Search sources",5);
             if f.toggle(ui,"preferences.search-apps","Applications","Registered desktop and Microsoft Store apps",Some(st.settings.search.apps)){st.settings.search.apps=!st.settings.search.apps;}
             if f.toggle(ui,"preferences.search-settings","Windows settings","Display, Wi-Fi, sound, privacy and other system pages",Some(st.settings.search.settings)){st.settings.search.settings=!st.settings.search.settings;}
+            if f.toggle(ui,"preferences.search-services","Windows services","Find services and request Start or Stop; Windows may ask for admin access",Some(st.settings.search.services)){st.settings.search.services=!st.settings.search.services;}
+            if f.toggle(ui,"preferences.search-powertoys","PowerToys tools","Tools and their settings, when PowerToys is installed",Some(st.settings.search.powertoys)){st.settings.search.powertoys=!st.settings.search.powertoys;}
+            if f.toggle(ui,"preferences.search-vscode","VS Code commands","Commands for open VS Code windows; never starts the app",Some(st.settings.search.vscode_commands)){st.settings.search.vscode_commands=!st.settings.search.vscode_commands;}
             f.end();
-            if st.settings.search.apps && ui.pill(wid("preferences.refresh-search"),Rect::new(f.x+4.0,f.y,166.0,30.0),"Refresh applications",None,PillStyle::Utility).clicked {st.cmd(Command::RefreshSearchApps);}
+            if (st.settings.search.apps || crate::services::search_integrations::enabled(&st.settings.search)) && ui.pill(wid("preferences.refresh-search"),Rect::new(f.x+4.0,f.y,166.0,30.0),"Refresh search sources",None,PillStyle::Utility).clicked {st.cmd(Command::RefreshSearchApps);}
             f.y+=44.0;
-            f.group(ui,"Web search",if st.settings.search.web{2}else{1});
+            f.group(ui,"Web search",if st.settings.search.web{3}else{1});
             if f.toggle(ui,"preferences.search-web","Search the web when nothing matches","Open results inside Lumo using installed Edge WebView2",Some(st.settings.search.web)){st.settings.search.web=!st.settings.search.web;}
             if st.settings.search.web {let engines=lumo_core::search::Engine::ALL;let labels=engines.map(|e|e.name());if let Some(i)=f.choices(ui,"preferences.search-engine","Search engine",&labels,engines.iter().position(|e|*e==st.settings.search.engine).unwrap_or(0)){st.settings.search.engine=engines[i];}}
+            if st.settings.search.web && f.toggle(ui,"preferences.google-suggestions","Google suggestions","Suggest local misses and address-bar searches using Google",Some(st.settings.search.google_suggestions)){st.settings.search.google_suggestions=!st.settings.search.google_suggestions;}
             f.end();
+            if st.settings.search.web {
+                f.group(ui,"Browser",3);
+                if let Some(i)=f.choices(ui,"preferences.browser-layout","Island browser layout",&["Tall","Wide"],usize::from(st.settings.search.browser_wide)){st.settings.search.browser_wide=i==1;}
+                let heights=[480u16,680,840];
+                if let Some(i)=f.choices(ui,"preferences.browser-height","Island browser height",&["Short","Tall","Extra tall"],heights.iter().position(|h|*h==st.settings.search.browser_height).unwrap_or(usize::MAX)){st.settings.search.browser_height=heights[i];}
+                let size=f.row(ui,"Mini browser size",&format!("{} × {} · Resize freely from the window edges",st.settings.search.mini_width,st.settings.search.mini_height));
+                if ui.pill(wid("preferences.mini-size-reset"),Rect::new(size.right()-64.0,size.y+17.0,64.0,28.0),"Reset",None,PillStyle::Utility).clicked{st.settings.search.mini_width=560;st.settings.search.mini_height=680;}
+                f.end();
+            }
             if ui.pill(wid("preferences.search-clear-history"),Rect::new(f.x+4.0,f.y,194.0,30.0),"Clear frequent results",None,PillStyle::Utility).clicked {st.store.search_usage.clear();st.save();crate::search::refresh(st);}
             f.y+=46.0;
-            ui.c.text("Frequent results reflect what you open, not a saved query history. Web search sends a query only when you choose it. The browser closes with Search.",Rect::new(f.x+4.0,f.y,f.w-8.0,60.0),&TextStyle::footnote().color(palette::TEXT_DIM).wrap().top());f.y+=70.0;
+            let privacy=if st.settings.search.google_suggestions{"Google suggestions sends local misses and address-bar search text to Google after a short pause. Website addresses are excluded. Suggestions and typed queries are not saved. Switching it off cancels pending requests."}else{"Frequent results reflect what you open, not a saved query history. Text stays local until you choose web search. Google suggestions is off by default."};
+            ui.c.text(privacy,Rect::new(f.x+4.0,f.y,f.w-8.0,60.0),&TextStyle::footnote().color(palette::TEXT_DIM).wrap().top());f.y+=70.0;
         }
         Section::Ai => { f.y=crate::pages::ai::settings(ui,st,area); }
         Section::General => {
@@ -645,6 +659,18 @@ mod tests {
         assert!(st.cmds.is_empty(),"opening preferences does not start discovery");
         for id in ["preferences.search-gesture","preferences.search-apps","preferences.search-web","preferences.search-settings"]{window.input.clicked=Some((wid(id),MouseButton::Left));window.draw(&mut st).unwrap();}
         assert!(!st.settings.search.horizontal_scroll&&!st.settings.search.apps&&st.settings.search.web&&!st.settings.search.settings);
+        for id in ["preferences.search-services","preferences.search-powertoys","preferences.search-vscode"]{window.input.clicked=Some((wid(id),MouseButton::Left));window.draw(&mut st).unwrap();}
+        assert!(st.settings.search.services&&!st.settings.search.powertoys&&!st.settings.search.vscode_commands);
+        for id in ["preferences.search-actions","preferences.search-browser-content","preferences.action-add"]{assert!(!window.hits.iter().any(|h|h.id==wid(id)));}
+        if let Some(dir)=std::env::var_os("LUMO_SEARCH_QA"){let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();window.scroll=156.0;let(w,h,p,_,_)=window.selftest_capture(&mut st,Section::Search).unwrap();crate::png::save_rgba(dir.join("search-sources.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+        window.input.clicked=Some((wid("preferences.google-suggestions"),MouseButton::Left));window.draw(&mut st).unwrap();assert!(st.settings.search.google_suggestions);
+        window.scroll=window.max_scroll;window.draw(&mut st).unwrap();
+        window.input.clicked=Some((wid_n("preferences.browser-layout",1),MouseButton::Left));window.draw(&mut st).unwrap();assert!(st.settings.search.browser_wide);
+        window.input.clicked=Some((wid_n("preferences.browser-height",2),MouseButton::Left));window.draw(&mut st).unwrap();assert_eq!(st.settings.search.browser_height,840);
+        assert!(!window.hits.iter().any(|h|h.id==wid("preferences.desktop-sites")));
+        st.settings.search.mini_width=389;st.settings.search.mini_height=317;
+        window.input.clicked=Some((wid("preferences.mini-size-reset"),MouseButton::Left));window.draw(&mut st).unwrap();assert_eq!((st.settings.search.mini_width,st.settings.search.mini_height),(560,680));
+        if let Some(dir)=std::env::var_os("LUMO_SEARCH_QA"){let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();let(w,h,p,_,_)=window.selftest_capture(&mut st,Section::Search).unwrap();crate::png::save_rgba(dir.join("browser-preferences.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
         window.input.clicked=Some((wid("preferences.open-search"),MouseButton::Left));window.draw(&mut st).unwrap();assert!(st.cmds.contains(&Command::OpenSearch));
         st.settings.search=Default::default();window.draw(&mut st).unwrap();window.input.clicked=Some((wid("preferences.refresh-search"),MouseButton::Left));window.draw(&mut st).unwrap();assert!(st.cmds.contains(&Command::RefreshSearchApps));
         if let Some(dir)=std::env::var_os("LUMO_SEARCH_QA"){let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();window.scroll=0.0;let(w,h,p,_,_)=window.selftest_capture(&mut st,Section::Search).unwrap();crate::png::save_rgba(dir.join("search-preferences.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
