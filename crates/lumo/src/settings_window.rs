@@ -576,6 +576,14 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
             if let Some(i) = f.choices(ui, "preferences.short-break", "Short break", &["3 min", "5 min", "10 min", "15 min"], values.iter().position(|&v| v == st.settings.pomodoro.short_break_min).unwrap_or(usize::MAX)) { st.settings.pomodoro.short_break_min = values[i]; }
             let values = [10, 15, 20, 30];
             if let Some(i) = f.choices(ui, "preferences.long-break", "Long break", &["10 min", "15 min", "20 min", "30 min"], values.iter().position(|&v| v == st.settings.pomodoro.long_break_min).unwrap_or(usize::MAX)) { st.settings.pomodoro.long_break_min = values[i]; }
+            f.end();
+            f.group(ui, "Sessions", 4);
+            let values = [0, 2, 3, 4, 6];
+            if let Some(i) = f.choices(ui, "preferences.long-every", "Focus sessions before a long break", &["Off", "2", "3", "4", "6"], values.iter().position(|&v| v == st.settings.pomodoro.long_every).unwrap_or(usize::MAX)) { st.settings.pomodoro.long_every = values[i]; }
+            let values = [0, 4, 6, 8, 12];
+            if let Some(i) = f.choices(ui, "preferences.focus-goal", "Daily goal", &["Off", "4 sessions", "6 sessions", "8 sessions", "12 sessions"], values.iter().position(|&v| v == st.settings.pomodoro.daily_goal).unwrap_or(usize::MAX)) { st.settings.pomodoro.daily_goal = values[i]; }
+            if f.toggle(ui, "preferences.auto-breaks", "Start breaks automatically", "When a focus session ends", Some(st.settings.pomodoro.auto_start_breaks)) { st.settings.pomodoro.auto_start_breaks = !st.settings.pomodoro.auto_start_breaks; }
+            if f.toggle(ui, "preferences.auto-focus", "Start focus automatically", "When a break ends", Some(st.settings.pomodoro.auto_start_focus)) { st.settings.pomodoro.auto_start_focus = !st.settings.pomodoro.auto_start_focus; }
         }
         Section::Notifications => {
             f.group(ui, "Popups", 3);

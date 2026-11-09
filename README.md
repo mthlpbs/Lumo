@@ -180,7 +180,7 @@ Counters are active while their page or an enabled readout needs them.
 
 | Page | What it keeps close |
 | :--- | :--- |
-| **Focus** | A Pomodoro timer, with its countdown on the closed island. |
+| **Focus** | A Pomodoro timer, with its countdown on the closed island, a daily goal, streaks and the last seven days at a glance. |
 | **Tasks** | A small local to-do list. |
 | **Script reader** | A teleprompter beneath your webcam, enabled from Add-ons. |
 | **Clipboard history** | Copied text in memory, with password-manager privacy markers respected. |

@@ -41,6 +41,8 @@ pub struct Store {
     pub shelf: Shelf,
     /// Day key → completed focus sessions.
     pub focus_sessions: BTreeMap<String, u32>,
+    /// Day key → minutes of completed focus.
+    pub focus_minutes: BTreeMap<String, u32>,
     pub last_page: String,
     /// The Script page's script and its pace.
     pub script: crate::script::Script,
@@ -55,6 +57,7 @@ impl Default for Store {
             water: serde_json::Value::Null,
             shelf: Shelf::default(),
             focus_sessions: BTreeMap::new(),
+            focus_minutes: BTreeMap::new(),
             last_page: String::new(),
             script: crate::script::Script::default(),
         }
