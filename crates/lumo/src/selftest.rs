@@ -1131,6 +1131,10 @@ impl SelfTest {
         seed_clipboard(st);
         let today = st.day_key();
         st.store.focus_sessions.insert(today, 2);
+        // A week of history for the Focus page's chart and streak.
+        for (d, n) in [(-1, 6), (-2, 8), (-3, 4), (-4, 9), (-6, 3)] {
+            st.store.focus_sessions.insert(st.local.add_days(d).day_key(), n);
+        }
         self.seed_shelf(st);
 
         // Read-only: the Store build must reach the startup task its manifest declares.

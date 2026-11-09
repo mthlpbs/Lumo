@@ -316,6 +316,7 @@ impl Settings {
         p.short_break_min = p.short_break_min.clamp(1, 60);
         p.long_break_min = p.long_break_min.clamp(1, 120);
         p.long_every = p.long_every.min(12);
+        p.daily_goal = p.daily_goal.min(24);
         self
     }
 }
