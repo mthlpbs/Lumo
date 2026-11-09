@@ -12,7 +12,7 @@ Target amd64-unicode
 SetCompressor /SOLID lzma
 
 !define APPNAME "Lumo"
-!define VERSION "2026.1109.9"
+!define VERSION "2026.1109.10"
 !define PUBLISHER "mthlpbs"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Lumo"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
@@ -31,7 +31,7 @@ InstallDir "$LOCALAPPDATA\Programs\Lumo"
 InstallDirRegKey HKCU "Software\Lumo" "InstallDir"
 BrandingText "${APPNAME} ${VERSION}"
 
-VIProductVersion "2026.1109.9.0"
+VIProductVersion "2026.1109.10.0"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "FileDescription" "Lumo installer"
