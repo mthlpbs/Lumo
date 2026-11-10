@@ -119,7 +119,8 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, body: Rect) -> bool {
     let date = fmt_date_short(&st.local);
     let time = fmt_clock(&st.local, st.settings.use_24h);
     let (dw, _) = ui.c.measure(&date, &ts, 400.0);
-    let (tw, _) = ui.c.measure(&time, &ts, 400.0);
+    let clock=crate::closed::clock_style(st,13.0);
+    let (tw, _) = ui.c.measure(&time, &clock, 400.0);
     let chip_w = (dw + DATE_GAP + tw + 2.0 * CHIP_PAD).ceil();
 
     // Left: the volume, as the volume pop-up picks its glyph.
@@ -169,7 +170,7 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, body: Rect) -> bool {
     ui.c.stroke_rrect(chip, CHIP_H / 2.0 - 0.5, CHIP_RIM, 1.0);
     let tx = chip.x + (cw - (dw + DATE_GAP + tw)) / 2.0;
     ui.c.text(&date, Rect::new(tx, body.y, dw + 2.0, body.h), &ts);
-    ui.c.text(&time, Rect::new(tx + dw + DATE_GAP, body.y, tw + 2.0, body.h), &ts);
+    ui.c.text(&time, Rect::new(tx + dw + DATE_GAP, body.y, tw + 2.0, body.h), &clock);
 
     // Hug what was just measured from the next frame on.
     let want = even(left_w(st, H) + chip_w + right_w);

@@ -556,7 +556,27 @@ fn powertoys() -> Vec<Entry> {
             launch(&exe, format!("--open-settings={key}")),
         ));
     }
+    if let Some(root)=exe.parent() {
+        for entry in &mut out {
+            let key=entry.id.trim_start_matches("toy-settings-").trim_start_matches("toy-");
+            entry.icon_path=tool_icon_path(root,key).map(|p|p.to_string_lossy().into_owned());
+        }
+    }
     out
+}
+
+fn tool_icon_path(root:&Path,key:&str)->Option<PathBuf> {
+    let name=match key {
+        "ColorPicker"=>"PowerToys.ColorPickerUI.exe", "Measure Tool"|"MeasureTool"|"ScreenRuler"=>"PowerToys.MeasureToolUI.exe",
+        "FancyZones"=>"PowerToys.FancyZonesEditor.exe", "Hosts"=>"PowerToys.Hosts.exe", "ShortcutGuide"=>"PowerToys.ShortcutGuide.exe", "Workspaces"=>"PowerToys.WorkspacesEditor.exe", "PowerOCR"|"PowerOcr"=>"PowerToys.PowerOCR.exe",
+        "EnvironmentVariables"=>"PowerToys.EnvironmentVariables.exe", "KeyboardManager"|"KBM"=>"PowerToys.KeyboardManagerEditor.exe",
+        "Peek"=>"PowerToys.Peek.UI.exe", "MouseJump"=>"PowerToys.MouseJump.WinUI3.exe", "RegistryPreview"=>"PowerToys.RegistryPreview.exe",
+        "AdvancedPaste"=>"PowerToys.AdvancedPaste.exe", "ImageResizer"=>"PowerToys.ImageResizer.exe", "PowerRename"=>"PowerToys.PowerRename.exe",
+        "AlwaysOnTop"=>"PowerToys.AlwaysOnTop.exe", "Awake"=>"PowerToys.Awake.exe", "PowerLauncher"=>"PowerToys.PowerLauncher.exe",
+        _=>return Some(root.join("PowerToys.exe")).filter(|p|p.is_file()),
+    };
+    [root.join("WinUI3Apps").join(name),root.join(name),root.join("KeyboardManagerEditor").join(name)]
+        .into_iter().find(|p|p.is_file())
 }
 
 const CODE_COMMANDS: &[(&str, &str, &[u16])] = &[
@@ -587,7 +607,7 @@ fn vscode_entries(windows: &[CodeWindow], out: &mut Vec<Entry>) {
         for (title, words, keys) in CODE_COMMANDS {
             out.push(item(
                 &format!("code-{}-{}-{title}", window.pid, window.hwnd),
-                &format!("VS Code: {title}"),
+                title,
                 &window.title,
                 &format!("vscode code {words}"),
                 Group::VSCode,
@@ -737,6 +757,16 @@ pub fn run_action(target: Target, service_action: Option<bool>, sink: EventSink)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn power_toy_icons_prefer_current_tool_binary_over_legacy_layout() {
+        let root=std::env::temp_dir().join(format!("lumo-toy-icons-{}",crate::ai::next_id()));
+        std::fs::create_dir_all(root.join("WinUI3Apps")).unwrap();
+        let modern=root.join("WinUI3Apps/PowerToys.ColorPickerUI.exe");let legacy=root.join("PowerToys.ColorPickerUI.exe");
+        std::fs::write(&modern,[]).unwrap();std::fs::write(&legacy,[]).unwrap();
+        assert_eq!(tool_icon_path(&root,"ColorPicker"),Some(modern.clone()));
+        std::fs::remove_file(&modern).unwrap();assert_eq!(tool_icon_path(&root,"ColorPicker"),Some(legacy.clone()));
+        std::fs::remove_file(&legacy).unwrap();std::fs::remove_dir(root.join("WinUI3Apps")).unwrap();std::fs::remove_dir(root).unwrap();
+    }
     use super::*;
     #[test]
     fn quoting_preserves_windows_arguments() {

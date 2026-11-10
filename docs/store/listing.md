@@ -57,7 +57,7 @@ First release in the Microsoft Store.
 - A tiny to-do list
 - Clipboard history kept in memory only
 - Phone drop: send photos and files from your phone to the Shelf, or Shelf files to your phone, over your Wi-Fi
-- Paired phones: pair a phone once, then send to the Shelf from any network
+- Local QR links: use a local IP address to connect on the same network
 - Volume, charging and Bluetooth headset pop-ups with battery level
 - Starts with Windows (you can turn it off from its menu or in Settings)
 
@@ -75,7 +75,7 @@ Category: utility/productivity. No violence, sexual content, gambling or purchas
 
 ## Notes for certification
 
-> Lumo is a desktop app that draws a small "island" at the top centre of the primary screen. No sign-in is needed. Point at the top centre of the screen (or click the island) to open it. Play music in any app that uses Windows media controls (Spotify, Edge) to see the music page and synced lyrics. Lyrics need an internet connection; everything else works offline. Phone drop (Shelf › Phone) serves a page on the local network only while its panel is open, for a phone on the same Wi-Fi. Pair a phone (same panel) lets a paired phone reach the PC from other networks through drop.oyenza.com; with no paired phone the app makes no such connection. "Start with Windows" is the package's startup task (TaskId LumoStartup); users can turn it off from the tray icon's menu or in Settings > Apps > Startup. Add-ons (the + tab) contains switches for Script reader and Clipboard history. Both are built in. Updates are temporarily disabled.
+> Lumo is a desktop app that draws a small "island" at the top centre of the primary screen. No sign-in is needed. Point at the top centre of the screen (or click the island) to open it. Play music in any app that uses Windows media controls (Spotify, Edge) to see the music page and synced lyrics. Lyrics need an internet connection; everything else works offline. Phone drop (Shelf › Phone) serves a page on the local network only while its panel is open, for a phone on the same Wi-Fi. Phone Drop offers a local IP QR link and a configurable receive folder. Internet pairing has been removed. "Start with Windows" is the package's startup task (TaskId LumoStartup); users can turn it off from the tray icon's menu or in Settings > Apps > Startup. Add-ons (the + tab) contains switches for Script reader and Clipboard history. Both are built in. Updates are temporarily disabled.
 
 **runFullTrust justification**
 

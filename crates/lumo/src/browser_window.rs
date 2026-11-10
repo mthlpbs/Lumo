@@ -159,6 +159,7 @@ impl BrowserWindow {
         self.dirty = true;
     }
     pub fn hide(&mut self) {
+        unsafe{let _=KillTimer(self.hwnd,77);}
         if self.shown {
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -188,6 +189,7 @@ impl BrowserWindow {
         )
     }
     pub fn draw(&mut self, st: &mut AppState) -> Result<bool> {
+        self.input.begin_frame();
         if !self.dirty && self.shown {
             return Ok(false);
         }
@@ -220,6 +222,10 @@ impl BrowserWindow {
         let mut ui = Ui::new(&mut c, &mut self.input, &mut self.hits, st.now);
         crate::search::draw_browser(&mut ui, st, area);
         let repaint = ui.repaint_requested();
+        unsafe{
+            let _=KillTimer(self.hwnd,77);
+            if !st.power.saver&&GetForegroundWindow()==self.hwnd{if let Some(t)=ui.input.caret_wake{SetTimer(self.hwnd,77,((t-st.now)*1000.0).ceil().max(10.0)as u32,None);}}
+        }
         if let Some(text) = ui.input.clipboard_write.take() {
             st.cmd(Command::CopyText(text));
         }
@@ -379,16 +385,8 @@ impl BrowserWindow {
                     let mut r = RECT::default();
                     let _ = GetClientRect(self.hwnd, &mut r);
                     let s = self.gfx.scale();
-                    let e = (6.0 * s).round() as i32;
-                    let hit = match (p.x < e, p.x >= r.right - e, p.y < e, p.y >= r.bottom - e) {
-                        (true, _, true, _) => HTTOPLEFT,
-                        (_, true, true, _) => HTTOPRIGHT,
-                        (true, _, _, true) => HTBOTTOMLEFT,
-                        (_, true, _, true) => HTBOTTOMRIGHT,
-                        (true, _, _, _) => HTLEFT,
-                        (_, true, _, _) => HTRIGHT,
-                        (_, _, true, _) => HTTOP,
-                        (_, _, _, true) => HTBOTTOM,
+                    if let Some(hit) = crate::window::mini_resize_hit(p,r,s) { return Some(LRESULT(hit as isize)); }
+                    let hit = match () {
                         _ if p.y
                             < (72.0*s) as i32
                             && !self.hits.iter().any(|h| {
@@ -529,6 +527,7 @@ impl BrowserWindow {
                         crate::ai_window::text_key(&mut self.input, self.hwnd, wp);
                     }
                 }
+                WM_TIMER if wp.0==77 => {let _=KillTimer(self.hwnd,77);}
                 WM_PAINT => {
                     let _ = windows::Win32::Graphics::Gdi::ValidateRect(self.hwnd, None);
                 }
@@ -555,7 +554,35 @@ impl BrowserWindow {
 impl Drop for BrowserWindow {
     fn drop(&mut self) {
         unsafe {
+            let _=KillTimer(self.hwnd,77);
             let _ = DestroyWindow(self.hwnd);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]#[ignore="requires a Windows desktop; offline mini-browser corner resize"]
+    fn mini_corners_resize_diagonally_without_navigation() {
+        let mut st=AppState::new(Default::default(),Default::default());st.power.saver=true;
+        let mut w=BrowserWindow::new(HWND::default(),&st.settings.search).unwrap();
+        for scale in [1.0,1.25,1.5,2.0] {w.gfx.set_dpi(scale*96.0);let hwnd=w.hwnd;crate::window::check_mini_resize_corners(hwnd,scale,|lp|w.message(&mut st,WM_NCHITTEST,WPARAM(0),lp));}
+        for (width,height) in [(420,460),(680,740)] {unsafe{SetWindowPos(w.hwnd,None,0,0,width,height,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE).unwrap();}w.message(&mut st,WM_SIZE,WPARAM(0),LPARAM(0));}
+        assert!(st.cmds.is_empty());
+    }
+    #[test]#[ignore="requires a Windows desktop; renders an offline browser surface without a WebView or network"]
+    fn browser_action_hints_draw_without_navigation_or_layout_changes(){
+        let mut st=AppState::new(Default::default(),Default::default());st.now=100.0;st.power.saver=true;st.settings.search.mini_width=560;st.settings.search.mini_height=680;st.search.detached=true;st.search.navigation.url="https://example.org/fixture".into();st.search.navigation.title="Offline browser fixture".into();
+        let mut w=BrowserWindow::new(HWND::default(),&st.settings.search).unwrap();w.input.mouse=None;let(width,_,quiet)=w.capture(&mut st);let hits=w.hits.clone();let scale=w.gfx.scale();
+        let toolbar=crate::search::browser_toolbar(Rect::new(0.0,0.0,width as f32/scale,st.settings.search.mini_height as f32),true);
+        for(id,button)in[("back",toolbar.back),("forward",toolbar.forward),("reload",toolbar.reload),("mini",toolbar.mini),("external",toolbar.external),("pin",toolbar.pin),("resume",toolbar.resume),("close",toolbar.close.unwrap())]{
+            w.input.mouse=Some(button.center());let(_,_,hovered)=w.capture(&mut st);
+            let changed=quiet.chunks_exact(4).zip(hovered.chunks_exact(4)).enumerate().filter(|(n,(a,b))|a!=b&&!button.contains(Point::new((n%width as usize)as f32/scale,(n/width as usize)as f32/scale))).count();
+            assert!(changed>50,"{id} must paint an explanatory tooltip outside its icon");
+            for h in &hits{assert_eq!(w.hits.iter().find(|v|v.id==h.id).unwrap().rect,h.rect);}
+            assert!(st.cmds.is_empty(),"hover must not navigate, pin or close the browser");
+            if id=="pin"{if let Some(dir)=std::env::var_os("LUMO_SEARCH_QA"){crate::png::save_rgba(std::path::PathBuf::from(dir).join("browser-action-hint.png"),width as u32,(hovered.len()/4/width as usize)as u32,&crate::png::pbgra_to_rgba(&hovered)).unwrap();}}
         }
     }
 }

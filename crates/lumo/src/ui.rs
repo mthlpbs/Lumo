@@ -103,10 +103,33 @@ pub struct Input {
     pub double_click:bool,
     pub text_word_drag:bool,
     pub clipboard_write:Option<String>,
+    /// Next visible-editor blink boundary; hosts use a one-shot wake, never a
+    /// frame loop. Cleared before each paint so hidden editors cannot wake it.
+    pub caret_wake:Option<f64>,
+    pub caret_epoch:f64,
+    pub caret_key:Option<(WidgetId,usize,Option<usize>)>,
+    pub caret_period:Option<f64>,
     pub high_surrogate:Option<u16>,
 }
 
 impl Input {
+    pub fn begin_frame(&mut self){self.caret_wake=None;if self.focused.is_none(){self.caret_key=None;}}
+    pub fn caret_visible(&mut self,now:f64,edited:bool,enabled:bool)->bool{
+        if !enabled { self.caret_wake=None;self.caret_key=None;return false; }
+        let Some(owner)=self.focused else{self.caret_wake=None;self.caret_key=None;return false;};
+        let key=(owner,self.caret,self.selection_anchor);
+        if self.caret_key.is_none_or(|k|k.0!=owner){
+            let ms=unsafe{windows::Win32::UI::WindowsAndMessaging::GetCaretBlinkTime()};
+            self.caret_period=match ms{u32::MAX=>None,0=>Some(0.53),_=>Some(ms as f64/1000.0)};
+        }
+        if self.caret_key!=Some(key)||edited||self.just_pressed{self.caret_epoch=now;self.caret_key=Some(key);}
+        let selected=self.selection_anchor.is_some_and(|a|a!=self.caret)||self.selection_all;
+        if selected{self.caret_wake=None;return false;}
+        let Some(period)=self.caret_period else{self.caret_wake=None;return true;};
+        let phase=((now-self.caret_epoch).max(0.0)/period).floor();
+        self.caret_wake=Some(self.caret_epoch+(phase+1.0)*period);
+        phase as u64%2==0
+    }
     /// Called after each frame: one-shot inputs are consumed.
     pub fn end_frame(&mut self) {
         self.clicked = None;
@@ -158,6 +181,8 @@ enum InputLook {
 
 /// The button system: two heights and three looks.
 pub const PILL_SMALL: f32 = 28.0;
+/// One style for multiline drawing, hit-testing, selections and caret metrics.
+pub(crate) fn text_area_style()->TextStyle{TextStyle::new(14.0).top().wrap().line_spacing(1.5)}
 pub const PILL_REGULAR: f32 = 34.0;
 /// Gap between neighbouring capsules.
 pub const PILL_GAP: f32 = 8.0;
@@ -405,37 +430,42 @@ impl<'a, 'g> Ui<'a, 'g> {
         self.text_input_styled(id,r,buf,placeholder,max_chars,InputLook::Area)
     }
 
+    fn text_pointer(&mut self,id:WidgetId,buf:&str,style:&TextStyle,width:f32,origin:Point,multiline:bool){
+        let release=self.input.released.filter(|(owner,_)|*owner==id);
+        // Windows can deliver down and up before the next paint. The release
+        // retains its owner after capture ends, so that press still counts.
+        let press=self.input.just_pressed&&(self.input.pressed_id==Some(id)||release.is_some());
+        if self.input.selection_owner!=Some(id)&&self.input.focused==Some(id){self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.text_scroll=0.0;}
+        if press{
+            if self.input.focused!=Some(id){self.input.focused=Some(id);self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.text_scroll=0.0;self.wants_focus=Some(true);}
+            let at=self.input.press_pos.or(self.input.mouse).unwrap_or(origin);
+            let point=Point::new(at.x-origin.x,if multiline{at.y-origin.y}else{style.size/2.0});
+            let caret=self.c.text_position_at(buf,style,width,point);
+            let old=self.input.caret.min(buf.chars().count());
+            self.input.selection_anchor=Some(if self.input.shift{self.input.selection_anchor.unwrap_or(old)}else{caret});
+            self.input.caret=caret;self.input.selection_all=false;self.input.text_word_drag=self.input.double_click;
+            if self.input.double_click{self.input.selection_anchor=Some(0);self.input.caret=buf.chars().count();self.input.selection_all=true;}
+            self.repaint=true;
+        }
+        if self.input.focused==Some(id)&&!self.input.text_word_drag&&((self.input.pressed_id==Some(id)&&self.input.down&&!press)||release.is_some()){
+            if let Some(at)=release.map(|(_,p)|p).or(self.input.mouse){
+                self.input.caret=self.c.text_position_at(buf,style,width,Point::new(at.x-origin.x,if multiline{at.y-origin.y}else{style.size/2.0}));
+                self.input.selection_all=false;self.repaint=true;
+            }
+        }
+    }
+
     fn search_editor(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize,accent:Color,address:bool,progress:Option<f32>)->TextInputResp{
         // Editing an address uses the whole field; browser controls are hidden.
         self.interact(id,r,CursorKind::Text);
         let inner=Rect::new(r.x+if address{14.0}else{43.0},r.y,(r.w-if address{28.0}else{58.0}).max(1.0),r.h);
         let style=TextStyle::new(crate::gfx::ts::BODY);
-        let press=self.input.just_pressed&&self.input.pressed_id==Some(id);
-        let release=self.input.released.filter(|(owner,_)|*owner==id);
         let mut out=TextInputResp::default();
-        if self.input.selection_owner!=Some(id)&&self.input.focused==Some(id){self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.text_scroll=0.0;}
-        if press{
-            if self.input.focused!=Some(id){self.input.focused=Some(id);self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.text_scroll=0.0;self.wants_focus=Some(true);}
-            let at=self.input.press_pos.or(self.input.mouse).unwrap_or(inner.center());
-            let caret=self.c.text_position(buf,&style,at.x-inner.x+self.input.text_scroll);
-            let old=self.input.caret.min(buf.chars().count());
-            self.input.selection_anchor=Some(if self.input.shift{self.input.selection_anchor.unwrap_or(old)}else{caret});
-            self.input.caret=caret;self.input.selection_all=false;self.input.text_word_drag=self.input.double_click;
-            if self.input.double_click && address{
-                self.input.selection_anchor=Some(0);self.input.caret=buf.chars().count();self.input.selection_all=true;
-            }else if self.input.double_click{
-                let chars:Vec<_>=buf.chars().collect();let mut start=caret.min(chars.len().saturating_sub(1));let mut end=start;
-                if let Some(c)=chars.get(start){let word=c.is_alphanumeric()||*c=='_';while start>0&&(chars[start-1].is_alphanumeric()||chars[start-1]=='_')==word{start-=1;}while end<chars.len()&&(chars[end].is_alphanumeric()||chars[end]=='_')==word{end+=1;}}
-                self.input.selection_anchor=Some(start);self.input.caret=end;
-            }
-            self.repaint=true;
-        }
+        let scroll=if self.input.focused==Some(id)&&self.input.selection_owner==Some(id){self.input.text_scroll}else{0.0};
+        self.text_pointer(id,buf,&style,10000.0,Point::new(inner.x-scroll,inner.y),false);
         let focused=self.input.focused==Some(id);out.focused=focused;
         if focused{
             if self.input.selection_all{self.input.selection_anchor=Some(0);self.input.caret=buf.chars().count();}
-            if !self.input.text_word_drag && ((self.input.pressed_id==Some(id)&&self.input.down&&!press)||release.is_some()){
-                if let Some(at)=release.map(|(_,p)|p).or(self.input.mouse){self.input.caret=self.c.text_position(buf,&style,at.x-inner.x+self.input.text_scroll);self.input.selection_all=false;self.repaint=true;}
-            }
             let mut chars:Vec<char>=buf.chars().collect();let mut caret=self.input.caret.min(chars.len());let mut anchor=self.input.selection_anchor.map(|p|p.min(chars.len()));
             for key in std::mem::take(&mut self.input.keys){
                 let selected=anchor.filter(|a|*a!=caret).map(|a|a.min(caret)..a.max(caret));
@@ -492,50 +522,60 @@ impl<'a, 'g> Ui<'a, 'g> {
         let text_style=if compact{style.center()}else{style};
         if display.is_empty(){self.c.text(placeholder,inner,&style.color(palette::TEXT_FAINT));}
         else{self.c.text(display,Rect::new(inner.x-scroll,inner.y,if focused{width.max(inner.w)+1.0}else{inner.w},inner.h),&text_style);}
-        if focused{self.c.line(Point::new(inner.x+cx-scroll+0.5,y+2.0),Point::new(inner.x+cx-scroll+0.5,y+height-2.0),palette::TEXT,1.5);}
+        if focused&&self.input.caret_visible(self.now,out.changed,!display.is_empty()){self.c.line(Point::new(inner.x+cx-scroll+0.5,y+2.0),Point::new(inner.x+cx-scroll+0.5,y+height-2.0),palette::TEXT,1.5);}
         self.c.unclip();out
     }
 
     fn text_input_styled(&mut self, id: WidgetId, r: Rect, buf: &mut String, placeholder: &str, max_chars: usize, look: InputLook) -> TextInputResp {
         let resp = self.interact(id, r, CursorKind::Text);
         let mut out = TextInputResp::default();
-        if resp.clicked && self.input.focused != Some(id) {
-            self.input.focused = Some(id);
-            self.input.caret = buf.chars().count();
-            self.input.selection_all=false;
-            self.wants_focus = Some(true);
-        }
+        let pointer_active=(self.input.just_pressed&&self.input.pressed_id==Some(id))||(self.input.down&&self.input.pressed_id==Some(id))||self.input.released.is_some_and(|(owner,_)|owner==id);
+        if pointer_active {
+        let pointer_inner=match look{InputLook::Area=>r.inset(3.0,0.0),InputLook::Row{..}=>Rect::new(r.x+36.0,r.y,(r.w-46.0).max(1.0),r.h),_=>r.inset(10.0,0.0)};
+        let area=matches!(look,InputLook::Area);
+        let pointer_style=if area{text_area_style()}else{TextStyle::new(crate::gfx::ts::BODY)};
+        let masked=if matches!(look,InputLook::Secret){"•".repeat(buf.chars().count())}else{String::new()};
+        let display=if matches!(look,InputLook::Secret){masked.as_str()}else{buf.as_str()};
+        let width=if area{pointer_inner.w}else{10000.0};
+        let(cx,cy,ch)=self.c.text_caret(display,&pointer_style,width,if self.input.focused==Some(id){self.input.caret}else{display.chars().count()});
+        let text_h=if area{self.c.measure(display,&pointer_style,width).1}else{ch};
+        let origin=Point::new(pointer_inner.x-if !area&&self.input.focused==Some(id){(cx-pointer_inner.w+3.0).max(0.0)}else{0.0},
+            pointer_inner.y+if area{((pointer_inner.h-text_h)/2.0).max(0.0)-(cy+ch-pointer_inner.h+3.0).max(0.0)}else{0.0});
+        self.text_pointer(id,display,&pointer_style,width,origin,area);
+        }else if self.input.focused==Some(id)&&self.input.selection_owner!=Some(id){self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.text_scroll=0.0;}
+        // Also support widgets activated programmatically through their click ID.
+        if resp.clicked&&self.input.focused!=Some(id){self.input.focused=Some(id);self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.caret=buf.chars().count();self.input.selection_all=false;self.wants_focus=Some(true);}
         let focused = self.input.focused == Some(id);
         out.focused = focused;
         if focused {
             let keys = std::mem::take(&mut self.input.keys);
             let mut chars: Vec<char> = buf.chars().collect();
             let mut caret = self.input.caret.min(chars.len());
+            let mut anchor=if self.input.selection_all{Some(0)}else{self.input.selection_anchor.map(|a|a.min(chars.len()))};
             for k in keys {
+                let selected=anchor.filter(|a|*a!=caret).map(|a|a.min(caret)..a.max(caret));
                 match k {
                     KeyInput::Char(c) if !c.is_control() || (matches!(look,InputLook::Area) && c=='\n') => {
-                        if self.input.selection_all {chars.clear();caret=0;self.input.selection_all=false;}
+                        if let Some(range)=selected{caret=range.start;chars.drain(range);}anchor=None;
                         if chars.len() < max_chars {
                             chars.insert(caret, c);
                             caret += 1;
                             out.changed = true;
                         }
                     }
-                    KeyInput::Backspace | KeyInput::Delete if self.input.selection_all => {chars.clear();caret=0;self.input.selection_all=false;out.changed=true;}
-                    KeyInput::Backspace if caret > 0 => {
-                        caret -= 1;
-                        chars.remove(caret);
-                        out.changed = true;
+                    KeyInput::Backspace|KeyInput::Delete|KeyInput::Cut=>{
+                        if k==KeyInput::Cut{if let Some(range)=selected.clone(){self.input.clipboard_write=Some(chars[range].iter().collect());}}
+                        if let Some(range)=selected{caret=range.start;chars.drain(range);anchor=None;out.changed=true;}
+                        else if k==KeyInput::Backspace&&caret>0{caret-=1;chars.remove(caret);anchor=None;out.changed=true;}
+                        else if k==KeyInput::Delete&&caret<chars.len(){chars.remove(caret);anchor=None;out.changed=true;}
                     }
-                    KeyInput::Delete if caret < chars.len() => {
-                        chars.remove(caret);
-                        out.changed = true;
+                    KeyInput::Copy=>{if let Some(range)=selected{self.input.clipboard_write=Some(chars[range].iter().collect());}},
+                    KeyInput::Left|KeyInput::Right|KeyInput::Home|KeyInput::End|KeyInput::SelectLeft|KeyInput::SelectRight|KeyInput::SelectHome|KeyInput::SelectEnd=>{
+                        let extend=matches!(k,KeyInput::SelectLeft|KeyInput::SelectRight|KeyInput::SelectHome|KeyInput::SelectEnd);
+                        let next=match k{KeyInput::Left if selected.is_some()=>selected.as_ref().unwrap().start,KeyInput::Right if selected.is_some()=>selected.as_ref().unwrap().end,KeyInput::Left|KeyInput::SelectLeft=>caret.saturating_sub(1),KeyInput::Right|KeyInput::SelectRight=>(caret+1).min(chars.len()),KeyInput::Home|KeyInput::SelectHome=>0,_=>chars.len()};
+                        if extend{anchor=Some(anchor.unwrap_or(caret));}else{anchor=None;}caret=next;
                     }
-                    KeyInput::Left => {caret = caret.saturating_sub(1);self.input.selection_all=false;}
-                    KeyInput::Right => {caret = (caret + 1).min(chars.len());self.input.selection_all=false;}
-                    KeyInput::Home => {caret = 0;self.input.selection_all=false;}
-                    KeyInput::End => {caret=chars.len();self.input.selection_all=false;}
-                    KeyInput::SelectAll => {caret=chars.len();self.input.selection_all=true;}
+                    KeyInput::SelectAll => {anchor=Some(0);caret=chars.len();}
                     KeyInput::Enter => out.submitted = true,
                     KeyInput::Escape => {
                         out.cancelled = true;
@@ -545,6 +585,8 @@ impl<'a, 'g> Ui<'a, 'g> {
             }
             *buf = chars.into_iter().collect();
             self.input.caret = caret;
+            self.input.selection_anchor=anchor;
+            self.input.selection_all=anchor==Some(0)&&caret==buf.chars().count()&&caret>0;
             if out.cancelled {
                 self.input.focused = None;
                 self.wants_focus = Some(false);
@@ -579,7 +621,7 @@ impl<'a, 'g> Ui<'a, 'g> {
             }
         };
         let area=matches!(look,InputLook::Area);
-        let st=if area {TextStyle::new(14.0).top().wrap()}else{TextStyle::new(crate::gfx::ts::BODY)};
+        let st=if area {text_area_style()}else{TextStyle::new(crate::gfx::ts::BODY)};
         let masked=if matches!(look,InputLook::Secret){"•".repeat(buf.chars().count())}else{String::new()};
         let display=if matches!(look,InputLook::Secret){masked.as_str()}else{buf.as_str()};
         let caret=if focused{self.input.caret}else{display.chars().count()};
@@ -589,11 +631,14 @@ impl<'a, 'g> Ui<'a, 'g> {
         let scroll_y=if area{(cy+ch-inner.h+3.0).max(0.0)}else{0.0};
         let scroll_x=if !area && focused{(cx-inner.w+3.0).max(0.0)}else{0.0};
         self.c.clip(inner);
-        if focused && self.input.selection_all && !buf.is_empty(){self.c.fill_rrect(inner.inset(0.0,4.0),3.0,Color::rgba(0.2,0.4,0.7,0.6));}
+        if focused{if let Some(a)=self.input.selection_anchor{for hit in self.c.text_selection_wrapped(display,&st,if area{inner.w}else{10000.0},a.min(self.input.caret),a.max(self.input.caret)){
+            let y=if area{inner.y+offset_y-scroll_y}else{inner.center().y-ch/2.0};
+            self.c.fill_rect(Rect::new(inner.x+hit.x-scroll_x,y+hit.y,hit.w,hit.h),Color::rgba(0.2,0.4,0.7,0.6));
+        }}}
         if buf.is_empty(){let mut placeholder_style=st;placeholder_style.vcenter=true;self.c.text(placeholder,inner,&placeholder_style.color(palette::TEXT_FAINT));}
         else if area {let (_,h)=self.c.measure(display,&st,inner.w);self.c.text(display,Rect::new(inner.x,inner.y+offset_y-scroll_y,inner.w,h.max(inner.h)),&st);}
         else {let(w,_)=self.c.measure(display,&st,10000.0);self.c.text(display,Rect::new(inner.x-scroll_x,inner.y,if focused{w.max(inner.w)+1.0}else{inner.w},inner.h),&st);}
-        if focused {let x=inner.x+cx-scroll_x+0.5;let y=if area{inner.y+offset_y+cy-scroll_y}else{inner.center().y-ch/2.0};self.c.line(Point::new(x,y+2.0),Point::new(x,y+ch-2.0),Color::white(0.9),1.5);}
+        if focused&&self.input.caret_visible(self.now,out.changed,!area||!buf.is_empty()) {let x=inner.x+cx-scroll_x+0.5;let y=if area{inner.y+offset_y+cy-scroll_y}else{inner.center().y-ch/2.0};self.c.line(Point::new(x,y+2.0),Point::new(x,y+ch-2.0),Color::white(0.9),1.5);}
         self.c.unclip();
         out
     }
@@ -627,5 +672,24 @@ impl<'a, 'g> Ui<'a, 'g> {
             self.input.focused = None;
             self.wants_focus = Some(false);
         }
+    }
+}
+
+#[cfg(test)]
+mod caret_tests {
+    use super::*;
+    #[test]
+    fn caret_blinks_on_boundaries_restarts_after_edit_and_rests_with_selection_or_no_focus(){
+        let id=wid("ai.prompt");let mut input=Input::default();input.focused=Some(id);input.caret_key=Some((id,0,None));input.caret_period=Some(0.5);
+        assert!(input.caret_visible(0.0,false,true));assert_eq!(input.caret_wake,Some(0.5));
+        assert!(!input.caret_visible(0.51,false,true));assert_eq!(input.caret_wake,Some(1.0));
+        assert!(input.caret_visible(0.6,true,true));assert_eq!(input.caret_wake,Some(1.1));
+        input.caret=2;input.selection_anchor=Some(0);assert!(!input.caret_visible(0.7,false,true));assert!(input.caret_wake.is_none());
+        input.focused=None;assert!(!input.caret_visible(0.8,false,true));assert!(input.caret_wake.is_none());
+        input.focused=Some(id);input.caret_key=Some((id,2,Some(0)));input.selection_anchor=None;input.caret_period=None;
+        assert!(input.caret_visible(100.0,false,true));assert!(input.caret_wake.is_none(),"disabled Windows blinking stays static without a wake");
+        assert!(!input.caret_visible(101.0,false,false));
+        assert_eq!(input.focused,Some(id));assert!(input.caret_key.is_none());assert!(input.caret_wake.is_none());
+        assert!(input.caret_visible(102.0,true,true));assert_eq!(input.caret_epoch,102.0);
     }
 }

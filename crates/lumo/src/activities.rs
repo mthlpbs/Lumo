@@ -30,6 +30,7 @@ pub enum HudTag {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
+    Readout(lumo_core::settings::ClosedView),
     Idle,
     Activity(Activity),
     Hud(HudTag),
@@ -69,6 +70,7 @@ const GAME_DIVIDER: Color = Color::white(0.18);
 /// Modes with the same key share content (no cross-fade between them).
 pub fn content_key(m: &Mode) -> u32 {
     match m {
+        Mode::Readout(v)=>50+*v as u32,
         Mode::Idle => 1,
         Mode::Activity(Activity::Media) => 2,
         Mode::Activity(Activity::Timer) => 3,
@@ -132,6 +134,7 @@ pub fn collapsed_mode(st: &AppState) -> Mode {
 /// What rests on the closed island when nothing pops up: a live activity,
 /// else the idle look. Stepping aside asks where this one would sit.
 pub fn resting_mode(st: &AppState) -> Mode {
+    if st.closed_view!=lumo_core::settings::ClosedView::Time{return Mode::Readout(st.closed_view);}
     current_activity(st).map_or(Mode::Idle, Mode::Activity)
 }
 
@@ -157,10 +160,12 @@ fn clock_badge(st: &AppState) -> Option<ClockBadge> {
 }
 
 pub fn geom(m: &Mode, st: &AppState) -> Geom {
+    if let Mode::Readout(v)=m{return crate::closed::geom(*v);}
     if let Some(g) = crate::pill::geom(m, st) {
         return g;
     }
     match m {
+        Mode::Readout(v)=>crate::closed::geom(*v),
         Mode::Idle => match st.settings.idle_style {
             // The status bar is the Pill theme's; the other themes show the clock.
             IdleStyle::Clock | IdleStyle::Status => {
@@ -267,6 +272,7 @@ const BLINK_PERIOD: f64 = 5.5;
 const BLINK_LEN: f64 = 0.14;
 
 pub fn draw(ui: &mut Ui, st: &mut AppState, m: &Mode, body: Rect) {
+    if let Mode::Readout(v)=m{crate::closed::draw(ui,st,*v,body);return;}
     if st.ai_on() && ui.input.ctrl && !matches!(m,Mode::Aside|Mode::Expanded(_)|Mode::Hud(_)|Mode::Notice) && ui.hovered(body) {
         let width=body.w.min(118.0);let r=Rect::new(body.right()-width,body.y,width,body.h);
         if ui.hovered(r){
@@ -283,7 +289,7 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, m: &Mode, body: Rect) {
         Mode::Activity(a) => draw_activity(ui, st, *a, body),
         Mode::Hud(_) => draw_hud(ui, st, body),
         Mode::Notice => draw_notice(ui, st, body),
-        Mode::Expanded(_) | Mode::Aside => {}
+        Mode::Expanded(_) | Mode::Aside | Mode::Readout(_) => {}
     }
 }
 
@@ -299,7 +305,7 @@ fn draw_idle(ui: &mut Ui, st: &mut AppState, body: Rect) {
     match st.settings.idle_style {
         IdleStyle::Clock | IdleStyle::Status => {
             let time = fmt_clock(&st.local, st.settings.use_24h);
-            let ts = TextStyle::body().weight(Weight::Semibold).tabular();
+            let ts = crate::closed::clock_style(st,13.0);
             let Some(badge) = clock_badge(st) else {
                 ui.c.text(&time, body, &ts.center());
                 return;
@@ -773,16 +779,16 @@ mod tests {
     }
 
     #[test]
-    fn music_with_readings_is_two_rows_tall_in_every_theme() {
+    fn music_readings_keep_classic_two_rows_and_pill_one_row() {
         use lumo_core::romanize::Ruby;
         use lumo_core::settings::Theme;
         let media = Mode::Activity(Activity::Media);
         let mut st = playing(Some("[00:10.00]紙の舟よ\n[00:14.00]Paper boats\n"));
         assert_eq!(geom(&media, &st).h, 32.0, "no readings: one row");
         st.lyrics.ruby = vec![vec![Ruby { text: "紙の舟よ".into(), roman: "kami no fune yo".into() }], Vec::new()];
-        for theme in [Theme::Classic, Theme::Pill] {
+        for (theme, height) in [(Theme::Classic, crate::pill::media::H_READS), (Theme::Pill, 32.0)] {
             st.settings.theme = theme;
-            assert_eq!(geom(&media, &st).h, crate::pill::media::H_READS, "{theme:?}: the line over its reading");
+            assert_eq!(geom(&media, &st).h, height, "{theme:?}");
         }
         // Readings switched off: one row again, as for a song without them.
         st.settings.lyrics_pronunciation = false;

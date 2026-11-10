@@ -1,14 +1,5 @@
-//! The open island as a floating card: its size and corner radius, and its
-//! frame (the header with the tabs, clock, pin and gear, and the page area)
-//! kept clear of the rounded top corners.
-//!
-//! The header and the page switch are Classic's own (`pages::draw_header`,
-//! `pages::draw_pages`), so the tabs, their clicks and the slide between
-//! pages behave the same in every theme. What the card changes: the tab row
-//! starts a little further in, so the first tab's round end sits inside the
-//! corner's arc instead of grazing it; pages sliding during a switch stay
-//! inside the rounded corners; and hover labels are capsules, like every
-//! other Pill shape, kept clear of the corners too.
+//! The expanded Pill card shares Classic's icon-and-label tabs, toolbar and
+//! page transitions. Page content stays inside the rounded corners.
 
 use crate::gfx::TextStyle;
 use crate::island::Geom;

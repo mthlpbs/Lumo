@@ -39,6 +39,7 @@ pub fn geom(m: &Mode, st: &AppState) -> Option<Geom> {
         Mode::Expanded(p) => expanded::geom(*p, st),
         // Classic's invisible strip, as for the Hidden idle look.
         Mode::Aside => None,
+        Mode::Readout(_)=>None,
     }
 }
 
@@ -53,7 +54,7 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, m: &Mode, body: Rect) -> bool {
         Mode::Activity(a) => live::draw(ui, st, *a, body),
         Mode::Hud(t) => hud::draw(ui, st, *t, body),
         Mode::Notice => notice::draw(ui, st, body),
-        Mode::Expanded(_) | Mode::Aside => false,
+        Mode::Expanded(_) | Mode::Aside | Mode::Readout(_) => false,
     }
 }
 

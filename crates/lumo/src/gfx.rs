@@ -153,6 +153,7 @@ pub mod ts {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextStyle {
+    pub family: Option<&'static str>,
     pub size: f32,
     pub weight: Weight,
     pub color: Color,
@@ -169,7 +170,7 @@ pub struct TextStyle {
 
 impl TextStyle {
     pub fn new(size: f32) -> Self {
-        Self { size, weight: Weight::Regular, color: lumo_core::geom::palette::TEXT, align: Align::Left, tabular: false, wrap: false, vcenter: true, line: 0.0 }
+        Self { size, family:None, weight: Weight::Regular, color: lumo_core::geom::palette::TEXT, align: Align::Left, tabular: false, wrap: false, vcenter: true, line: 0.0 }
     }
     pub fn caption() -> Self {
         Self::new(ts::CAPTION)
@@ -714,6 +715,7 @@ pub fn scale_about(p: Point, s: f32) -> Matrix3x2 {
 /// Text layouts are cached by everything that shapes them (not colour).
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct LayoutKey {
+    family: Option<&'static str>,
     spans: Vec<lumo_core::markdown::Span>,
     text: String,
     size: u32,
@@ -764,7 +766,7 @@ pub struct Gfx {
     embedded_tried: bool,
     /// How content is painted (the theme).
     look: &'static Look,
-    formats: HashMap<(u32, Weight, bool), IDWriteTextFormat>,
+    formats: HashMap<(u32, Weight, bool,Option<&'static str>), IDWriteTextFormat>,
     /// Text layouts with the frame they were last used in.
     layouts: HashMap<LayoutKey, (IDWriteTextLayout, u64)>,
     bitmaps: HashMap<u64, ID2D1Bitmap>,
@@ -1312,15 +1314,16 @@ impl Gfx {
         Ok(l)
     }
 
-    fn format(&mut self, size: f32, weight: Weight, wrap: bool) -> Result<IDWriteTextFormat> {
-        let key = ((size * 100.0) as u32, weight, wrap);
+    fn format(&mut self, size: f32, weight: Weight, wrap: bool,family:Option<&'static str>) -> Result<IDWriteTextFormat> {
+        let key = ((size * 100.0) as u32, weight, wrap,family);
         if let Some(f) = self.formats.get(&key) {
             return Ok(f.clone());
         }
-        let coll = if self.family != self.system_family { self.embedded.clone() } else { None };
+        let coll = if family.is_none() && self.family != self.system_family { self.embedded.clone() } else { None };
+        let chosen=family.map(|s|s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>());let font=chosen.as_deref().unwrap_or(&self.family);
         let f = unsafe {
             let f = self.dwrite.CreateTextFormat(
-                PCWSTR(self.family.as_ptr()),
+                PCWSTR(font.as_ptr()),
                 coll.as_ref(),
                 weight.dwrite(),
                 DWRITE_FONT_STYLE_NORMAL,
@@ -1349,6 +1352,7 @@ impl Gfx {
     fn styled_layout(&mut self,s:&str,st:&TextStyle,w:f32,h:f32,spans:&[lumo_core::markdown::Span])->Result<IDWriteTextLayout>{
         let (w, h) = (w.max(1.0), h.max(1.0));
         let key = LayoutKey {
+            family:st.family,
             spans:spans.to_vec(),
             text: s.to_string(),
             size: st.size.to_bits(),
@@ -1366,7 +1370,7 @@ impl Gfx {
             *used = frame;
             return Ok(l.clone());
         }
-        let fmt = self.format(st.size, st.weight, st.wrap)?;
+        let fmt = self.format(st.size, st.weight, st.wrap,st.family)?;
         let text = wide(s);
         let layout = unsafe {
             let layout = self.dwrite.CreateTextLayout(&text, &fmt, w, h)?;
@@ -1555,6 +1559,8 @@ pub struct Canvas<'a> {
 }
 
 impl<'a> Canvas<'a> {
+    /// Logical surface bounds for passive overlays such as action hints.
+    pub fn bounds(&self)->Rect{Rect::new(0.0,0.0,self.g.surf_w as f32/self.scale(),self.g.surf_h as f32/self.scale())}
     /// This frame draws on the GPU (the window's bitmap is then the hit mask).
     pub fn on_gpu(&self) -> bool {
         self.g.gpu.is_some()
@@ -1852,7 +1858,9 @@ impl<'a> Canvas<'a> {
         }
         if let Ok(layout) = self.g.layout(s, st, r.w, r.h) {
             self.set_text_brush(st.color);
-            let opts = if self.snap_text { D2D1_DRAW_TEXT_OPTIONS_NONE } else { D2D1_DRAW_TEXT_OPTIONS_NO_SNAP };
+            // Direct2D otherwise draws Segoe UI Emoji as monochrome outlines.
+            // Keep Windows' glyph fallback and metrics; opt into color at paint.
+            let opts = D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | if self.snap_text { D2D1_DRAW_TEXT_OPTIONS_NONE } else { D2D1_DRAW_TEXT_OPTIONS_NO_SNAP };
             unsafe { self.g.rt.DrawTextLayout(pt(r.x, r.y), &layout, &self.g.brush, opts) };
         }
     }
@@ -1880,7 +1888,7 @@ impl<'a> Canvas<'a> {
     }
     pub fn rich_text(&mut self,text:&lumo_core::markdown::Inline,r:Rect,style:&TextStyle){
         if r.w<=0.0 || r.h<=0.0{return;}
-        if let Ok(layout)=self.g.styled_layout(&text.text,style,r.w,10000.0,&text.spans){self.set_text_brush(style.color);unsafe{self.g.rt.DrawTextLayout(pt(r.x,r.y),&layout,&self.g.brush,if self.snap_text{D2D1_DRAW_TEXT_OPTIONS_NONE}else{D2D1_DRAW_TEXT_OPTIONS_NO_SNAP});}}
+        if let Ok(layout)=self.g.styled_layout(&text.text,style,r.w,10000.0,&text.spans){self.set_text_brush(style.color);unsafe{self.g.rt.DrawTextLayout(pt(r.x,r.y),&layout,&self.g.brush,D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | if self.snap_text{D2D1_DRAW_TEXT_OPTIONS_NONE}else{D2D1_DRAW_TEXT_OPTIONS_NO_SNAP});}}
     }
     pub fn rich_range(&mut self,text:&lumo_core::markdown::Inline,style:&TextStyle,width:f32,start:u32,len:u32)->Vec<Rect>{
         let Ok(l)=self.g.styled_layout(&text.text,style,width,10000.0,&text.spans) else{return vec![]};
@@ -1899,14 +1907,20 @@ impl<'a> Canvas<'a> {
     /// Pointer and selection geometry share the editor's DirectWrite layout,
     /// including Unicode clusters and proportional glyph advances.
     pub fn text_position(&mut self,s:&str,st:&TextStyle,x:f32)->usize{
-        let Ok(layout)=self.g.layout(s,&st.top(),10000.0,10000.0)else{return 0;};
+        self.text_position_at(s,st,10000.0,Point::new(x,st.size/2.0))
+    }
+    pub fn text_position_at(&mut self,s:&str,st:&TextStyle,width:f32,point:Point)->usize{
+        let Ok(layout)=self.g.layout(s,&st.top(),width.max(1.0),10000.0)else{return 0;};
         let(mut trailing,mut inside)=(windows::Win32::Foundation::BOOL(0),windows::Win32::Foundation::BOOL(0));let mut hit=DWRITE_HIT_TEST_METRICS::default();
-        unsafe{if layout.HitTestPoint(x,st.size/2.0,&mut trailing,&mut inside,&mut hit).is_err(){return 0;}}
+        unsafe{if layout.HitTestPoint(point.x,point.y,&mut trailing,&mut inside,&mut hit).is_err(){return 0;}}
         let end=hit.textPosition+if trailing.as_bool(){hit.length}else{0};let mut units=0;
         s.chars().take_while(|c|{units+=c.len_utf16()as u32;units<=end}).count()
     }
     pub fn text_selection(&mut self,s:&str,st:&TextStyle,start:usize,end:usize)->Vec<Rect>{
-        let Ok(layout)=self.g.layout(s,&st.top(),10000.0,10000.0)else{return vec![];};
+        self.text_selection_wrapped(s,st,10000.0,start,end)
+    }
+    pub fn text_selection_wrapped(&mut self,s:&str,st:&TextStyle,width:f32,start:usize,end:usize)->Vec<Rect>{
+        let Ok(layout)=self.g.layout(s,&st.top(),width.max(1.0),10000.0)else{return vec![];};
         let from=s.chars().take(start).map(|c|c.len_utf16()as u32).sum::<u32>();let len=s.chars().skip(start).take(end.saturating_sub(start)).map(|c|c.len_utf16()as u32).sum::<u32>();
         if len==0{return vec![];}unsafe{let mut count=0;let _=layout.HitTestTextRange(from,len,0.0,0.0,None,&mut count);if count==0||count>256{return vec![];}let mut hits=vec![DWRITE_HIT_TEST_METRICS::default();count as usize];if layout.HitTestTextRange(from,len,0.0,0.0,Some(&mut hits),&mut count).is_err(){return vec![];}hits.into_iter().take(count as usize).map(|m|Rect::new(m.left,m.top,m.width,m.height)).collect()}
     }

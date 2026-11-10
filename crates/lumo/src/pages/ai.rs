@@ -12,6 +12,10 @@ use lumo_core::{
     geom::{palette, Color, Point, Rect},
 };
 const BLUE: Color = Color::rgba(0.52, 0.72, 1.0, 1.0);
+/// Shared conversation scale in the island and detached chat.
+pub(crate) const CHAT_SIZE:f32=14.0;
+const MESSAGE_GAP:f32=16.0;
+fn conversation_style()->TextStyle{TextStyle::new(CHAT_SIZE).top().wrap().line_spacing(1.5).color(Color::white(0.86))}
 fn text(ui: &mut Ui, s: &str, r: Rect, size: f32, col: Color) {
     ui.c.text(s, r, &TextStyle::new(size).color(col));
 }
@@ -42,276 +46,303 @@ fn action(ui: &mut Ui, id: &str, r: Rect, label: &str, icon: Icon) -> bool {
     );
     resp.clicked
 }
+pub(crate) fn workspace_area(body:Rect)->Rect {Rect::new(body.x+20.0,body.y+8.0,body.w-40.0,body.h-24.0)}
 pub fn height(st: &AppState) -> f32 {
     st.ai.island_height
 }
-pub fn next_wake(st: &AppState) -> Option<f64> {
-    st.ai
-        .hover_model
-        .as_ref()
-        .map(|(_, t)| t + 1.0)
-        .filter(|t| *t > st.now)
-}
+pub fn next_wake(_st: &AppState) -> Option<f64> { None }
 pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) {
     draw_chat(ui, st, area, false);
 }
+/// One workspace in both hosts. The conversation and composer share the same
+/// state; detaching never creates another chat or sends a request.
 pub fn draw_chat(ui: &mut Ui, st: &mut AppState, area: Rect, full: bool) {
     ai::ensure(st);
-    // A model picker is modal to chat. Paint the conversation without input
-    // so dismissing the picker cannot also send, attach or change chats.
-    let model_input = (st.ai.model_menu && !st.ai.model_settings)
-        .then(|| std::mem::take(ui.input));
-    let mut toolbar_tip: Option<(&str, Rect)> = None;
-    let toolbar = Rect::new(area.x, area.y, area.w, 28.0);
-    if action(
+    if st.ai.attach_menu && ui.input.just_pressed {
+        let error=if st.ai.error.is_empty(){0.0}else{34.0};
+        let pending=if st.ai.pending.is_empty(){0.0}else{(area.h-288.0-error).clamp(48.0,112.0)+12.0};
+        let menu=Rect::new(area.x,(area.bottom()-104.0-pending-160.0).max(area.y+48.0),area.w.min(320.0),151.0);
+        if ui.input.press_pos.or(ui.input.mouse).is_some_and(|p|!menu.contains(p)){
+            st.ai.attach_menu=false;ui.input.clicked=None;ui.input.pressed_id=None;ui.input.released=None;ui.input.just_pressed=false;ui.input.down=false;
+            ui.input.focused=Some(wid("ai.prompt"));st.cmd(Command::FocusText);
+        }
+    }
+    let modal = st.ai.model_menu && !st.ai.model_settings;
+    let model_input = modal.then(|| std::mem::take(ui.input));
+    let mut tip = None;
+    let toolbar = Rect::new(area.x, area.y, area.w, 36.0);
+    text(
         ui,
-        "ai.history",
-        Rect::new(toolbar.x, toolbar.y, 85.0, 26.0),
-        "History",
-        Icon::Clock,
-    ) {
-        st.ai.history = !st.ai.history;
-        st.ai.model_menu = false;
-    }
-    let new_rect = Rect::new(toolbar.x + 94.0, toolbar.y - 1.0, 30.0, 28.0);
-    let new = ui.icon_button(
-        wid("ai.new"),
-        new_rect,
-        Icon::NewChat,
-        palette::TEXT_DIM,
-        18.0,
+        if area.w < 380.0 { "AI" } else { "Ask AI" },
+        Rect::new(toolbar.x + 2.0, toolbar.y, 70.0, 36.0),
+        16.0,
+        palette::TEXT,
     );
-    if new.hovered {
-        toolbar_tip = Some(("New chat", new_rect));
-    }
-    if new.clicked {
-        st.cmd(Command::Ai(Action::New(false)));
-    }
-    let temporary_rect = Rect::new(toolbar.x + 132.0, toolbar.y - 1.0, 30.0, 28.0);
-    let temporary = ui.icon_button(
-        wid("ai.temporary"),
-        temporary_rect,
-        if st.ai.temporary {
-            Icon::TemporaryChatChecked
-        } else {
-            Icon::TemporaryChat
-        },
-        if st.ai.temporary {
-            palette::TEXT
-        } else {
-            palette::TEXT_DIM
-        },
-        18.0,
-    );
-    if temporary.hovered {
-        toolbar_tip = Some((
+    let left = if area.w < 380.0 { 38.0 } else { 76.0 };
+    for (index, (id, icon, label)) in [
+        (
+            "ai.history",
+            Icon::Clock,
+            if st.ai.history {
+                "Back to conversation"
+            } else {
+                "Chat history"
+            },
+        ),
+        ("ai.new", Icon::NewChat, "New chat"),
+        (
+            "ai.temporary",
             if st.ai.temporary {
-                "Turn off temporary chat"
+                Icon::TemporaryChatChecked
             } else {
-                "Turn on temporary chat · not saved"
+                Icon::TemporaryChat
             },
-            temporary_rect,
-        ));
-    }
-    if temporary.clicked {
-        st.cmd(Command::Ai(Action::ToggleTemporary));
-    }
-    if ui
-        .icon_button(
-            wid("ai.settings"),
-            Rect::new(toolbar.right() - 30.0, toolbar.y, 28.0, 26.0),
-            Icon::Gear,
-            palette::TEXT_DIM,
-            15.0,
-        )
-        .clicked
+            "Temporary chat · never saved",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
     {
-        st.cmd(Command::OpenSettings);
-    }
-    if !full
-        && ui
-            .icon_button(
-                wid("ai.open-full"),
-                Rect::new(toolbar.right() - 108.0, toolbar.y, 28.0, 26.0),
-                Icon::PopOut,
-                palette::TEXT_DIM,
-                15.0,
-            )
-            .clicked
-    {
-        st.cmd(Command::OpenAiWindow);
-    }
-    if !full && st.ai.max_island_height > 245.0 {
-        let expanded = st.ai.island_height > 245.0;
-        let r = Rect::new(toolbar.right() - 145.0, toolbar.y, 28.0, 26.0);
+        let r = Rect::new(
+            toolbar.x + left + index as f32 * 28.0,
+            toolbar.y + 2.0,
+            28.0,
+            32.0,
+        );
+        let active =
+            (id == "ai.history" && st.ai.history) || (id == "ai.temporary" && st.ai.temporary);
+        if active {
+            ui.c.fill_rrect(r, 9.0, Color::white(0.10));
+        }
         let response = ui.icon_button(
-            wid("ai.resize"),
+            wid(id),
             r,
-            if expanded {
-                Icon::CollapseUp
+            icon,
+            if active {
+                palette::TEXT
             } else {
-                Icon::ExpandDown
+                palette::TEXT_DIM
             },
-            palette::TEXT_DIM,
+            17.0,
+        );
+        if response.hovered {
+            tip = Some((label, r));
+        }
+        if response.clicked {
+            match id {
+                "ai.history" => {
+                    st.ai.history = !st.ai.history;
+                    st.ai.close_popovers();
+                }
+                "ai.new" => st.cmd(Command::Ai(Action::New(st.ai.temporary))),
+                _ => st.cmd(Command::Ai(Action::ToggleTemporary)),
+            }
+        }
+    }
+    for (index, (id, icon, label, active)) in [
+        (
+            "ai.keep-open",
+            Icon::Pin,
+            if st.settings.ai.keep_open {
+                "Keep open: On"
+            } else {
+                "Keep open: Off"
+            },
+            st.settings.ai.keep_open,
+        ),
+        (
+            "ai.resume",
+            Icon::ResumePage,
+            if st.settings.ai.resume {
+                "Resume chat: On"
+            } else {
+                "Resume chat: Off"
+            },
+            st.settings.ai.resume,
+        ),
+        (
+            "ai.open-full",
+            if full {
+                Icon::ExitMiniPlayer
+            } else {
+                Icon::MiniPlayer
+            },
+            if full {
+                "Return to island"
+            } else {
+                "Open mini window"
+            },
+            false,
+        ),
+        ("ai.close", Icon::Close, "Close AI (Esc)", false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = Rect::new(
+            toolbar.right() - 112.0 + index as f32 * 28.0,
+            toolbar.y + 2.0,
+            28.0,
+            32.0,
+        );
+        if active {
+            ui.c.fill_rrect(r, 9.0, BLUE.mul_alpha(0.12));
+        }
+        let response = ui.icon_button(
+            wid(id),
+            r,
+            icon,
+            if active { BLUE } else { palette::TEXT_DIM },
             16.0,
         );
-        if response.clicked {
-            st.cmd(Command::AiHeight(if expanded {
-                240.0
-            } else {
-                st.ai.max_island_height
-            }));
-        }
         if response.hovered {
-            toolbar_tip = Some((
-                if expanded {
-                    "Compact chat"
-                } else {
-                    "Expand chat toward the desktop middle"
-                },
-                r,
-            ));
+            tip = Some((label, r));
+        }
+        if response.clicked {
+            st.cmd(match id {
+                "ai.keep-open" => Command::ToggleAiKeepOpen,
+                "ai.resume" => Command::ToggleAiResume,
+                "ai.open-full" => {
+                    if full {
+                        Command::ReturnAiToIsland
+                    } else {
+                        Command::OpenAiWindow
+                    }
+                }
+                "ai.settings" => Command::OpenSettings,
+                _ => Command::CloseAi,
+            });
         }
     }
-    let progress_rect = Rect::new(toolbar.right() - 72.0, toolbar.y - 2.0, 32.0, 30.0);
-    let progress_tip = generation_indicator(ui, st, progress_rect);
-    let composer = Rect::new(area.x, area.bottom() - 54.0, area.w, 54.0);
-    let pending_h = if st.ai.pending.is_empty() { 0.0 } else { 30.0 };
-    let error_h = if st.ai.error.is_empty() { 0.0 } else { 32.0 };
-    let view = Rect::new(
-        area.x,
-        area.y + 36.0,
-        area.w,
-        (composer.y - area.y - 42.0 - pending_h - error_h).max(38.0),
+    ui.c.fill_rect(
+        Rect::new(area.x, toolbar.bottom() + 10.0, area.w, 1.0),
+        Color::white(0.075),
     );
-    let wheel = model_input.as_ref().map_or(ui.input.wheel, |input| input.wheel);
-    if (st.ai.model_menu && !st.ai.model_settings) || st.ai.reasoning_menu || st.ai.attach_menu {
+    let model = st.ai.model(&st.settings.ai);
+    let availability_error = model.unavailable.as_ref().map(|s| format!("{s} Choose another model."));
+    let error = if st.ai.error.is_empty() { availability_error.as_deref().unwrap_or("") } else { &st.ai.error }.to_owned();
+    let error_h = if error.is_empty() { 0.0 } else { 34.0 };
+    let pending_h = if st.ai.pending.is_empty() { 0.0 } else {
+        (area.h - 288.0 - error_h).clamp(48.0, 112.0) + 12.0
+    };
+    let composer = Rect::new(area.x, area.bottom() - 104.0 - pending_h, area.w, 104.0 + pending_h);
+    let view_top = toolbar.bottom() + if area.h < 400.0 { 12.0 } else { 20.0 };
+    let view = Rect::new(
+        area.x + 4.0,
+        view_top,
+        area.w - 8.0,
+        (composer.y - view_top - 10.0 - error_h).max(1.0),
+    );
+    let wheel = model_input
+        .as_ref()
+        .map_or(ui.input.wheel, |input| input.wheel);
+    if modal || st.ai.reasoning_menu || st.ai.attach_menu {
         ui.input.wheel = 0.0;
     }
     if st.ai.history {
         history(ui, st, view);
     } else {
-        transcript(ui, st, view, full);
+        transcript(ui, st, view, true);
+    }
+    if st.ai.max_scroll > 80.0 && st.ai.scroll < st.ai.max_scroll - 45.0 && !st.ai.history {
+        let r = Rect::new(view.center().x - 62.0, view.bottom() - 34.0, 124.0, 30.0);
+        if action(ui, "ai.jump-latest", r, "Latest reply", Icon::ExpandDown) {
+            st.ai.scroll = f32::MAX;
+        }
     }
     if error_h > 0.0 {
-        let r = Rect::new(area.x, composer.y - pending_h - 32.0, area.w, 28.0);
-        text(ui, &st.ai.error, r, 12.0, palette::ORANGE);
+        let r = Rect::new(area.x, composer.y - 34.0, area.w, 28.0);
+        ui.c.fill_rrect(r, 8.0, Color::rgba(0.22, 0.13, 0.07, 1.0));
+        text(ui, &error, r.inset(10.0, 0.0), 12.0, palette::ORANGE);
         if ui.hovered(r) {
-            let w = area.w.min(360.0);
-            let style = TextStyle::new(12.0).top().wrap();
-            let h = (ui.c.measure(&st.ai.error, &style, w - 24.0).1 + 24.0).min(110.0);
-            tooltip(ui, &st.ai.error, Rect::new(r.x, r.y - h - 5.0, w, h));
+            tooltip(
+                ui,
+                &error,
+                Rect::new(area.x, r.y - 80.0, area.w, 74.0),
+            );
         }
     }
-    let mut remove = None;
-    let mut x = area.x;
-    for (i, a) in st.ai.pending.iter().enumerate() {
-        let r = Rect::new(x, composer.y - 29.0, 150.0f32.min(area.right() - x), 24.0);
-        if r.w < 40.0 {
-            break;
-        }
-        ui.c.fill_rrect(r, 7.0, Color::white(0.1));
-        text(
-            ui,
-            &a.name,
-            Rect::new(r.x + 8.0, r.y, r.w - 31.0, r.h),
-            11.0,
-            palette::TEXT_DIM,
-        );
-        if ui
-            .icon_button(
-                wid_n("ai.remove-attachment", i as u64),
-                Rect::new(r.right() - 24.0, r.y, 24.0, 24.0),
-                Icon::Close,
-                palette::TEXT_DIM,
-                12.0,
-            )
-            .clicked
-        {
-            remove = Some(i);
-        }
-        x += r.w + 6.0;
-    }
-    if let Some(i) = remove {
-        st.ai.pending.remove(i);
-    }
-    ui.c.fill_rrect(composer, 27.0, Color::white(0.10));
-    if ui
-        .icon_button(
-            wid("ai.plus"),
-            Rect::new(composer.x + 7.0, composer.y + 9.0, 36.0, 36.0),
-            if st.ai.attaching {
-                Icon::Clock
-            } else {
-                Icon::Plus
-            },
-            palette::TEXT_DIM,
-            19.0,
-        )
-        .clicked
-    {
-        let open = !st.ai.attach_menu && !st.ai.attaching;
-        st.ai.close_popovers();
-        st.ai.attach_menu = open;
-    }
-    let m = st.ai.model(&st.settings.ai);
-    let model_label = if m.id.is_empty() { "Choose model" } else { m.display_name() };
-    // Text layouts are cached by the renderer. Fit short names without
-    // taking more than 104 DIPs away from the message field for long ones.
-    let model_w = (ui.c.measure(model_label, &TextStyle::new(11.0), 10000.0).0 + 20.0)
-        .clamp(60.0, 104.0);
-    let model_r = Rect::new(
-        composer.right() - model_w - 54.0,
-        composer.y + 11.0,
-        model_w,
-        32.0,
+    ui.c.fill_rrect(composer, 20.0, Color::white(0.095));
+    ui.c.stroke_rrect(
+        composer.inset(0.5, 0.5),
+        20.0,
+        if st.drag_hover { BLUE } else { Color::white(if ui.input.focused == Some(wid("ai.prompt")) {
+            0.18
+        } else {
+            0.09
+        }) },
+        1.0,
     );
-    let input_r = Rect::new(
-        composer.x + 46.0,
-        composer.y + 6.0,
-        (model_r.x - composer.x - 54.0).max(40.0),
-        42.0,
-    );
+    if pending_h > 0.0 { pending_attachments(ui, st, Rect::new(composer.x + 12.0, composer.y + 12.0, composer.w - 24.0, pending_h - 12.0)); }
+    let input_r = Rect::new(composer.x + 14.0, composer.y + 9.0 + pending_h, composer.w - 28.0, 48.0);
     let input = ui.text_area(
         wid("ai.prompt"),
         input_r,
         &mut st.ai.draft,
-        if st.ai.attaching {
-            "Adding attachment…"
-        } else {
-            "Ask anything…"
-        },
+        "",
         12000,
     );
     if input.focused {
         st.cmd(Command::FocusText);
     }
-    let resp = ui.button(wid("ai.models"), model_r);
-    ui.c.fill_rrect(
-        model_r,
-        16.0,
-        Color::white(if resp.hovered { 0.13 } else { 0.06 }),
+    if input.cancelled && !modal && !st.ai.attach_menu {
+        st.cmd(Command::CloseAi);
+    }
+    let plus = Rect::new(composer.x + 8.0, composer.bottom() - 42.0, 32.0, 32.0);
+    let attach = ui.icon_button(
+        wid("ai.plus"),
+        plus,
+        if st.ai.attaching {
+            Icon::Clock
+        } else {
+            Icon::Plus
+        },
+        palette::TEXT_DIM,
+        18.0,
     );
+    if attach.clicked {
+        let open = !st.ai.attach_menu && !st.ai.attaching;
+        st.ai.close_popovers();
+        st.ai.attach_menu = open;
+    }
+    let label = if model.id.is_empty() {
+        "Choose model"
+    } else {
+        model.display_name()
+    };
+    let model_w = (ui.c.measure(label, &TextStyle::new(13.0), 10000.0).0 + 34.0)
+        .clamp(110.0, 240.0).min((composer.w - 137.0).max(80.0));
+    let model_r = Rect::new(
+        composer.right() - 53.0 - model_w,
+        composer.bottom() - 42.0,
+        model_w,
+        32.0,
+    );
+    let response = ui.button(wid("ai.models"), model_r);
+    if response.hovered {
+        ui.c.fill_rrect(model_r, 9.0, Color::white(0.07));
+    }
     text(
         ui,
-        model_label,
-        Rect::new(model_r.x + 10.0, model_r.y, model_r.w - 20.0, model_r.h),
-        11.0,
+        label,
+        Rect::new(model_r.x + 8.0, model_r.y, model_r.w - 28.0, 32.0),
+        13.0,
         palette::TEXT_DIM,
     );
-    if resp.clicked {
-        let was_open = st.ai.reasoning_menu || (st.ai.model_menu && !st.ai.model_settings);
-        st.ai.model_filters_open = false;
-        st.ai.reasoning_menu = false;
-        st.ai.model_menu = !was_open;
+    ui.c.icon(
+        Icon::ChevronDown,
+        Rect::new(model_r.right() - 19.0, model_r.y + 11.0, 11.0, 11.0),
+        palette::TEXT_DIM,
+    );
+    if response.clicked {
+        let was = st.ai.reasoning_menu || st.ai.model_menu;
+        st.ai.close_popovers();
+        st.ai.model_menu = !was;
         st.ai.model_settings = false;
-        st.ai.model_detail = None;
-        st.ai.hover_model = None;
-        st.ai.attach_menu = false;
         st.ai.model_scroll = 0.0;
         st.ai.reveal_model = true;
         st.ai.search.clear();
-        if !was_open {
+        if !was {
             if st.ai.models.is_empty() {
                 st.cmd(Command::Ai(Action::EnsureModels));
             }
@@ -320,203 +351,114 @@ pub fn draw_chat(ui: &mut Ui, st: &mut AppState, area: Rect, full: bool) {
             st.cmd(Command::FocusText);
         }
     }
-    let send = Rect::new(composer.right() - 45.0, composer.y + 8.0, 38.0, 38.0);
-    let r = ui.button(wid("ai.send"), send);
-    ui.c.fill_circle(
-        send.center(),
-        19.0,
-        Color::white(if r.pressed { 0.7 } else { 0.96 }),
+    let can_send = st.ai.busy
+        || (model.unavailable.is_none() && !st.ai.attaching && (!st.ai.draft.trim().is_empty() || !st.ai.pending.is_empty()));
+    let send = Rect::new(
+        composer.right() - 45.0,
+        composer.bottom() - 43.0,
+        34.0,
+        34.0,
     );
+    let response = if can_send {
+        Some(ui.button(wid("ai.send"), send))
+    } else {
+        None
+    };
+    ui.c.fill_rrect(send, 17.0, if can_send { BLUE } else { Color::white(0.13) });
     ui.c.icon(
         if st.ai.busy { Icon::Stop } else { Icon::Send },
-        send.inset(10.0, 10.0),
-        Color::rgba(0.0, 0.0, 0.0, 1.0),
+        send.inset(9.0, 9.0),
+        if can_send {
+            Color::black(1.0)
+        } else {
+            palette::TEXT_FAINT
+        },
     );
-    if r.clicked || input.submitted {
+    if can_send && (response.is_some_and(|r| r.clicked) || input.submitted) {
         st.cmd(Command::Ai(if st.ai.busy {
             Action::Stop
         } else {
             Action::Send
         }));
     }
-    if ui.hovered(send) {
-        tooltip(
-            ui,
-            if st.ai.busy {
-                "Stop waiting for this reply"
-            } else {
-                "Send message · Enter\nShift+Enter for a new line"
-            },
-            Rect::new(area.x, composer.y - 65.0, area.w, 50.0),
-        );
+    if let Some(input) = model_input {
+        *ui.input = input;
     }
-    if !full && st.ai.max_island_height > 245.0 {
-        let grip = Rect::new(area.center().x - 30.0, area.bottom() + 3.0, 60.0, 12.0);
-        let response = ui.button(wid("ai.resize-grip"), grip);
-        ui.c.fill_rrect(
-            Rect::new(grip.center().x - 16.0, grip.y + 5.0, 32.0, 3.0),
-            1.5,
-            Color::white(if response.hovered || response.pressed {
-                0.5
-            } else {
-                0.2
-            }),
-        );
-        if response.pressed {
-            if ui.input.just_pressed {
-                st.ai.resize_from = st.ai.island_height;
-                st.ai.resize_dragged = false;
-            }
-            if let Some((_, dy)) = response.drag {
-                if dy.abs() > 3.0 {
-                    st.ai.resize_dragged = true;
-                    st.cmd(Command::AiHeight(
-                        (st.ai.resize_from + dy).clamp(240.0, st.ai.max_island_height),
-                    ));
-                }
-            }
-        }
-        if response.clicked && !st.ai.resize_dragged {
-            st.cmd(Command::AiHeight(if st.ai.island_height > 245.0 {
-                240.0
-            } else {
-                st.ai.max_island_height
-            }));
-        }
-    }
-
-    if let Some(input) = model_input { *ui.input = input; }
     if st.ai.attach_menu {
         attach_menu(
             ui,
             st,
             Rect::new(
                 area.x,
-                (composer.y - 188.0).max(area.y),
+                (composer.y - 160.0).max(toolbar.bottom() + 12.0),
                 area.w.min(320.0),
-                180.0,
+                151.0,
             ),
         );
     }
-    if st.ai.model_menu && !st.ai.model_settings && (full || !picker_below(st)) {
+    if st.ai.model_menu && !st.ai.model_settings {
         ui.input.wheel = wheel;
         let w = area.w.min(460.0);
         model_picker(
             ui,
             st,
-            Rect::new(area.right() - w, area.y + 1.0, w, composer.y - area.y - 8.0),
+            Rect::new(
+                area.right() - w,
+                view.y,
+                w,
+                (composer.bottom() - 50.0 - view.y).max(100.0),
+            ),
             false,
         );
     }
-    if picker_below(st) { ui.input.wheel = wheel; }
-    // Labels paint last so response text cannot bleed through them.
     if !st.ai.model_menu && !st.ai.reasoning_menu && !st.ai.attach_menu {
-        if let Some(label) = progress_tip {
-            let w = label
-                .lines()
-                .map(|line| ui.c.measure(line, &TextStyle::new(12.0), 280.0).0)
-                .fold(0.0f32, f32::max)
-                + 24.0;
-            let w = w.clamp(140.0, 280.0);
+        if let Some((label, button)) = tip {
+            let w = (ui.c.measure(label, &TextStyle::new(12.0), 260.0).0 + 24.0)
+                .clamp(100.0, 280.0)
+                .min(area.w);
+            let y = if button.y > composer.y {
+                composer.y - 56.0
+            } else {
+                toolbar.bottom() + 6.0
+            };
             tooltip(
                 ui,
-                &label,
-                Rect::new(area.right() - w, toolbar.bottom() + 5.0, w, 70.0),
+                label,
+                Rect::new(button.x.min(area.right() - w).max(area.x), y, w, 48.0),
             );
-        } else if let Some((label, button)) = toolbar_tip {
-            let w = (ui.c.measure(label, &TextStyle::new(12.0), 240.0).0 + 24.0)
-                .clamp(100.0, 240.0)
-                .min(area.w);
-            let x = button.x.min(area.right() - w).max(area.x);
-            tooltip(ui, label, Rect::new(x, toolbar.bottom() + 5.0, w, 54.0));
         }
     }
 }
-fn generation_indicator(ui: &mut Ui, st: &mut AppState, r: Rect) -> Option<String> {
-    use ai::Generation;
-    let state = if st.ai.busy {
-        Generation::Working
-    } else {
-        st.ai.generation
-    };
-    let (icon, color) = match state {
-        Generation::Working => (Icon::Stop, BLUE),
-        Generation::Ready => (Icon::Check, BLUE),
-        Generation::Failed => (Icon::Close, palette::ORANGE),
-        Generation::Stopped => (Icon::Stop, palette::TEXT_DIM),
-        Generation::Idle => (Icon::Minus, palette::TEXT_DIM),
-    };
-    let response = ui.button(wid("ai.generation"), r);
-    if response.hovered {
-        ui.c.fill_rrect(r, 15.0, Color::white(0.06));
-    }
-    ui.c.stroke_circle(r.center(), 12.0, Color::white(0.16), 2.0);
-    if state == Generation::Working {
-        let phase = if st.power.saver {
-            0.0
+fn pending_attachments(ui: &mut Ui, st: &mut AppState, tray: Rect) {
+    let count = st.ai.pending.len();
+    let gap = 8.0;
+    let width = ((tray.w - gap * count.saturating_sub(1) as f32) / count.max(1) as f32).min(148.0);
+    let mut remove = None;
+    for (i, a) in st.ai.pending.iter().enumerate() {
+        let r = Rect::new(tray.x + i as f32 * (width + gap), tray.y, width, tray.h);
+        ui.c.fill_rrect(r, 10.0, Color::black(0.35));
+        if let Some(Some(image)) = st.ai.pending_previews.get(i) {
+            ui.c.image(image, r, 10.0);
+            ui.c.fill_rrect(Rect::new(r.x, r.bottom() - 25.0, r.w, 25.0), 6.0, Color::black(0.72));
         } else {
-            (ui.now * 0.75).rem_euclid(1.0) as f32
-        };
-        ui.c.arc(r.center(), 12.0, phase, 0.27, BLUE, 2.0);
-        // Activity, not a fabricated completion percentage. Visible only;
-        // App pauses live paints for lock/display-off/battery saver.
-        if !st.power.saver {
-            ui.request_live();
+            ui.c.icon(if a.mime.starts_with("image/") { Icon::Image } else { Icon::File },
+                Rect::from_center(Point::new(r.center().x, r.y + (r.h - 22.0) * 0.5), 25.0, 25.0), palette::TEXT_DIM);
         }
-    } else if state != Generation::Idle {
-        ui.c.stroke_circle(r.center(), 12.0, color.mul_alpha(0.65), 2.0);
-    }
-    ui.c.icon(icon, Rect::from_center(r.center(), 11.0, 11.0), color);
-    let other = st.ai.running_chat != st.ai.current.id;
-    let can_open = other
-        && state != Generation::Idle
-        && state != Generation::Stopped
-        && st.ai.chats.iter().any(|c| c.id == st.ai.running_chat);
-    if response.clicked {
-        if can_open {
-            st.cmd(Command::Ai(Action::Select(st.ai.running_chat)));
-        } else if state == Generation::Working {
-            st.cmd(Command::Ai(Action::Stop));
-        } else if state == Generation::Ready {
-            st.ai.history = false;
-            st.ai.scroll_to_reply = st
-                .ai
-                .current
-                .messages
-                .iter()
-                .rposition(|m| m.role == "assistant");
+        text(ui, &a.name, Rect::new(r.x + 7.0, r.bottom() - 24.0, r.w - 14.0, 23.0), 11.0, palette::TEXT);
+        let close = Rect::new(r.right() - 25.0, r.y + 3.0, 22.0, 22.0);
+        ui.c.fill_rrect(close, 11.0, Color::black(0.68));
+        let response = ui.icon_button(wid_n("ai.remove-attachment", i as u64), close, Icon::Close, palette::TEXT, 11.0);
+        if response.hovered{tooltip(ui,"Remove attachment",Rect::new((close.right()-160.0).max(tray.x),tray.y-38.0,160.0f32.min(tray.w),30.0));}
+        if response.clicked { remove = Some(i); }
+        if ui.hovered(r) && !response.hovered {
+            tooltip(ui, &format!("{}\n{} · Sent when you press Send", a.name, if a.mime.starts_with("image/") { "Image" } else if a.mime == "application/pdf" { "PDF document" } else { "Text document" }),
+                Rect::new(r.x.min(tray.right() - 240.0).max(tray.x), tray.y - 70.0, 240.0f32.min(tray.w), 62.0));
         }
     }
-    if !response.hovered {
-        return None;
+    if let Some(i) = remove {
+        st.ai.pending.remove(i);
+        if i < st.ai.pending_previews.len() { st.ai.pending_previews.remove(i); }
     }
-    let end = if st.ai.busy {
-        st.now
-    } else {
-        st.ai.generation_finished
-    };
-    let seconds = (end - st.ai.generation_started).max(0.0) as u64;
-    let elapsed = if st.ai.generation_started > 0.0 {
-        format!(" · {}:{:02}", seconds / 60, seconds % 60)
-    } else {
-        String::new()
-    };
-    Some(match state {
-        Generation::Working => format!(
-            "Generating a reply{elapsed}\n{}",
-            if can_open {
-                "Click to open the active chat"
-            } else {
-                "Click to stop generation"
-            }
-        ),
-        Generation::Ready => format!("Reply ready{elapsed}\nClick to read the reply"),
-        Generation::Stopped => format!("Generation stopped{elapsed}"),
-        Generation::Failed => {
-            format!("Reply failed{elapsed}\nSee the error above the message field")
-        }
-        Generation::Idle => "Ready for your next message".into(),
-    })
 }
 fn message_icon(
     ui: &mut Ui,
@@ -535,31 +477,111 @@ fn message_icon(
 fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
     let chat = &st.ai.current;
     if chat.messages.is_empty() {
+        st.ai.max_scroll = 0.0;
+        st.ai.scroll = 0.0;
+        if st.ai.temporary {
+            let y = view.y + (view.h * 0.32).max(0.0);
+            ui.c.text("Temporary chat", Rect::new(view.x, y, view.w, 38.0f32.min(view.h)),
+                &TextStyle::new(if view.w < 380.0 { 24.0 } else { 28.0 }).center());
+            if view.h > 95.0 {
+                ui.c.text("This conversation won’t appear in your history.\nMessages are sent to your provider only when you press Send.",
+                    Rect::new(view.x + 14.0, y + 48.0, view.w - 28.0, (view.bottom() - y - 48.0).min(72.0)),
+                    &TextStyle::new(13.0).center().top().wrap().color(palette::TEXT_DIM));
+            }
+            return;
+        }
+        if view.h < 230.0 {
+            text(
+                ui,
+                "Ask a question",
+                Rect::new(view.x + 4.0, view.y + 4.0, view.w - 8.0, 26.0),
+                18.0,
+                palette::TEXT,
+            );
+            ui.c.text(
+                if st.ai.temporary {
+                    "Temporary chat · not saved"
+                } else {
+                    "Write a message or add a file below."
+                },
+                Rect::new(
+                    view.x + 4.0,
+                    view.y + 36.0,
+                    view.w - 8.0,
+                    (view.h - 40.0).max(1.0),
+                ),
+                &TextStyle::new(12.0).color(palette::TEXT_DIM).top().wrap(),
+            );
+            return;
+        }
+        let y = view.y + (view.h * 0.23).max(12.0);
         ui.c.icon(
             Icon::Sparkles,
-            Rect::new(view.x + 4.0, view.y + 12.0, 24.0, 24.0),
+            Rect::new(view.center().x - 16.0, y, 32.0, 32.0),
             BLUE,
         );
-        text(
-            ui,
-            "A little help, right here.",
-            Rect::new(view.x + 40.0, view.y + 6.0, view.w - 42.0, 32.0),
-            19.0,
-            palette::TEXT,
+        ui.c.text(
+            "What are you working on?",
+            Rect::new(view.x, y + 48.0, view.w, 38.0),
+            &TextStyle::new(24.0).center(),
         );
-        text(
-            ui,
-            if st.ai.temporary {
-                "Temporary chat · This conversation won't be saved."
-            } else if st.settings.ai.default_model.is_empty() {
-                "Add your provider, key and model in Settings → AI companion."
-            } else {
-                "Ask a question, attach a PDF, or capture part of your screen."
-            },
-            Rect::new(view.x + 40.0, view.y + 43.0, view.w - 44.0, 48.0),
-            13.0,
-            palette::TEXT_DIM,
+        let hint = if st.ai.temporary {
+            "Temporary chat. This conversation stays out of history."
+        } else if st.settings.ai.default_model.is_empty() {
+            "Connect a provider in AI settings to get started."
+        } else {
+            "Ask a question, work through an idea, or add a document."
+        };
+        ui.c.text(
+            hint,
+            Rect::new(view.x + 12.0, y + 90.0, view.w - 24.0, 46.0),
+            &TextStyle::new(13.0)
+                .color(palette::TEXT_DIM)
+                .center()
+                .wrap(),
         );
+        if view.h > 250.0 {
+            if st.settings.ai.default_model.is_empty() {
+                let r = Rect::new(view.center().x - 96.0, y + 154.0, 192.0, 36.0);
+                if ui
+                    .pill(
+                        wid("ai.setup"),
+                        r,
+                        "Connect a provider",
+                        Some(Icon::Gear),
+                        crate::ui::PillStyle::Primary(BLUE),
+                    )
+                    .clicked
+                {
+                    st.cmd(Command::OpenSettings);
+                }
+                return;
+            }
+            for (i, (label, prompt)) in [
+                ("Explain something", "Explain this in simple terms: "),
+                ("Draft a message", "Help me write a message about "),
+                ("Work through an idea", "Help me think through "),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let r = Rect::new(
+                    view.center().x - ((view.w - 24.0).min(340.0)) / 2.0,
+                    y + 154.0 + i as f32 * 36.0,
+                    (view.w - 24.0).min(340.0),
+                    30.0,
+                );
+                if r.bottom() > view.bottom() {
+                    break;
+                }
+                if action(ui, &format!("ai.starter.{i}"), r, label, Icon::ChevronRight) {
+                    st.ai.draft = prompt.into();
+                    ui.input.focused = Some(wid("ai.prompt"));
+                    ui.input.caret = st.ai.draft.chars().count();
+                    st.cmd(Command::FocusText);
+                }
+            }
+        }
         return;
     }
     let first = if full {
@@ -569,8 +591,8 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
             .len()
             .saturating_sub(if st.ai.busy { 1 } else { 2 })
     };
-    let size = if full { 16.0 } else { 15.0 };
-    let style = TextStyle::new(size).top().wrap().line_spacing(1.4);
+    let size = CHAT_SIZE;
+    let style = conversation_style();
     let mut messages = vec![];
     let mut total = 0.0;
     let mut anchor = None;
@@ -587,6 +609,8 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
                     .join(", ")
             );
         }
+        let max_user_w=(view.w*0.80).max(80.0);
+        let message_w=if user{(ui.c.measure(&content,&style,max_user_w-24.0).0+24.0).ceil().clamp(48.0,max_user_w)}else{view.w};
         let markdown = if user {
             None
         } else {
@@ -595,10 +619,10 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
         let text_h = markdown
             .as_ref()
             .map_or_else(
-                || ui.c.measure(&content, &style, view.w * 0.83 - 28.0).1,
+                || ui.c.measure(&content, &style, message_w - 24.0).1,
                 |m| m.height,
             )
-            .max(21.0);
+            .max(CHAT_SIZE*1.5);
         let image_h = if user {
             0.0
         } else {
@@ -608,12 +632,12 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
                 .count() as f32
                 * if full { 230.0 } else { 110.0 }
         };
-        let h = text_h + if user { 24.0 } else { 40.0 } + image_h;
+        let h = text_h + if user { 24.0 } else { 32.0 } + image_h;
         if st.ai.scroll_to_reply == Some(i) {
             anchor = Some(total);
         }
-        messages.push((i, h, text_h, content, markdown));
-        total += h + 12.0;
+        messages.push((i, h, text_h, content, markdown,message_w));
+        total += h + MESSAGE_GAP;
     }
     if st.ai.busy {
         total += 36.0;
@@ -633,10 +657,9 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
     let mut tip = None;
     let fixed_hits = ui.hits.len();
     ui.c.clip(view);
-    for (i, h, text_h, content, markdown) in messages {
+    for (i, h, text_h, content, markdown,w) in messages {
         let m = &chat.messages[i];
         let user = m.role == "user";
-        let w = if user { view.w * 0.83 } else { view.w };
         let r = Rect::new(if user { view.right() - w } else { view.x }, y, w, h);
         if r.bottom() >= view.y && r.y < view.bottom() {
             let alpha = ui.c.alpha();
@@ -650,10 +673,10 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
                 ui.request_anim();
             }
             if user {
-                ui.c.fill_rrect(r, 18.0, Color::white(0.14));
+                ui.c.fill_rrect(r, 16.0, Color::white(0.12));
                 ui.c.text(
                     &content,
-                    Rect::new(r.x + 14.0, r.y + 10.0, r.w - 28.0, text_h + 2.0),
+                    Rect::new(r.x + 12.0, r.y + 12.0, r.w - 24.0, text_h + 2.0),
                     &style,
                 );
             } else if let Some(markdown) = markdown {
@@ -680,7 +703,11 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
                     let image_r = Rect::new(
                         r.x,
                         image_y,
-                        if full { 220.0 } else { 100.0 },
+                        if full {
+                            220.0f32.min(view.w - 112.0)
+                        } else {
+                            100.0
+                        },
                         if full { 216.0 } else { 100.0 },
                     );
                     image_y += if full { 230.0 } else { 110.0 };
@@ -790,7 +817,7 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
             }
             ui.c.set_alpha(alpha);
         }
-        y += h + 12.0;
+        y += h + MESSAGE_GAP;
     }
     if st.ai.busy {
         let row = Rect::new(view.x, y, view.w, 30.0);
@@ -862,25 +889,45 @@ fn transcript(ui: &mut Ui, st: &mut AppState, view: Rect, full: bool) {
 }
 
 fn history(ui: &mut Ui, st: &mut AppState, view: Rect) {
+    let filter = Rect::new(view.x, view.y, view.w, 34.0);
+    let input = ui.text_input(
+        wid("ai.history-filter"),
+        filter,
+        &mut st.ai.history_query,
+        "Search saved chats",
+        120,
+    );
+    if input.focused {
+        st.cmd(Command::FocusText);
+    }
+    if input.changed {
+        st.ai.history_scroll = 0.0;
+    }
+    let view = Rect::new(view.x, view.y + 48.0, view.w, (view.h - 48.0).max(1.0));
+    let query = st.ai.history_query.trim().to_lowercase();
+    let matches: Vec<_> = st
+        .ai
+        .chats
+        .iter()
+        .filter(|c| query.is_empty() || c.title.to_lowercase().contains(&query))
+        .collect();
     let fixed_hits = ui.hits.len();
     let mut commands = vec![];
     let wheel = ui.wheel_in(view);
-    st.ai.scroll = (st.ai.scroll - wheel * 40.0).clamp(
-        0.0,
-        (st.ai.chats.len() as f32 * 43.0 + 32.0 - view.h).max(0.0),
-    );
+    st.ai.history_scroll = (st.ai.history_scroll - wheel * 40.0)
+        .clamp(0.0, (matches.len() as f32 * 43.0 + 32.0 - view.h).max(0.0));
     ui.c.clip(view);
     text(
         ui,
         "Saved on this PC · encrypted for your Windows account",
-        Rect::new(view.x, view.y - st.ai.scroll, view.w, 24.0),
+        Rect::new(view.x, view.y - st.ai.history_scroll, view.w, 24.0),
         12.0,
         palette::TEXT_DIM,
     );
-    for (i, c) in st.ai.chats.iter().enumerate() {
+    for (i, c) in matches.iter().enumerate() {
         let r = Rect::new(
             view.x,
-            view.y + 30.0 + i as f32 * 43.0 - st.ai.scroll,
+            view.y + 30.0 + i as f32 * 43.0 - st.ai.history_scroll,
             view.w,
             37.0,
         );
@@ -914,10 +961,14 @@ fn history(ui: &mut Ui, st: &mut AppState, view: Rect) {
             commands.push(Action::Delete(c.id));
         }
     }
-    if st.ai.chats.is_empty() {
+    if matches.is_empty() {
         text(
             ui,
-            "No saved chats yet",
+            if query.is_empty() {
+                "No saved chats yet"
+            } else {
+                "No matching chats"
+            },
             view.inset(10.0, 30.0),
             15.0,
             palette::TEXT_DIM,
@@ -955,13 +1006,12 @@ fn attach_menu(ui: &mut Ui, st: &mut AppState, r: Rect) {
             Action::Attach(true),
         ),
         (
-            "PDF documents",
-            "PDF files only",
+            "Documents",
+            "PDF or UTF-8 text",
             Icon::File,
             Action::Attach(false),
         ),
-        ("Capture screen", "", Icon::ScreenSnip, Action::Snip),
-        ("Paste image", "Ctrl+V", Icon::Clipboard, Action::ReadSnip),
+        ("Paste image or file", "Ctrl+V", Icon::Clipboard, Action::PasteAttachment),
     ]
     .into_iter()
     .enumerate()
@@ -1009,7 +1059,7 @@ fn attach_menu(ui: &mut Ui, st: &mut AppState, r: Rect) {
                 10.0,
                 palette::TEXT_DIM,
             );
-        } else if i == 3 {
+        } else if i == 2 {
             text(
                 ui,
                 detail,
@@ -1030,15 +1080,18 @@ fn attach_menu(ui: &mut Ui, st: &mut AppState, r: Rect) {
         1.0,
     );
 }
+/// Draw a passive action hint on the current surface. No window, timer, focus
+/// change or idle work; mouse movement already asks the host to repaint.
 pub fn tooltip(ui: &mut Ui, content: &str, area: Rect) {
-    let w = area.w.min(480.0).max(100.0);
-    let style = TextStyle::new(12.0).top().wrap();
-    let (_, h) = ui.c.measure(content, &style, w - 24.0);
-    let h = (h + 24.0).min(area.h.max(60.0));
-    let r = Rect::new(area.right() - w, area.y, w, h);
-    ui.c.fill_rrect(r, 10.0, Color::rgba(0.18, 0.18, 0.19, 1.0));
-    ui.c.stroke_rrect(r, 10.0, Color::white(0.13), 1.0);
-    ui.c.text(content, r.inset(12.0, 10.0), &style.color(palette::TEXT));
+    if content.is_empty()||area.w<=0.0||area.h<=0.0{return;}
+    let style=TextStyle::new(12.0).top().wrap();
+    let bounds=ui.c.bounds().inset(8.0,8.0);
+    let width=area.w.min(bounds.w).max(1.0);
+    let height=(ui.c.measure(content,&style,(width-24.0).max(1.0)).1+12.0).min(area.h).min(bounds.h);
+    let r=Rect::new(area.x.clamp(bounds.x,(bounds.right()-width).max(bounds.x)),area.y.clamp(bounds.y,(bounds.bottom()-height).max(bounds.y)),width,height);
+    ui.c.fill_rrect(r,8.0,Color::rgba(0.16,0.16,0.17,1.0));
+    ui.c.stroke_rrect(r.inset(0.5,0.5),8.0,Color::white(0.12),1.0);
+    ui.c.text(content,r.inset(12.0,6.0),&style.color(palette::TEXT));
 }
 pub fn model_picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
     super::ai_models::picker(ui, st, r, settings);
@@ -1047,7 +1100,8 @@ pub fn model_picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
 /// A compact chat keeps its composer visible; its model list is drawn by
 /// the island host below the card, outside the chat's content clip.
 pub fn picker_below(st: &AppState) -> bool {
-    st.ai.model_menu && !st.ai.model_settings && !st.ai.full_open && st.ai.island_height <= 245.0
+    let _ = st;
+    false
 }
 pub fn settings(ui: &mut Ui, st: &mut AppState, area: Rect) -> f32 {
     if !st.ai.loaded && !st.ai.loading {
@@ -1056,6 +1110,98 @@ pub fn settings(ui: &mut Ui, st: &mut AppState, area: Rect) -> f32 {
     }
     let mut y = area.y;
     let w = area.w;
+    text(
+        ui,
+        "Open AI",
+        Rect::new(area.x, y, w, 24.0),
+        18.0,
+        palette::TEXT,
+    );
+    y += 34.0;
+    for (id, label, hint, value) in [
+        (
+            "ai.pref-gesture",
+            "Scroll left on the closed island",
+            "Right scroll opens Search.",
+            st.settings.ai.horizontal_scroll,
+        ),
+        (
+            "ai.pref-pin",
+            "Keep open",
+            "Prevent automatic closing when you switch apps.",
+            st.settings.ai.keep_open,
+        ),
+        (
+            "ai.pref-resume",
+            "Resume chat",
+            "Return to this conversation and its draft on reopening.",
+            st.settings.ai.resume,
+        ),
+    ] {
+        let r = Rect::new(area.x, y, w, 62.0);
+        text(
+            ui,
+            label,
+            Rect::new(r.x + 4.0, r.y + 6.0, w - 70.0, 22.0),
+            14.0,
+            palette::TEXT,
+        );
+        text(
+            ui,
+            hint,
+            Rect::new(r.x + 4.0, r.y + 29.0, w - 70.0, 25.0),
+            12.0,
+            palette::TEXT_DIM,
+        );
+        let switch = Rect::new(r.right() - 56.0, r.y + 18.0, 50.0, 28.0);
+        let response = ui.button(wid(id), r);
+        ui.c.fill_rrect(switch, 14.0, if value { BLUE } else { Color::white(0.16) });
+        ui.c.fill_circle(
+            Point::new(
+                if value {
+                    switch.right() - 14.0
+                } else {
+                    switch.x + 14.0
+                },
+                switch.center().y,
+            ),
+            10.0,
+            Color::white(0.95),
+        );
+        if response.clicked {
+            match id {
+                "ai.pref-gesture" => {
+                    st.settings.ai.horizontal_scroll = !value;
+                    st.cmd(Command::SaveSettings);
+                }
+                "ai.pref-pin" => st.cmd(Command::ToggleAiKeepOpen),
+                _ => st.cmd(Command::ToggleAiResume),
+            }
+        }
+        y += 64.0;
+    }
+    text(
+        ui,
+        &format!(
+            "Mini window: {} × {}",
+            st.settings.ai.mini_width, st.settings.ai.mini_height
+        ),
+        Rect::new(area.x + 4.0, y, w - 100.0, 30.0),
+        12.0,
+        palette::TEXT_DIM,
+    );
+    if action(
+        ui,
+        "ai.pref-reset-size",
+        Rect::new(area.right() - 88.0, y, 88.0, 30.0),
+        "Reset",
+        Icon::Reset,
+    ) {
+        st.settings.ai.mini_width = 560;
+        st.settings.ai.mini_height = 680;
+        st.cmd(Command::SaveSettings);
+    }
+    y += 58.0;
     text(
         ui,
         "Provider",
@@ -1291,6 +1437,17 @@ pub fn settings(ui: &mut Ui, st: &mut AppState, area: Rect) -> f32 {
         palette::TEXT_DIM,
     );
     y += 37.0;
+    if st.settings.ai.hackclub() {
+        let hide = st.settings.ai.hide_unavailable_models;
+        if super::settings::switch_row(ui, wid("ai.hide-unavailable-models"), Rect::new(area.x,y,w,34.0), "Hide unavailable models", Some(hide), st.accent) {
+            st.settings.ai.hide_unavailable_models = !hide;
+            st.ai.model_rows_key = None;
+            st.cmd(Command::SaveSettings);
+        }
+        y += 34.0;
+        text(ui, "Hide deprecated and unavailable models. Off shows disabled rows.", Rect::new(area.x,y,w,32.0),11.0,palette::TEXT_DIM);
+        y += 37.0;
+    }
     if !st.ai.error.is_empty() {
         text(
             ui,

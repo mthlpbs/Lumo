@@ -57,16 +57,17 @@ fn headers(c: &Config, key: &str) -> Vec<(String, String)> {
         }
     }
 }
+#[cfg(test)]
 fn fetch(c: &Config, url: &str, body: Option<&Value>, key: &str) -> Result<Value, String> {
-    fetch_attempt(c, url, body, key).map_err(|(message, _)| message)
+    fetch_attempt(c, url, body, key, None).map_err(|(message, _)| message)
 }
 // Only idempotent catalog GETs retry. Never repeat a paid generation request.
 fn fetch_models_page(c: &Config, url: &str, key: &str) -> Result<Value, String> {
-    match fetch_attempt(c, url, None, key) {
+    match fetch_attempt(c, url, None, key, None) {
         Ok(v) => Ok(v),
         Err((_, true)) => {
             std::thread::sleep(Duration::from_millis(250));
-            fetch_attempt(c, url, None, key).map_err(|(e, _)| e)
+            fetch_attempt(c, url, None, key, None).map_err(|(e, _)| e)
         }
         Err((e, false)) => Err(e),
     }
@@ -76,6 +77,7 @@ fn fetch_attempt(
     url: &str,
     body: Option<&Value>,
     key: &str,
+    model_check: Option<(&str, &mut bool)>,
 ) -> Result<Value, (String, bool)> {
     model::validate_url(url).map_err(|e| (e, false))?;
     let _com = MtaGuard::new();
@@ -116,6 +118,9 @@ fn fetch_attempt(
         )
     })?;
     if !(200..300).contains(&r.status) {
+        if let Some((id, refused)) = model_check {
+            *refused = model::model_refused(r.status, &v, id);
+        }
         let detail = v["error"]["message"]
             .as_str()
             .or_else(|| v["error"].as_str())
@@ -379,7 +384,9 @@ pub fn run(st: &mut AppState, action: Action, owner: SendHwnd, sink: EventSink) 
                     Ok(ai::Catalog {
                         models: all,
                         saved_at,
-                        from_cache: false,
+                        // Re-saving the in-memory list is not a live refresh
+                        // and must not clear explicit model refusal flags.
+                        from_cache: from_memory,
                         warning,
                     })
                 })();
@@ -392,6 +399,10 @@ pub fn run(st: &mut AppState, action: Action, owner: SendHwnd, sink: EventSink) 
             }
             let retry = action == Action::Retry;
             let m = st.ai.model(&config);
+            if let Some(reason) = &m.unavailable {
+                st.ai.error = format!("{reason} Choose another model, or refresh the model list.");
+                return;
+            }
             if m.id.trim().is_empty() {
                 st.ai.error =
                     "Choose a default model in Settings → AI companion, or enter its model ID."
@@ -453,6 +464,7 @@ pub fn run(st: &mut AppState, action: Action, owner: SendHwnd, sink: EventSink) 
             st.ai.scroll = f32::MAX;
             st.ai.draft.clear();
             st.ai.pending.clear();
+            st.ai.pending_previews.clear();
             st.ai.close_popovers();
             st.ai.busy = true;
             st.ai.generation = ai::Generation::Working;
@@ -468,11 +480,13 @@ pub fn run(st: &mut AppState, action: Action, owner: SendHwnd, sink: EventSink) 
             let cancel = std::sync::Arc::new(super::http::Cancel::default());
             st.ai.cancel = Some(cancel.clone());
             spawn(sink, move || {
+                let mut refused = false;
                 let r = super::http::with_cancel(cancel, || {
                     let (url, body) = model::request(&config, &m, &messages)?;
                     drop(messages);
                     let key = secret::load(&keyfile).unwrap_or_default();
-                    let v = fetch(&config, &url, Some(&body), &key)?;
+                    let v = fetch_attempt(&config, &url, Some(&body), &key, Some((&m.id, &mut refused)))
+                        .map_err(|(e,_)| e)?;
                     model::parse_reply(config.provider, &v)
                 });
                 let images = r
@@ -490,6 +504,7 @@ pub fn run(st: &mut AppState, action: Action, owner: SendHwnd, sink: EventSink) 
                     chat,
                     result: r,
                     images,
+                    unavailable: refused.then_some((scope, m.id)),
                 }
             });
         }
@@ -527,15 +542,24 @@ pub fn run(st: &mut AppState, action: Action, owner: SendHwnd, sink: EventSink) 
             st.ai.attaching = true;
             spawn(sink, move || {
                 let r = unsafe { pick_attachment(owner, images) };
-                Event::Attached(r)
+                attached(r)
             });
         }
-        Action::ReadSnip => {
+        Action::AttachFiles(paths) => {
+            if st.ai.attaching { return; }
+            if paths.is_empty() || paths.len() > 4 {
+                st.ai.error="Attach up to 4 image, PDF or text files.".into();
+                return;
+            }
+            st.ai.attaching=true;
+            spawn(sink, move || attached(paths.iter().map(|p| attachment(std::path::Path::new(p))).collect()));
+        }
+        Action::PasteAttachment => {
             if st.ai.attaching {
                 return;
             }
             st.ai.attaching = true;
-            spawn(sink, move || Event::Attached(read_snip(owner)));
+            spawn(sink, move || attached(read_clipboard_attachments(owner)));
         }
         Action::DownloadImage(mi, ai) | Action::CopyImage(mi, ai) => {
             let copy = matches!(action, Action::CopyImage(..));
@@ -563,7 +587,7 @@ pub fn run(st: &mut AppState, action: Action, owner: SendHwnd, sink: EventSink) 
 fn attachment(path: &std::path::Path) -> Result<Attachment, String> {
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() > 6 * 1024 * 1024 {
-        return Err("Choose an image or PDF under 6 MB".into());
+        return Err("Choose an image, PDF or text file under 6 MB".into());
     }
     let ext = path
         .extension()
@@ -576,7 +600,8 @@ fn attachment(path: &std::path::Path) -> Result<Attachment, String> {
         "webp" => "image/webp",
         "gif" => "image/gif",
         "pdf" => "application/pdf",
-        _ => return Err("Choose a PNG, JPEG, WebP, GIF or PDF file".into()),
+        "txt" | "md" | "csv" | "json" | "log" | "yaml" | "yml" => "text/plain",
+        _ => return Err("Choose an image, PDF or UTF-8 text document".into()),
     };
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut bytes = vec![];
@@ -587,6 +612,9 @@ fn attachment(path: &std::path::Path) -> Result<Attachment, String> {
         .map_err(|e| e.to_string())?;
     if bytes.len() > 6 * 1024 * 1024 {
         return Err("The attachment grew beyond 6 MB".into());
+    }
+    if mime == "text/plain" && std::str::from_utf8(&bytes).is_err() {
+        return Err("Save this text document as UTF-8, then attach it again.".into());
     }
     Ok(Attachment {
         name: path
@@ -613,7 +641,7 @@ unsafe fn pick_attachment(owner: SendHwnd, images: bool) -> Result<Vec<Attachmen
                 d.SetTitle(if images {
                     w!("Add images")
                 } else {
-                    w!("Add PDF documents")
+                    w!("Add documents")
                 })?;
                 d.SetOptions(
                     FOS_FORCEFILESYSTEM
@@ -626,12 +654,12 @@ unsafe fn pick_attachment(owner: SendHwnd, images: bool) -> Result<Vec<Attachmen
                     pszName: if images {
                         w!("Images")
                     } else {
-                        w!("PDF documents")
+                        w!("PDF and text documents")
                     },
                     pszSpec: if images {
                         w!("*.png;*.jpg;*.jpeg;*.webp;*.gif")
                     } else {
-                        w!("*.pdf")
+                        w!("*.pdf;*.txt;*.md;*.csv;*.json;*.log;*.yaml;*.yml")
                     },
                 }])?;
                 d.Show(owner.hwnd())?;
@@ -728,8 +756,16 @@ unsafe fn save_image(owner: SendHwnd, a: &Attachment) -> Result<(), String> {
     CoUninitialize();
     r
 }
-fn read_snip(owner: SendHwnd) -> Result<Vec<Attachment>, String> {
-    let image = clipboard_image(owner)?;
+// Decode each pending thumbnail once on the existing attachment worker, never
+// on a paint. Four 256px thumbnails are bounded to at most 1 MiB of pixels.
+fn attached(result: Result<Vec<Attachment>, String>) -> Event {
+    let previews = result.as_ref().map(|files| files.iter().map(|a| {
+        a.mime.starts_with("image/").then(|| model::unbase64(&a.data)
+            .and_then(|bytes| super::imaging::decode_bytes(&bytes, 256).ok())).flatten()
+    }).collect()).unwrap_or_default();
+    Event::Attached { result, previews }
+}
+fn image_attachment(image: crate::gfx::Image) -> Result<Vec<Attachment>, String> {
     let rgba = crate::png::pbgra_to_rgba(&image.pixels);
     let bytes = crate::png::encode_rgba(image.width, image.height, &rgba);
     if bytes.len() > 6 * 1024 * 1024 {
@@ -742,23 +778,24 @@ fn read_snip(owner: SendHwnd) -> Result<Vec<Attachment>, String> {
     }])
 }
 // Checked only for an explicit paste. Never open or monitor the clipboard here.
-pub fn clipboard_has_image() -> bool {
+pub fn clipboard_has_attachment() -> bool {
     use windows::Win32::System::DataExchange::*;
     unsafe {
         let png = RegisterClipboardFormatW(windows::core::w!("PNG"));
         IsClipboardFormatAvailable(8).is_ok()
             || IsClipboardFormatAvailable(17).is_ok()
+            || IsClipboardFormatAvailable(15).is_ok()
             || (png != 0 && IsClipboardFormatAvailable(png).is_ok())
     }
 }
-fn clipboard_image(owner: SendHwnd) -> Result<crate::gfx::Image, String> {
+fn read_clipboard_attachments(owner: SendHwnd) -> Result<Vec<Attachment>, String> {
     use windows::Win32::{
         Foundation::HGLOBAL,
         System::{DataExchange::*, Memory::*},
     };
     unsafe {
-        // Snipping Tool can still own the clipboard when Windows posts its update.
-        // Retry briefly only for this explicit paste/snipping operation.
+        // Another app may still own the clipboard immediately after Copy.
+        // Retry briefly only for an explicit paste; no clipboard listener.
         let mut opened = false;
         for _ in 0..8 {
             if OpenClipboard(owner.hwnd()).is_ok() {
@@ -771,22 +808,29 @@ fn clipboard_image(owner: SendHwnd) -> Result<crate::gfx::Image, String> {
             return Err("The clipboard is busy. Try pasting the image again.".into());
         }
         let r = (|| {
+            if IsClipboardFormatAvailable(15).is_ok() {
+                let files = GetClipboardData(15).map_err(|_| "Couldn't read the copied files")?;
+                // Release Windows' shared clipboard lock before reading files.
+                return copied_file_paths(windows::Win32::UI::Shell::HDROP(files.0)).map(ClipboardAttachment::Files);
+            }
             let png = RegisterClipboardFormatW(windows::core::w!("PNG"));
             let format = if png != 0 && IsClipboardFormatAvailable(png).is_ok() {
                 png
+            } else if IsClipboardFormatAvailable(17).is_ok() {
+                17
             } else {
                 8
             };
             let h =
-                GetClipboardData(format).map_err(|_| "Copy an image first, then paste it here")?;
+                GetClipboardData(format).map_err(|_| "Copy an image, PDF or text file, then paste it here")?;
             let h = HGLOBAL(h.0);
             let size = GlobalSize(h);
             if size > 72 * 1024 * 1024 {
-                return Err("Choose a smaller screen snip".into());
+                return Err("Choose a smaller image".into());
             }
             let p = GlobalLock(h);
             if p.is_null() {
-                return Err("Couldn't read the screenshot".into());
+                return Err("Couldn't read the copied image".into());
             }
             let bytes = std::slice::from_raw_parts(p as *const u8, size);
             let r = if format == png {
@@ -796,10 +840,37 @@ fn clipboard_image(owner: SendHwnd) -> Result<crate::gfx::Image, String> {
                 decode_dib(bytes)
             };
             let _ = GlobalUnlock(h);
-            r
+            r.map(ClipboardAttachment::Image)
         })();
         let _ = CloseClipboard();
-        r
+        match r? {
+            ClipboardAttachment::Files(paths) => paths.iter().map(|p| attachment(p)).collect(),
+            ClipboardAttachment::Image(image) => image_attachment(image),
+        }
+    }
+}
+enum ClipboardAttachment {
+    Files(Vec<PathBuf>),
+    Image(crate::gfx::Image),
+}
+fn copied_file_paths(files: windows::Win32::UI::Shell::HDROP) -> Result<Vec<PathBuf>, String> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::UI::Shell::DragQueryFileW;
+    unsafe {
+        let count = DragQueryFileW(files, u32::MAX, None);
+        if count == 0 || count > 4 {
+            return Err("Copy up to 4 image, PDF or text files, then paste them here.".into());
+        }
+        let mut paths = vec![];
+        for i in 0..count {
+            let len = DragQueryFileW(files, i, None) as usize;
+            if len == 0 || len > 32767 { return Err("Couldn't read the copied file path".into()); }
+            let mut path = vec![0u16; len + 1];
+            let read = DragQueryFileW(files, i, Some(&mut path)) as usize;
+            if read != len { return Err("Couldn't read the copied file path".into()); }
+            paths.push(PathBuf::from(std::ffi::OsString::from_wide(&path[..len])));
+        }
+        Ok(paths)
     }
 }
 fn decode_dib(bytes: &[u8]) -> Result<crate::gfx::Image, String> {
@@ -911,6 +982,35 @@ fn copy_image(owner: SendHwnd, a: &Attachment) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn native_http_marks_only_explicit_model_refusals_without_retrying_posts() {
+        use std::io::{Read,Write};
+        for (status,body,blocked) in [
+            (404,r#"{"error":{"code":"model_not_found","message":"Unknown model"}}"#,true),
+            (404,r#"{"error":{"message":"Route not found"}}"#,false),
+            (429,r#"{"error":{"code":"model_not_found","message":"Try later"}}"#,false),
+            (503,r#"{"error":{"message":"p/model is not available"}}"#,false)
+        ] {
+            let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();let address=listener.local_addr().unwrap();
+            let server=std::thread::spawn(move||{
+                let end=std::time::Instant::now()+Duration::from_secs(4);
+                let mut stream=loop{if let Ok((s,_))=listener.accept(){break s;}assert!(std::time::Instant::now()<end);std::thread::sleep(Duration::from_millis(5));};
+                stream.set_nonblocking(false).unwrap();stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request=Vec::new();let mut chunk=[0u8;4096];
+                loop {let n=stream.read(&mut chunk).unwrap();assert!(n>0);request.extend_from_slice(&chunk[..n]);
+                    if let Some(end)=request.windows(4).position(|w|w==b"\r\n\r\n") {
+                        let head=String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let len=head.lines().find_map(|l|l.strip_prefix("content-length:").and_then(|s|s.trim().parse::<usize>().ok())).unwrap_or(0);
+                        if request.len()>=end+4+len {break;}
+                    }
+                }
+                write!(stream,"HTTP/1.1 {status} Reply\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            });
+            let mut refused=false;
+            let response=fetch_attempt(&Config::default(),&format!("http://{address}/chat"),Some(&serde_json::json!({"model":"p/model"})),"",Some(("p/model",&mut refused)));
+            assert!(response.is_err());assert_eq!(refused,blocked);server.join().unwrap();
+        }
+    }
+    #[test]
     fn saved_catalog_roundtrips_and_rejects_changed_endpoint_or_corrupt_data() {
         let path = std::env::temp_dir().join(format!("lumo-catalog-{}.json", ai::next_id()));
         let scope =
@@ -992,7 +1092,8 @@ mod tests {
             ("webp", true),
             ("gif", true),
             ("PDF", true),
-            ("txt", false),
+            ("txt", true),
+            ("md", true),
             ("exe", false),
         ] {
             let path = root.join(format!("sample.{ext}"));
@@ -1001,6 +1102,40 @@ mod tests {
             std::fs::remove_file(path).unwrap();
         }
         std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn attachment_previews_decode_images_once_and_keep_file_order_on_failure() {
+        let png = crate::png::encode_rgba(1, 1, &[21, 42, 63, 255]);
+        let image = Attachment { name: "Image.png".into(), mime: "image/png".into(), data: model::base64(&png) };
+        let pdf = Attachment { name: "Notes.pdf".into(), mime: "application/pdf".into(), data: model::base64(b"%PDF-sample") };
+        let invalid = Attachment { name: "Invalid.png".into(), mime: "image/png".into(), data: "YWJj".into() };
+        let Event::Attached { result, previews } = attached(Ok(vec![image, pdf, invalid])) else { panic!("attachment result expected") };
+        assert_eq!(result.unwrap().len(), 3);
+        assert_eq!(previews.len(), 3);
+        assert_eq!(previews[0].as_ref().unwrap().pixels, [63, 42, 21, 255]);
+        assert!(previews[1].is_none() && previews[2].is_none());
+    }
+    #[test]
+    fn copied_file_list_preserves_windows_paths_and_rejects_more_than_four() {
+        use windows::Win32::{Foundation::GlobalFree, System::Memory::*, UI::Shell::{DROPFILES, HDROP}};
+        // A local DROPFILES payload exercises Explorer's format without opening
+        // or changing the person's shared clipboard.
+        let read = |paths: &[&str]| unsafe {
+            let names: Vec<u16> = paths.iter().flat_map(|p|p.encode_utf16().chain(Some(0))).chain(Some(0)).collect();
+            let header = std::mem::size_of::<DROPFILES>();
+            let mem = GlobalAlloc(GMEM_MOVEABLE, header + names.len() * 2).unwrap();
+            let data = GlobalLock(mem).cast::<u8>();
+            assert!(!data.is_null());
+            data.cast::<DROPFILES>().write(DROPFILES { pFiles: header as u32, fWide: true.into(), ..Default::default() });
+            std::ptr::copy_nonoverlapping(names.as_ptr().cast::<u8>(), data.add(header), names.len() * 2);
+            let _ = GlobalUnlock(mem);
+            let result = copied_file_paths(HDROP(mem.0));
+            let _ = GlobalFree(mem);
+            result
+        };
+        let paths = [r"C:\Notes and drafts\Résumé.pdf", r"C:\Images\参考.png"];
+        assert_eq!(read(&paths).unwrap(), paths.map(PathBuf::from));
+        assert!(read(&[r"C:\one.pdf";5]).is_err());
     }
     #[test]
     #[ignore = "requires a Windows desktop"]

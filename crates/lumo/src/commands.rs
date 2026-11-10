@@ -33,27 +33,17 @@ pub enum PhoneCmd {
     Answer { id: u64, accept: bool },
 }
 
-/// Paired phones (also in the Shelf's phone panel; `services::pairdrop`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PairCmd {
-    /// Show a pairing QR code in the panel.
-    Begin,
-    /// Back to the same-Wi-Fi code (a pairing code stops working).
-    Back,
-    /// Show the paired phones.
-    List,
-    /// Forget a paired phone (by its room on the meeting server).
-    Remove(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MusicPick {
+pub enum FolderPick {
     Directory,
     LyricsDirectory,
+    PhoneInbox,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    ChoosePhoneDownloadDirectory,
+    PreviewFocusSpotlight,
     SearchBrowserMenu(lumo_core::geom::Point),
     SearchService {name:String,start:bool},
     OpenSearch,
@@ -69,6 +59,10 @@ pub enum Command {
     ToggleSearchResume,
     Ai(crate::ai::Action),
     OpenAiWindow,
+    ReturnAiToIsland,
+    CloseAi,
+    ToggleAiKeepOpen,
+    ToggleAiResume,
     AiHeight(f32),
     Media(MediaCmd),
     ChooseMusicDirectory,
@@ -122,5 +116,4 @@ pub enum Command {
     /// Show over games: ask Windows once for the right to read frames.
     AllowFps,
     Phone(PhoneCmd),
-    Pair(PairCmd),
 }

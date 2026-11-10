@@ -27,10 +27,9 @@ use crate::gfx::{TextStyle, Weight};
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::ui::{wid, wid_n, Input, Ui};
-use lumo_core::datetime::{fmt_clock, fmt_date_short};
 use lumo_core::geom::{lerp, palette, Color, Point, Rect};
 
-/// Height of the header band (tabs + clock) above the page content. The
+/// Height of the compact toolbar band above the page content. The
 /// header row itself is a fixed 36 DIPs ([`header_rect`]); the rest is the
 /// 12 DIP gap between the tab pills and the first line of content.
 pub const HEADER_H: f32 = 50.0;
@@ -59,7 +58,7 @@ pub enum PageKind {
     Script,
     /// Optional features, with switches to show or hide their pages.
     Addons,
-    /// Behind the gear on the right of the header, never in the tab row.
+    /// Opened through Settings in the tray menu; never in the section rail.
     Settings,
 }
 
@@ -139,7 +138,7 @@ impl PageKind {
 
     /// Has a tab in the header's row (Settings has the gear instead).
     pub fn tabbed(self) -> bool {
-        self != PageKind::Settings
+        !matches!(self,PageKind::Settings|PageKind::Ai)
     }
 }
 
@@ -147,7 +146,7 @@ pub fn tabs(st: &AppState) -> Vec<PageKind> {
     PageKind::ALL
         .into_iter()
         .filter(|p| match p {
-            PageKind::Ai => st.ai_on(),
+            PageKind::Ai => false,
             PageKind::Script => st.script_on(),
             PageKind::Clipboard => st.settings.clipboard_history,
             p => p.tabbed(),
@@ -206,7 +205,6 @@ pub struct PageTransition {
 /// How far (DIPs) pages slide during a switch.
 const SLIDE: f32 = 20.0;
 /// The header's selection pill and labels settle by this much of the switch.
-const TABS_END: f32 = 1.0;
 
 /// Draw the header and the active page inside the expanded island `body`.
 /// During a page switch the old page fades out sliding away while the new
@@ -214,6 +212,7 @@ const TABS_END: f32 = 1.0;
 /// `body` is the island at its final size, so nothing reflows while it opens.
 pub fn draw_expanded(ui: &mut Ui, st: &mut AppState, body: Rect, page: PageKind, transition: Option<PageTransition>) {
     if st.search.view.is_some() { crate::search::draw(ui, st, body); return; }
+    if page==PageKind::Ai {ai::draw(ui,st,ai::workspace_area(body));return;}
     if crate::pill::expanded::draw(ui, st, body, page, transition) {
         return;
     }
@@ -309,34 +308,11 @@ pub(crate) fn snap(v: f32, scale: f32) -> f32 {
 
 // ---------------------------------------------------------------- header
 
-const TAB_H: f32 = 28.0;
-/// Inactive tabs are bare icons in a 30 DIP slot.
-const TAB_W: f32 = 30.0;
-const TAB_GAP: f32 = 2.0;
-const TAB_ICON: f32 = 16.0;
-/// The active tab's label starts this far in and ends `TAB_LABEL_END` before its edge.
-const TAB_LABEL_X: f32 = 28.0;
-const TAB_LABEL_END: f32 = 12.0;
-/// Clock to date, and date (or clock) to the Settings button, which sits
-/// right of the pin.
-const DATE_GAP: f32 = 12.0;
-const PIN_GAP: f32 = 10.0;
-const PIN: f32 = 28.0;
-const GEAR: f32 = 28.0;
-const GEAR_GAP: f32 = 2.0;
-/// Hover labels: dwell, fade-in, capsule metrics.
-const TIP_DELAY: f64 = 0.4;
-const TIP_FADE: f64 = 0.12;
 pub(crate) const TIP_H: f32 = 22.0;
 pub(crate) const TIP_PAD: f32 = 8.0;
 const TIP_RADIUS: f32 = 8.0;
 /// White 0.16 over the black island, made opaque so page text can't show through.
 pub(crate) const TIP_FILL: Color = Color::rgba(0.16, 0.16, 0.16, 1.0);
-/// `tab_hover` slots of the pin and Settings buttons (tabs use their place in the row).
-const PIN_SLOT: usize = PageKind::ALL.len();
-const GEAR_SLOT: usize = PIN_SLOT + 1;
-const VISIBLE_SLOT: usize = GEAR_SLOT + 1;
-/// The Settings button's widget id (the self-test clicks it).
 pub const GEAR_ID: &str = "header.gear";
 
 /// A hover label waiting to be painted above the page.
@@ -346,7 +322,13 @@ pub(crate) struct Tip {
     pub(crate) alpha: f32,
 }
 
-/// Tab slots (x, width) of `tabs`, with `active` showing its label.
+const TAB_H:f32=28.0;
+const TAB_W:f32=30.0;
+const TAB_GAP:f32=2.0;
+const TAB_ICON:f32=16.0;
+const TAB_LABEL_X:f32=28.0;
+const TAB_LABEL_END:f32=12.0;
+const TABS_END:f32=1.0;
 fn tab_layout(ui: &mut Ui, x0: f32, tabs: &[PageKind], active: PageKind, label_st: &TextStyle, scale: f32) -> Vec<(f32, f32)> {
     let mut x = x0;
     tabs.iter()
@@ -359,9 +341,6 @@ fn tab_layout(ui: &mut Ui, x0: f32, tabs: &[PageKind], active: PageKind, label_s
         .collect()
 }
 
-/// Tabs on the left; pin, date and clock on the right. During a page switch
-/// the tabs re-flow, the selection pill slides and the labels cross-fade.
-/// Returns the hover label to paint once the page is drawn.
 pub(crate) fn draw_header(ui: &mut Ui, st: &mut AppState, r: Rect, page: PageKind, tr: Option<PageTransition>) -> Option<Tip> {
     let scale = ui.c.scale().max(0.5);
     let cy = r.center().y;
@@ -376,7 +355,7 @@ pub(crate) fn draw_header(ui: &mut Ui, st: &mut AppState, r: Rect, page: PageKin
     // A page outside the row counts as the first tab.
     let place = |p: PageKind| row.iter().position(|t| *t == p).unwrap_or(0);
     let (fi, pi) = (place(from), place(page));
-    let tabs_end = tabs[tabs.len() - 1].right();
+    let mut hint:Option<Tip>=None;
     // How much the selection sits on the gear (Settings) rather than on a tab.
     let on_gear = |p: PageKind| if p.tabbed() { 0.0 } else { 1.0 };
     let gear_k = lerp(on_gear(from), on_gear(page), e);
@@ -389,15 +368,14 @@ pub(crate) fn draw_header(ui: &mut Ui, st: &mut AppState, r: Rect, page: PageKin
         ui.c.with_alpha(1.0 - gear_k, |c| c.fill_rrect(pill, TAB_H / 2.0, Color::white(0.14)));
     }
 
-    let mut hover: Option<(usize, Rect)> = None;
     for (i, &p) in row.iter().enumerate() {
         let tr = tabs[i];
         let resp = ui.button(wid_n("tab", i as u64), tr);
         let active = p == page;
         if resp.hovered && !active {
             ui.c.fill_rrect(tr, TAB_H / 2.0, palette::SURFACE);
-            hover = Some((i, tr));
         }
+        if resp.hovered {hint=Some(Tip{anchor:tr,text:format!("Open {}",p.title()).into(),alpha:1.0});}
         let k = if active { e } else if from.tabbed() && i == fi { 1.0 - e } else { 0.0 };
         let ic = if resp.hovered { palette::TEXT } else { Color::lerp(palette::TEXT_FAINT, palette::TEXT, k) };
         let ix = snap(tr.x + (TAB_W - TAB_ICON) / 2.0, scale);
@@ -413,104 +391,29 @@ pub(crate) fn draw_header(ui: &mut Ui, st: &mut AppState, r: Rect, page: PageKin
         draw_tab_label(ui, page, tabs[pi], &label_st, e);
     }
 
-    // Right side: the clock ends on the content column's right edge (where
-    // every page's trailing control ends).
-    let right = r.right() - 6.0;
-    let time = fmt_clock(&st.local, st.settings.use_24h);
-    let time_st = TextStyle::body().weight(Weight::Semibold).tabular().right();
-    let tw = ui.c.measure(&time, &time_st, 200.0).0;
-    ui.c.text(&time, Rect::new(right - tw - 4.0, r.y, tw + 4.0, r.h), &time_st);
-    let mut left = right - tw;
-
-    let date = fmt_date_short(&st.local);
-    let date_st = TextStyle::footnote().color(palette::TEXT_DIM).right();
-    let dw = ui.c.measure(&date, &date_st, 200.0).0;
-    let date_left = left - DATE_GAP - dw;
-    // Keep the three direct controls reachable at compact widths; the date
-    // gives up its optional space before any action disappears.
-    let has_visible_app = st.foreground_app.as_ref().is_some_and(|app| app.maximized_here);
-    let tools_w = PIN + GEAR + GEAR_GAP + PIN_GAP + 8.0 + if has_visible_app { PIN + GEAR_GAP } else { 0.0 };
-    if date_left > tabs_end + tools_w {
-        let date_r = Rect::new(date_left - 2.0, r.y, dw + 2.0, r.h);
-        ui.c.text(&date, date_r, &date_st);
-        left = date_left;
+    st.ui.tab_hover=None;
+    let pin=Rect::new(r.right()-34.0,r.center().y-14.0,28.0,28.0);
+    let response=ui.icon_button(wid("pin"),pin,if st.pinned{Icon::PinFill}else{Icon::Pin},if st.pinned{st.accent}else{palette::TEXT_FAINT},15.0);
+    if response.hovered{hint=Some(Tip{anchor:pin,text:if st.pinned{"Unpin island"}else{"Pin island to keep it open"}.into(),alpha:1.0});}
+    if response.clicked{st.cmd(Command::SetPinned(!st.pinned));}
+    // Reserve this slot across transient media/lyric updates. Only availability
+    // changes; song changes must never move the adjacent toolbar controls.
+    let mini=page==PageKind::Media&&(st.settings.lyrics_popup_button||st.lyrics_popup_open);
+    if mini{
+        let button=Rect::new(pin.x-30.0,pin.y,28.0,28.0);
+        let enabled=st.lyrics_popup_open||crate::lyrics_window::available(st);
+        if media::popup_button(ui,button,st.lyrics_popup_open,enabled){st.cmd(if st.lyrics_popup_open{Command::CloseLyricsWindow}else{Command::OpenLyricsWindow});}
+        if ui.hovered(button){let text=if st.lyrics_popup_open{"Return to island"}else if enabled{"Open mini player"}else if !st.settings.lyrics{"Enable synced lyrics to use mini player"}else{"Waiting for synced lyrics"};hint=Some(Tip{anchor:button,text:text.into(),alpha:1.0});}
     }
-
-    let gear_r = Rect::new(snap(left - PIN_GAP - GEAR, scale), cy - GEAR / 2.0, GEAR, GEAR);
-    let visible_r = Rect::new(snap(gear_r.x - GEAR_GAP - PIN, scale), cy - PIN / 2.0, PIN, PIN);
-    let pin_right = if has_visible_app { visible_r.x } else { gear_r.x };
-    let pin_r = Rect::new(snap(pin_right - GEAR_GAP - PIN, scale), cy - PIN / 2.0, PIN, PIN);
-    if visible_r.x > tabs_end + 8.0 {
-        if let Some(app) = st.foreground_app.as_ref().filter(|app| app.maximized_here) {
-            let keep = st.settings.keeps_app_visible(&app.executable);
-            if keep { ui.c.fill_rrect(visible_r, PIN / 2.0, st.accent.mul_alpha(0.15)); }
-            let resp = ui.icon_button(wid("header.keep-visible"), visible_r, if keep { Icon::KeepVisible } else { Icon::App },
-                if keep { st.accent } else { palette::TEXT_FAINT }, 16.0);
-            if resp.hovered { hover = Some((VISIBLE_SLOT, visible_r)); }
-            if resp.clicked {
-                st.settings.keep_app_visible(app.executable.clone(), !keep);
-                st.cmd(Command::SaveSettings);
-            }
-        }
+    if let Some(app)=st.foreground_app.as_ref().filter(|app|app.maximized_here){
+        let keep=st.settings.keeps_app_visible(&app.executable);let button=Rect::new(pin.x-if mini{60.0}else{30.0},pin.y,28.0,28.0);
+        let response=ui.icon_button(wid("header.keep-visible"),button,if keep{Icon::KeepVisible}else{Icon::App},if keep{st.accent}else{palette::TEXT_FAINT},16.0);
+        if response.hovered{hint=Some(Tip{anchor:button,text:if keep{"Stop keeping visible over this app"}else{"Stay visible over this app"}.into(),alpha:1.0});}
+        if response.clicked{st.settings.keep_app_visible(app.executable.clone(),!keep);st.cmd(Command::SaveSettings);}
     }
-    if pin_r.x > tabs_end + 8.0 {
-        let pinned = st.pinned;
-        let (icon, color) = if pinned { (Icon::PinFill, st.accent) } else { (Icon::Pin, palette::TEXT_FAINT) };
-        let resp = ui.icon_button(wid("pin"), pin_r, icon, color, 15.0);
-        if resp.hovered {
-            hover = Some((PIN_SLOT, pin_r));
-        }
-        if resp.clicked {
-            st.cmd(Command::SetPinned(!pinned));
-        }
-    }
-    // Settings opens or restores its own window without changing this page.
-    if gear_r.x > tabs_end + 8.0 {
-        if gear_k > 0.0 {
-            ui.c.with_alpha(gear_k, |c| c.fill_rrect(gear_r, GEAR / 2.0, Color::white(0.14)));
-        }
-        let color = Color::lerp(palette::TEXT_FAINT, palette::TEXT, gear_k);
-        let resp = ui.icon_button(wid(GEAR_ID), gear_r, Icon::Gear, color, 16.0);
-        if resp.hovered {
-            hover = Some((GEAR_SLOT, gear_r));
-        }
-        if resp.clicked {
-            st.cmd(Command::OpenSettings);
-        }
-    }
-
-    // Hover labels: after a short dwell over an inactive tab, the pin or the gear.
-    let now = ui.now;
-    st.ui.tab_hover = match (hover, st.ui.tab_hover) {
-        (Some((i, _)), Some((j, t0))) if i == j => Some((j, t0)),
-        (Some((i, _)), _) => Some((i, now)),
-        (None, _) => None,
-    };
-    let (slot, anchor) = hover?;
-    let since = now - st.ui.tab_hover.map_or(now, |h| h.1);
-    if since < TIP_DELAY + TIP_FADE {
-        ui.request_anim();
-    }
-    let alpha = ((since - TIP_DELAY) / TIP_FADE).clamp(0.0, 1.0) as f32;
-    if alpha <= 0.0 {
-        return None;
-    }
-    let text = match row.get(slot) {
-        Some(p) => p.title().into(),
-        None if slot == GEAR_SLOT => "Settings".into(),
-        None if slot == VISIBLE_SLOT => {
-            let app = st.foreground_app.as_ref()?;
-            let action = if st.settings.keeps_app_visible(&app.executable) { "Stop keeping visible" } else { "Keep visible" };
-            format!("{action} for this app ({}) when maximized", app.name).into()
-        },
-        None if st.pinned => "Unpin".into(),
-        None => "Keep open".into(),
-    };
-    Some(Tip { anchor, text, alpha })
+    if page==PageKind::Media {None}else{hint}
 }
 
-/// A tab's label, faded by `alpha` and cut (not ellipsized) at the tab's
-/// current right edge while the tab is narrower than its settled width.
 fn draw_tab_label(ui: &mut Ui, p: PageKind, tab: Rect, st: &TextStyle, alpha: f32) {
     if alpha <= 0.01 {
         return;
@@ -531,7 +434,6 @@ fn draw_tab_label(ui: &mut Ui, p: PageKind, tab: Rect, st: &TextStyle, alpha: f3
     }
 }
 
-/// A small capsule centred under the hovered tab (kept within the header's width).
 fn draw_tip(ui: &mut Ui, header: Rect, tip: &Tip) {
     let scale = ui.c.scale().max(0.5);
     let st = TextStyle::footnote().center();
@@ -565,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_has_the_gear_not_a_tab() {
+    fn settings_is_reached_from_the_tray_not_the_section_rail() {
         let st = state();
         assert!(!tabs(&st).contains(&PageKind::Settings));
         // Stepping through the tabs never lands on Settings.
@@ -618,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_ai_has_no_tab_and_cannot_restore_a_saved_page() {
+    fn ai_is_a_gesture_surface_and_never_a_tab_or_automatic_start_page() {
         let mut settings = Settings { start_page: "ai".into(), ..Settings::default() };
         let store = Store { last_page: "ai".into(), ..Store::default() };
         let st = AppState::new(settings.clone(), store.clone());
@@ -626,8 +528,8 @@ mod tests {
         assert_eq!(st.page, PageKind::Media);
         settings.set_addon("ai", true);
         let st = AppState::new(settings, store);
-        assert!(tabs(&st).contains(&PageKind::Ai));
-        assert_eq!(st.page, PageKind::Ai);
+        assert!(!tabs(&st).contains(&PageKind::Ai));
+        assert_eq!(st.page, PageKind::Media);
     }
 
     #[test]

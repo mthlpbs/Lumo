@@ -315,6 +315,8 @@ pub struct Entry {
     pub subtitle: String,
     pub group: Group,
     pub target: Target,
+    /// Optional local tool executable read by the on-demand icon worker.
+    pub icon_path: Option<String>,
     title_key: String,
     words: String,
 }
@@ -335,6 +337,7 @@ impl Entry {
             subtitle,
             group,
             target,
+            icon_path: None,
         }
     }
     pub fn enabled(&self, cfg: &Config) -> bool {
@@ -434,26 +437,35 @@ pub fn frequent(entries: &[Entry], cfg: &Config, usage: &BTreeMap<String, Usage>
     out.sort_by_key(|&(i, count, last)| (std::cmp::Reverse(count), std::cmp::Reverse(last), i));
     out.into_iter().take(100).map(|(i, _, _)| i).collect()
 }
-/// One opening per physical horizontal gesture. Inertia and direction changes
-/// cannot repeatedly reopen it after dismissal; a 350 ms quiet gap rearms it.
+/// Suppress short inertial tails, while deliberate reversals and sustained
+/// motion can start another action without requiring a finger lift.
 #[derive(Default)]
 pub struct Gesture {
     last: Option<f64>,
     total: i32,
     fired: bool,
+    fired_at: f64,
+    direction: i32,
 }
 impl Gesture {
     pub fn feed(&mut self, delta: i16, now: f64) -> bool {
-        if delta == 0 {
+        if delta == 0 || !now.is_finite() {
             return false;
         }
-        if self.last.is_none_or(|t| now - t > 0.35) {
+        if self.last.is_none_or(|t| now < t || now - t > 0.35) {
             self.total = 0;
             self.fired = false;
         }
         self.last = Some(now);
         if self.fired {
-            return false;
+            let reverse=i32::from(delta).signum()!=self.direction;
+            let ready=now-self.fired_at>=if reverse{0.20}else{0.65};
+            if !ready {self.total=0;return false;}
+            if self.total.signum()!=i32::from(delta).signum(){self.total=0;}
+            self.total=self.total.saturating_add(i32::from(delta));
+            if self.total.abs()<if reverse{60}else{180}{return false;}
+            self.total=0;self.direction=i32::from(delta).signum();self.fired_at=now;
+            return true;
         }
         if self.total.signum() != i32::from(delta).signum() {
             self.total = 0;
@@ -463,6 +475,7 @@ impl Gesture {
             return false;
         }
         self.fired = true;
+        self.fired_at=now;self.direction=i32::from(delta).signum();self.total=0;
         true
     }
 }
@@ -610,6 +623,15 @@ mod tests {
             assert!(!g.feed(-120, 0.1));
             assert!(g.feed(120, 0.8));
         }
+    }
+    #[test]
+    fn gesture_rearms_without_lifting_after_deliberate_reversal_or_continued_motion() {
+        let mut g=Gesture::default();assert!(g.feed(80,0.0));
+        for (d,t) in [(80,0.02),(40,0.06),(20,0.12),(10,0.18)]{assert!(!g.feed(d,t));}
+        assert!(!g.feed(-30,0.24));assert!(g.feed(-40,0.26),"direction reversal needs no quiet gap");
+        assert!(!g.feed(-80,0.3));assert!(!g.feed(-10,0.45));assert!(!g.feed(-10,0.6));assert!(!g.feed(-10,0.75));
+        assert!(!g.feed(-80,0.93));assert!(!g.feed(-80,0.95));assert!(g.feed(-40,0.97),"a renewed sustained stroke can fire while contact continues");
+        assert!(!g.feed(120,f64::NAN));
     }
     #[test]
     fn application_ids_reject_plain_commands() {

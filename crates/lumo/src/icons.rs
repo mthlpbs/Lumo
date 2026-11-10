@@ -13,6 +13,7 @@ pub enum Icon {
     ArrowLeft,
     ChevronLeft,
     ChevronRight,
+    ChevronDown,
     Refresh,
     ExternalLink,
     ResumePage,
@@ -50,6 +51,7 @@ pub enum Icon {
     Copy,
     Clock,
     Cpu,
+    Gpu,
     Memory,
     Disk,
     Battery,
@@ -66,12 +68,14 @@ pub enum Icon {
     Folder,
     File,
     Image,
-    ScreenSnip,
     Star,
     Trash,
     Undo,
     Reset,
     Sliders,
+    Filter,
+    VsCode,
+    Eyedropper,
     Open,
     Phone,
     /// The header's Settings button.
@@ -88,6 +92,7 @@ pub enum Icon {
     Stop,
     /// A new version: an arrow down into a tray.
     Download,
+    Upload,
     /// Record (Lumo Recorder): a dot that fits inside `Circle`.
     Record,
 }
@@ -120,9 +125,9 @@ macro_rules! p {
 pub fn parts(icon: Icon) -> &'static [Part] {
     use Icon::*;
     match icon {
+        ChevronDown => p![s("M6 9l6 6 6-6")],
         Star => p![f("M12 2.5l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5L2.6 9.3l6.5-.9z")],
         Image => p![s("M3 4h18v16H3zM3 16l5-5 5 5 3-3 5 5"),s("M15 8h.01")],
-        ScreenSnip => p![s("M3 9V4h5M16 4h5v5M21 15v5h-5M8 20H3v-5M8 12h8")],
         NewChat => p![s("M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"),s("M10 14l1-4 7-7 3 3-7 7-4 1zM16 5l3 3")],
         TemporaryChat => p![s(TEMPORARY_CHAT)],
         TemporaryChatChecked => p![s(TEMPORARY_CHAT),s("M8.5 11.5l2.5 2.5 5-5")],
@@ -203,6 +208,8 @@ pub fn parts(icon: Icon) -> &'static [Part] {
         ResumePage => p![s("M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7M14 3v6h6L14 3zM20 13v4h-4M20 17a5 5 0 1 0-1 5")],
         Search => p![s("M17 10.5a6.5 6.5 0 1 1-13 0a6.5 6.5 0 1 1 13 0"),s("M15.5 15.5L21 21")],
         Clock => p![s(CIRCLE_9), s("M12 7.5V12l3 2")],
+        Gpu => p![s("M3 6h16v11H3zM19 9h2v5h-2M6 17v3M10 17v3M14 17v3"),s("M6 11.5a3 3 0 1 0 6 0a3 3 0 1 0-6 0M15 9v5")],
+        Upload => p![s("M12 14.5V4"),s("M7.5 8.5L12 4l4.5 4.5"),s("M4.5 16v2.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V16")],
         Cpu => p![
             s("M7.5 6h9A1.5 1.5 0 0 1 18 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 16.5v-9A1.5 1.5 0 0 1 7.5 6z"),
             s("M10 10h4v4h-4z"),
@@ -241,6 +248,9 @@ pub fn parts(icon: Icon) -> &'static [Part] {
         ],
         Undo => p![s("M9 14L4.5 9.5 9 5"), s("M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3")],
         Reset => p![s("M4 12a8 8 0 1 0 2.4-5.7"), s("M4 4v4.5h4.5")],
+        VsCode => p![s("M16 3L22 6V18L16 21V3ZM16 5L5 15L2 12L5 9L16 19")],
+        Eyedropper => p![s("M14 4L20 10M12 6L18 12M15 5L18 2L22 6L19 9M14 8L4 18L3 22L7 21L17 11")],
+        Filter => p![s("M3 5H21L14 13V19L10 21V13Z")],
         Sliders => p![
             s("M4 6h10M18 6h2M16 4v4"),
             s("M4 12h4M12 12h8M10 10v4"),
@@ -279,9 +289,9 @@ mod tests {
         Icon::Close, Icon::Clipboard, Icon::Copy, Icon::Search, Icon::Globe, Icon::ArrowRight, Icon::ArrowLeft, Icon::ChevronLeft, Icon::ChevronRight, Icon::Refresh, Icon::ExternalLink, Icon::ResumePage, Icon::Clock, Icon::Cpu, Icon::Memory, Icon::Disk,
         Icon::Battery, Icon::Bolt, Icon::Bluetooth, Icon::Headphones, Icon::Volume, Icon::VolumeLow, Icon::VolumeMute,
         Icon::Pin, Icon::PinFill, Icon::KeepVisible, Icon::Folder, Icon::File, Icon::Trash, Icon::Undo, Icon::Reset,
-        Icon::Sliders, Icon::Open, Icon::Phone,
+        Icon::Sliders, Icon::Filter, Icon::VsCode, Icon::Eyedropper, Icon::Open, Icon::Phone,
         Icon::Gear,
-        Icon::Gauge, Icon::App, Icon::Windows, Icon::Moon, Icon::Stop, Icon::Script, Icon::Record, Icon::Download,
+        Icon::Gauge, Icon::App, Icon::Windows, Icon::Moon, Icon::Stop, Icon::Script, Icon::Record, Icon::Download,Icon::Gpu,Icon::Upload,
     ];
 
     #[test]

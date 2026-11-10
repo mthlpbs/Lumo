@@ -102,18 +102,16 @@ pub fn apple_music_web_token_path() -> PathBuf {
     cache_dir().join("apple-music-web.json")
 }
 
-/// Files from phones go to Downloads\Lumo. Reuse an existing inbox from
-/// an older version so Shelf links keep working. LUMO_HOME isolates tests.
-pub fn phone_inbox_dir() -> PathBuf {
+/// New files go straight to Downloads, or an explicitly selected folder.
+/// Existing received files and their Shelf references are left in place.
+pub fn phone_inbox_dir(settings: &lumo_core::settings::Settings) -> PathBuf {
+    if !settings.phone_download_directory.trim().is_empty() {
+        return PathBuf::from(&settings.phone_download_directory);
+    }
     if let Some(h) = home_override() {
-        return h.join("phone-drop");
+        return h.join("Downloads");
     }
-    let downloads = downloads_dir().unwrap_or_else(|| env_dir("USERPROFILE").join("Downloads"));
-    for name in ["Lumo", "Oyenza Studio", "Oyen Poni"] {
-        let inbox = downloads.join(name);
-        if inbox.is_dir() { return inbox; }
-    }
-    downloads.join("Lumo")
+    downloads_dir().unwrap_or_else(|| env_dir("USERPROFILE").join("Downloads"))
 }
 
 fn downloads_dir() -> Option<PathBuf> {
@@ -144,6 +142,17 @@ pub fn paired_phones_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_files_use_downloads_directly_and_accept_an_explicit_folder() {
+        let mut settings = lumo_core::settings::Settings::default();
+        let expected = home_override().map(|h| h.join("Downloads")).unwrap_or_else(|| downloads_dir().unwrap_or_else(|| env_dir("USERPROFILE").join("Downloads")));
+        assert_eq!(phone_inbox_dir(&settings), expected);
+        settings.phone_download_directory = "D:\\Received files".into();
+        assert_eq!(phone_inbox_dir(&settings), PathBuf::from("D:\\Received files"));
+        settings.phone_download_directory.clear();
+        assert_eq!(phone_inbox_dir(&settings), expected);
+    }
 
     #[test]
     fn lyric_downloads_require_a_configured_folder_and_custom_paths_override_music() {

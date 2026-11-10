@@ -11,7 +11,7 @@
 ; survive uninstalling (only the cache in %LOCALAPPDATA%\Lumo is removed).
 
 #ifndef AppVersion
-  #define AppVersion "2026.1109.10"
+  #define AppVersion "2026.1111.5"
 #endif
 #ifndef ExeSource
   #define ExeSource "..\target\release\lumo.exe"
@@ -87,6 +87,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+Filename: "{app}\lumo.exe"; Parameters: "--disconnect-usage"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "RetiredUsageCleanup"
 ; Make sure no copy is still running before its files are removed.
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#AppExe} /F"; Flags: runhidden waituntilterminated; RunOnceId: "StopLumo"
 

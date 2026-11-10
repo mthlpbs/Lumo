@@ -24,6 +24,7 @@ mod app;
 mod autostart;
 #[cfg(windows)]
 mod clock;
+mod closed;
 #[cfg(windows)]
 mod commands;
 #[cfg(windows)]
@@ -32,6 +33,8 @@ mod dragdrop;
 mod events;
 #[cfg(windows)]
 mod gfx;
+#[cfg(windows)]
+mod focus_light;
 #[cfg(windows)]
 mod icons;
 #[cfg(windows)]

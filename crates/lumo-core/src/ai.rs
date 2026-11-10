@@ -42,6 +42,11 @@ impl Provider {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub keep_open: bool,
+    pub resume: bool,
+    pub horizontal_scroll: bool,
+    pub mini_width: u16,
+    pub mini_height: u16,
     pub profiles: std::collections::BTreeMap<String, Endpoints>,
     pub provider: Provider,
     pub completion_url: String,
@@ -49,10 +54,16 @@ pub struct Config {
     pub default_model: String,
     pub reasoning_efforts: std::collections::BTreeMap<String, String>,
     pub save_models: bool,
+    pub hide_unavailable_models: bool,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
+            keep_open: false,
+            resume: false,
+            horizontal_scroll: true,
+            mini_width: 560,
+            mini_height: 680,
             profiles: Default::default(),
             provider: Provider::default(),
             completion_url: String::new(),
@@ -60,6 +71,7 @@ impl Default for Config {
             default_model: String::new(),
             reasoning_efforts: Default::default(),
             save_models: true,
+            hide_unavailable_models: true,
         }
     }
 }
@@ -72,6 +84,8 @@ pub struct Endpoints {
     pub reasoning_efforts: std::collections::BTreeMap<String, String>,
     #[serde(default = "save_models_default")]
     pub save_models: bool,
+    #[serde(default = "save_models_default")]
+    pub hide_unavailable_models: bool,
 }
 fn save_models_default() -> bool {
     true
@@ -84,6 +98,7 @@ impl Default for Endpoints {
             default_model: String::new(),
             reasoning_efforts: Default::default(),
             save_models: true,
+            hide_unavailable_models: true,
         }
     }
 }
@@ -97,6 +112,7 @@ impl Config {
                 default_model: std::mem::take(&mut self.default_model),
                 reasoning_efforts: std::mem::take(&mut self.reasoning_efforts),
                 save_models: self.save_models,
+                hide_unavailable_models: self.hide_unavailable_models,
             },
         );
         let e = self.profiles.get(p.name()).cloned().unwrap_or_default();
@@ -106,6 +122,7 @@ impl Config {
         self.default_model = e.default_model;
         self.reasoning_efforts = e.reasoning_efforts;
         self.save_models = e.save_models;
+        self.hide_unavailable_models = e.hide_unavailable_models;
     }
     pub fn completion(&self) -> &str {
         if self.completion_url.trim().is_empty() {
@@ -128,7 +145,7 @@ impl Config {
 pub fn is_hackclub(url: &str) -> bool {
     url.strip_prefix("https://")
         .and_then(|s| s.split('/').next())
-        .is_some_and(|h| h.eq_ignore_ascii_case("ai.hackclub.com"))
+        .is_some_and(|h| h.eq_ignore_ascii_case("ai.hackclub.com") || h.eq_ignore_ascii_case("ai.hackclub.com:443"))
 }
 /// Never put a bearer key on an insecure remote endpoint.
 pub fn validate_url(url: &str) -> Result<(), String> {
@@ -180,6 +197,60 @@ pub struct Model {
     pub output_price: Option<f64>,
     #[serde(default)]
     pub reasoning: crate::ai_reasoning::Reasoning,
+    /// Provider-supplied status only. Unknown availability is not a health check.
+    #[serde(default)]
+    pub unavailable: Option<String>,
+}
+
+fn catalog_unavailable(v: &Value) -> Option<String> {
+    // A published retirement date is a deprecation announcement, including
+    // future dates. Do not infer status from a model's name or description.
+    for field in ["shutdown_date", "expiration_date"] {
+        if let Some(date) = v[field].as_str().filter(|s| valid_model_date(s)) {
+            return Some(format!("Deprecated · retirement date {date}"));
+        }
+    }
+    if v["deprecated"].as_bool() == Some(true) {
+        return Some("Deprecated by the provider".into());
+    }
+    if v["available"].as_bool() == Some(false) || v["enabled"].as_bool() == Some(false) {
+        return Some("Unavailable in this provider's catalog".into());
+    }
+    match v["status"].as_str().unwrap_or("").to_ascii_lowercase().as_str() {
+        "deprecated" | "retired" | "disabled" | "unavailable" | "decommissioned" =>
+            Some("Deprecated or unavailable in this provider's catalog".into()),
+        _ => None,
+    }
+}
+fn valid_model_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-'
+        || !b.iter().enumerate().all(|(i,c)| i == 4 || i == 7 || c.is_ascii_digit()) {
+        return false;
+    }
+    let y: i32 = s[..4].parse().unwrap_or(0);
+    let m: u8 = s[5..7].parse().unwrap_or(0);
+    let d: u8 = s[8..].parse().unwrap_or(0);
+    y >= 1970 && (1..=12).contains(&m) && d > 0 && d <= crate::datetime::days_in_month(y,m)
+}
+/// Only explicit model-specific refusals disable a model for this endpoint.
+/// Authentication, capacity, rate limits and network errors remain retryable.
+pub fn model_refused(status: u16, v: &Value, id: &str) -> bool {
+    if id.is_empty() || !matches!(status, 400 | 404 | 410 | 422) { return false; }
+    let error = &v["error"];
+    let code = error["code"].as_str().or_else(|| error["type"].as_str()).unwrap_or("");
+    if matches!(code, "model_not_found" | "model_not_available" | "model_deprecated" | "model_retired" | "model_disabled") {
+        return true;
+    }
+    let message = error["message"].as_str().or_else(|| error.as_str()).unwrap_or("").to_ascii_lowercase();
+    if ["this model has been deprecated", "this model has been retired", "this model is no longer available"].iter().any(|s| message.contains(s)) {
+        return true;
+    }
+    // Gemini and some compatible services put the ID in their message only.
+    let specific = message.contains(&id.to_ascii_lowercase());
+    specific && (message.contains("model") || error["param"] == "model")
+        && ["does not exist", "not found", "not available", "deprecated", "decommissioned", "retired", "no longer available", "not a valid model id", "not supported for generatecontent"]
+            .iter().any(|s| message.contains(s))
 }
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()
@@ -246,6 +317,7 @@ impl Model {
             input_price: None,
             output_price: None,
             reasoning: Default::default(),
+            unavailable: None,
         }
     }
     pub fn cost_group(&self) -> &'static str {
@@ -324,6 +396,7 @@ pub fn parse_models(value: &Value) -> Result<Vec<Model>, String> {
             continue;
         }
         let mut m = Model::manual(id);
+        m.unavailable = catalog_unavailable(v);
         m.name = v
             .get("displayName")
             .or_else(|| v.get("name"))
@@ -426,6 +499,7 @@ pub fn request(
     model: &Model,
     messages: &[Message],
 ) -> Result<(String, Value), String> {
+    if let Some(reason) = &model.unavailable { return Err(reason.clone()); }
     if model.kind == Kind::Embedding {
         return Err(
             "Embedding models turn text into vectors. Select a language or image model to chat."
@@ -439,7 +513,7 @@ pub fn request(
         .completion()
         .replace("{model}", &crate::urlenc::encode(&model.id));
     validate_url(&url)?;
-    let parts = |m: &Message| -> Vec<Value> {
+    let parts = |m: &Message| -> Result<Vec<Value>, String> {
         let mut p = vec![match config.provider {
             Provider::Gemini => json!({"text":m.text}),
             _ => json!({"type":"text","text":m.text}),
@@ -448,9 +522,19 @@ pub fn request(
         // composer's action is sent in the new user message, where vision input
         // is supported; do not duplicate output images in assistant content.
         if m.role == "assistant" && config.provider != Provider::Gemini {
-            return p;
+            return Ok(p);
         }
         for a in &m.attachments {
+            if a.mime == "text/plain" {
+                let bytes = unbase64(&a.data).ok_or("Couldn't read the attached text file")?;
+                let content = std::str::from_utf8(&bytes).map_err(|_| "Text attachments must use UTF-8")?;
+                let content = format!("File: {}\n{}", a.name, content.trim_start_matches('\u{feff}'));
+                p.push(match config.provider {
+                    Provider::Gemini => json!({"text":content}),
+                    _ => json!({"type":"text","text":content}),
+                });
+                continue;
+            }
             p.push(match config.provider {
             Provider::Claude=>json!({"type":if a.mime=="application/pdf"{"document"}else{"image"},"source":{"type":"base64","media_type":a.mime,"data":a.data}}),
             Provider::Gemini=>json!({"inlineData":{"mimeType":a.mime,"data":a.data}}),
@@ -458,17 +542,20 @@ pub fn request(
             _=>json!({"type":"image_url","image_url":{"url":a.uri()}}),
         });
         }
-        p
+        Ok(p)
     };
     let ms: Vec<Value> = messages
         .iter()
-        .map(|m| match config.provider {
+        .map(|m| {
+            let content = parts(m)?;
+            Ok(match config.provider {
             Provider::Gemini => {
-                json!({"role":if m.role=="assistant"{"model"}else{"user"},"parts":parts(m)})
+                json!({"role":if m.role=="assistant"{"model"}else{"user"},"parts":content})
             }
-            _ => json!({"role":m.role,"content":parts(m)}),
+            _ => json!({"role":m.role,"content":content}),
+            })
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     let mut body = match config.provider {
         Provider::Claude => json!({"model":model.id,"max_tokens":4096,"messages":ms}),
         Provider::Gemini => json!({"contents":ms,"generationConfig":{"maxOutputTokens":4096}}),
@@ -726,6 +813,62 @@ pub fn unbase64(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn catalog_availability_uses_explicit_signals_and_survives_old_caches() {
+        let models = parse_models(&json!({"data":[
+            {"id":"announced","expiration_date":"2099-12-31"},
+            {"id":"shutdown","shutdown_date":"2026-01-01"},
+            {"id":"flag","deprecated":true}, {"id":"off","available":false},
+            {"id":"status","status":"retired"},
+            {"id":"unknown","expiration_date":null},
+            {"id":"invalid","shutdown_date":"2026-02-30"},
+            {"id":"name-deprecated","description":"Compare deprecated models","deprecated":false}
+        ]})).unwrap();
+        for m in &models {
+            assert_eq!(m.unavailable.is_some(), matches!(m.id.as_str(),"announced"|"shutdown"|"flag"|"off"|"status"),"{}",m.id);
+        }
+        let mut old = serde_json::to_value(Model::manual("old")).unwrap();
+        old.as_object_mut().unwrap().remove("unavailable");
+        assert!(serde_json::from_value::<Model>(old).unwrap().unavailable.is_none());
+        let retired = models.iter().find(|m|m.id=="flag").unwrap();
+        assert!(request(&Config::default(),retired,&[]).unwrap_err().contains("Deprecated"));
+    }
+    #[test]
+    fn model_errors_distinguish_retirement_from_temporary_and_request_errors() {
+        for (status,error,expected) in [
+            (404,json!({"code":"model_not_found","message":"Unavailable"}),true),
+            (400,json!({"message":"This model has been deprecated"}),true),
+            (404,json!({"message":"models/p/model is not found or is not supported for generateContent"}),true),
+            (400,json!({"message":"p/model is not a valid model ID"}),true),
+            (404,json!({"message":"Route not found"}),false),
+            (404,json!({"message":"No endpoints found that support image input"}),false),
+            (400,json!({"message":"p/model: unsupported temperature parameter"}),false),
+            (401,json!({"code":"model_not_found"}),false),
+            (403,json!({"message":"Forbidden"}),false),
+            (429,json!({"code":"model_not_found"}),false),
+            (503,json!({"message":"p/model is not available"}),false)
+        ] { assert_eq!(model_refused(status,&json!({"error":error}),"p/model"),expected,"{status}: {error}"); }
+    }
+    #[test]
+    fn hackclub_hide_preference_defaults_on_and_is_scoped_to_profiles() {
+        let mut c:Config=serde_json::from_str("{}").unwrap();
+        assert!(c.hide_unavailable_models && !c.hackclub());
+        c.switch(Provider::Compatible);
+        c.completion_url="https://ai.hackclub.com/proxy/v1/chat/completions".into();
+        assert!(c.hackclub());c.hide_unavailable_models=false;
+        c.switch(Provider::Claude);assert!(!c.hackclub());
+        c.switch(Provider::Compatible);assert!(c.hackclub() && !c.hide_unavailable_models);
+        for bad in ["https://ai.hackclub.com.evil.org/models","https://ai.hackclub.com@evil.org/models","http://ai.hackclub.com/models","https://evil.org/ai.hackclub.com/models"] { assert!(!is_hackclub(bad)); }
+        assert!(is_hackclub("https://AI.HACKCLUB.COM:443/proxy/v1/models"));
+    }
+    #[test]
+    fn workspace_preferences_are_backward_compatible_and_round_trip() {
+        let old:Config=serde_json::from_str(r#"{"default_model":"local/model"}"#).unwrap();
+        assert!(!old.keep_open&&!old.resume&&old.horizontal_scroll);
+        assert_eq!((old.mini_width,old.mini_height),(560,680));
+        let mut current=old;current.keep_open=true;current.resume=true;current.horizontal_scroll=false;current.mini_width=421;current.mini_height=517;
+        let restored:Config=serde_json::from_str(&serde_json::to_string(&current).unwrap()).unwrap();assert_eq!(restored,current);
+    }
     use super::*;
     #[test]
     fn effort_is_encoded_for_each_provider_and_invalid_overrides_are_omitted() {
@@ -878,6 +1021,21 @@ mod tests {
             "data:image/png;base64,YWJj"
         );
         assert_eq!(b["modalities"], json!(["image", "text"]));
+    }
+    #[test]
+    fn text_documents_use_text_content_for_every_provider_and_reject_bad_encoding() {
+        let mut messages = vec![Message { role: "user".into(), text: "Review this".into(), attachments: vec![Attachment {
+            name: "SHA256SUMS.txt".into(), mime: "text/plain".into(), data: base64("\u{feff}abc123  lumo.exe".as_bytes()),
+        }] }];
+        for provider in [Provider::Compatible,Provider::OpenAI,Provider::Claude,Provider::Gemini] {
+            let c = Config { provider, completion_url: "https://example.org/v1/chat/completions".into(), ..Default::default() };
+            let (_, body) = request(&c, &Model::manual("sample-model"), &messages).unwrap();
+            let text = if provider == Provider::Gemini { &body["contents"][0]["parts"][1]["text"] } else { &body["messages"][0]["content"][1]["text"] };
+            assert_eq!(text, "File: SHA256SUMS.txt\nabc123  lumo.exe");
+            messages[0].attachments[0].data = base64(&[0xff,0xfe]);
+            assert!(request(&c, &Model::manual("sample-model"), &messages).is_err());
+            messages[0].attachments[0].data = base64("\u{feff}abc123  lumo.exe".as_bytes());
+        }
     }
     #[test]
     fn image_followups_use_the_edit_endpoint_and_keep_the_supplied_file() {

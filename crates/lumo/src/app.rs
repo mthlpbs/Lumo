@@ -3,7 +3,7 @@
 
 use crate::activities::{self, Mode};
 use crate::clock;
-use crate::commands::{Command, MediaCmd, PairCmd, PhoneCmd};
+use crate::commands::{Command, MediaCmd, PhoneCmd};
 use crate::events::{AppEvent, AppleMusicStatus, EventSink, SendHwnd, WM_APP_APPBAR, WM_APP_EVENT, WM_APP_FRAME, WM_APP_TRAY};
 use crate::gfx::{px_rect, px_union, scale_about, union_rect, Canvas, Gfx, HitMask};
 use crate::icons::Icon;
@@ -13,8 +13,8 @@ use crate::paths;
 use crate::pill;
 use crate::services::{self, Services};
 use crate::state::{
-    AppState, FpsAccess, HudKind, InlineAction, LyricsState, LyricsStatus, NoticeAction, PairedPhone, PhoneAsk, PhoneDrop,
-    PhoneTransfer, PhoneView,
+    AppState, FpsAccess, HudKind, InlineAction, LyricsState, LyricsStatus, NoticeAction, PhoneAsk, PhoneDrop,
+    PhoneTransfer,
 };
 use crate::tray::{self, Tray};
 use crate::ui::{wid, CursorKind, Hit, Input, KeyInput, MouseButton, Ui};
@@ -22,8 +22,8 @@ use crate::window::{self, FrameClock, FrameTick, MonitorInfo};
 use crate::{dragdrop, selftest, shell};
 use lumo_core::addons::Status as AddonStatus;
 use lumo_core::frametime::{ambient_divisor, MotionStats};
+#[cfg(test)]#[path="closed_checks.rs"]mod closed_checks;
 use lumo_core::geom::{palette, Color, Point, Rect};
-use lumo_core::pairdrop::{MeetEvent, PeerEvent};
 use lumo_core::phonedrop::{Event as PhoneEvent, QrMatrix};
 use lumo_core::settings::{IdleStyle, Settings, Theme};
 use lumo_core::settings::MonitorChoice;
@@ -58,7 +58,6 @@ const TIMER_RAISE: usize = 9;
 const TIMER_PEEK: usize = 10;
 /// The next read of the update file (`crate::updates`).
 const TIMER_UPDATE: usize = 11;
-const TIMER_AI_SNIP: usize = 72;
 /// Show over games: how long the readout shows over a game, the least time
 /// between two peeks for a frame-rate drop, and Alt+Shift+F's id.
 const PEEK_S: f64 = 5.0;
@@ -99,6 +98,8 @@ pub enum Deferred {
 
 pub fn main_entry() -> i32 {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|s|s=="--usage-statusline"){return services::usage_cleanup::retired_statusline(args.get(3).map_or("",String::as_str));}
+    if args.get(1).is_some_and(|s|s=="--disconnect-usage"){return services::usage_cleanup::restore_all();}
     // Show over games' one-time OK runs this exe elevated, just for this.
     if let Some(i) = args.iter().position(|a| a == services::frames::ALLOW_ARG) {
         return services::frames::allow_main(args.get(i + 1).map_or("", String::as_str));
@@ -160,6 +161,8 @@ fn run(selftest_dir: Option<String>) -> Result<i32> {
     let helper = window::create_helper_window()?;
     pinfo!("windows created");
 
+    // One-time cleanup before old account preferences are discarded on save.
+    let _=services::usage_cleanup::restore_all();
     let (raw_settings, s_out): (Settings, _) = load_json(&paths::settings_path());
     if let Some(m) = s_out.message() {
         pwarn!("settings: {m}");
@@ -226,13 +229,13 @@ pub fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
 }
 
 /// Remember a message that couldn't be handled because the app was borrowed.
-fn note_missed(msg: u32, wp: WPARAM, lp: LPARAM) -> bool {
+pub(crate) fn note_missed(msg: u32, wp: WPARAM, lp: LPARAM) -> bool {
     match msg {
         WM_APP_FRAME => {
             FRAME_MISSED.with(|f| f.set(true));
             true
         }
-        WM_APP_EVENT | WM_SEARCH_ACTIVATION | WM_MOUSELEAVE | WM_TIMER | WM_LBUTTONUP | WM_APP_TRAY | WM_APP_APPBAR | services::ai_shortcut::MODIFIER_CHANGED => {
+        services::workspace_dismiss::OUTSIDE_PRESS | WM_APP_EVENT | WM_SEARCH_ACTIVATION | crate::ai_window::CHECK_ACTIVATION | WM_MOUSELEAVE | WM_TIMER | WM_LBUTTONUP | WM_APP_TRAY | WM_APP_APPBAR | services::ai_shortcut::MODIFIER_CHANGED => {
             MISSED.with(|m| {
                 let mut v = m.borrow_mut();
                 if v.len() < 64 && !(msg != WM_TIMER && v.iter().any(|x| x.0 == msg && x.1 == wp)) {
@@ -339,6 +342,8 @@ pub struct App {
     helper: HWND,
     gfx: Gfx,
     ai_ctrl_watch: Option<services::ai_shortcut::Watch>,
+    wheel_input: Option<services::wheel_input::Watch>,
+    workspace_dismiss: Option<services::workspace_dismiss::Watch>,
     ai_window: Option<crate::ai_window::AiWindow>,
     settings_window: Option<crate::settings_window::SettingsWindow>,
     search_gesture: lumo_core::search::Gesture,
@@ -361,6 +366,7 @@ pub struct App {
     expanded: bool,
     reopen: crate::reopen::Context,
     drag_hover: bool,
+    drag_owner: Option<HWND>,
     text_focus: bool,
     prev_foreground: HWND,
     monitor: MonitorInfo,
@@ -415,6 +421,7 @@ pub struct App {
     sysmon: Option<services::sysmon::SysMon>,
     /// The System page is open (its readings come each second).
     sysmon_on: bool,
+    sysmon_compact: bool,
     /// What the System reader was last told about nobody being there and battery saver.
     sysmon_rest: lumo_core::sysmon::Rest,
     /// Show over games: the game's frames, counted while the readout shows.
@@ -459,6 +466,8 @@ pub struct App {
     /// Pending high surrogate from WM_CHAR.
     high_surrogate: Option<u16>,
     wheel_pager: lumo_core::navigation::WheelPager,
+    /// Input-only pacing; never schedules a delayed track change.
+    music_wheel: lumo_core::navigation::WheelPager,
     /// Session locked / display off: pause ambient animation.
     locked: bool,
     display_off: bool,
@@ -476,10 +485,10 @@ pub struct App {
     left_at: f64,
     /// Phone drop's web server while the Shelf's phone panel is open.
     phone: Option<services::phonedrop::PhoneDrop>,
+    focus_light: Option<crate::focus_light::Spotlight>,
+    focus_light_preview: bool,
     /// The Shelf paths last handed to it (to notice changes).
     phone_offer: Vec<String>,
-    /// The Shelf paths last handed to the paired-phones service.
-    pair_offer: Option<Vec<String>>,
     /// Whether the island floated when the window was last laid out (its
     /// room differs: see `sync_room`).
     laid_floating: bool,
@@ -573,6 +582,8 @@ impl App {
             helper,
             gfx,
             ai_ctrl_watch: None,
+            wheel_input: None,
+            workspace_dismiss: None,
             ai_window: None,
             settings_window: None,
             search_gesture: Default::default(),
@@ -592,6 +603,7 @@ impl App {
             expanded: false,
             reopen: crate::reopen::Context::default(),
             drag_hover: false,
+            drag_owner: None,
             text_focus: false,
             prev_foreground: HWND::default(),
             monitor,
@@ -623,6 +635,7 @@ impl App {
             shown: false,
             sysmon: None,
             sysmon_on: false,
+            sysmon_compact: false,
             sysmon_rest: lumo_core::sysmon::Rest::default(),
             frames: None,
             game_pid: None,
@@ -646,6 +659,7 @@ impl App {
             dbl_press: false,
             high_surrogate: None,
             wheel_pager: Default::default(),
+            music_wheel: Default::default(),
             locked: false,
             display_off: false,
             tray_retries: 0,
@@ -655,8 +669,9 @@ impl App {
             collapse_due: false,
             left_at: f64::NEG_INFINITY,
             phone: None,
+            focus_light: None,
+            focus_light_preview: false,
             phone_offer: Vec::new(),
-            pair_offer: None,
             laid_floating: false,
             updater: None,
         })
@@ -670,11 +685,6 @@ impl App {
         if !fake {
             self.services = Some(Services::start(&self.sink, self.hwnd, self.helper, &self.st.settings));
             self.sync_top_watch();
-            self.st.paired = self.services.as_ref().map(|s| paired_phones(s.pairs())).unwrap_or_default();
-            self.sync_pair_offer();
-            if self.st.settings.system_history {
-                self.start_sysmon();
-            }
             // A frame count left running by a Lumo that crashed, and whether
             // Windows lets this sign-in read frames (the System page shows it).
             services::frames::stop_stale();
@@ -706,6 +716,7 @@ impl App {
     }
 
     fn shutdown(&mut self) -> i32 {
+        self.focus_light = None;
         self.close_search();
         self.close_search_web();
         self.lyrics_window = None;
@@ -759,13 +770,13 @@ impl App {
     /// centre stays put and both edges glide at sub-pixel precision. Call at
     /// start and whenever the scale, the monitor or the expanded width changes.
     fn layout_surface(&mut self) {
-        let middle=self.monitor.work.top+(self.monitor.work.bottom-self.monitor.work.top)/2;
-        self.st.ai.max_island_height=(((middle-self.monitor.top()) as f32/self.gfx.scale())-pages::HEADER_H-pages::PAD-if pill::on(self.st.settings.theme){pill::TOP_GAP}else{0.0}).max(240.0);
+        let middle=self.monitor.work.bottom;
+        self.st.ai.max_island_height=(((middle-self.monitor.top()) as f32/self.gfx.scale())-32.0-if pill::on(self.st.settings.theme){pill::TOP_GAP}else{0.0}).max(240.0);
         self.st.ai.island_height=self.st.ai.island_height.min(self.st.ai.max_island_height);
-        let tallest = PageKind::ALL.iter().map(|p| if *p==PageKind::Ai{self.st.ai.canvas_height.max(self.st.ai.island_height)}else{pages::content_height(*p, &self.st)}).fold(0.0f32, f32::max);
+        let tallest = PageKind::ALL.iter().map(|p| if *p==PageKind::Ai{if self.st.page==PageKind::Ai{self.st.ai.canvas_height.max(self.st.ai.island_height)}else{0.0}}else{pages::content_height(*p, &self.st)}).fold(0.0f32, f32::max);
         let tallest = if self.ai_picker_room { tallest.max(240.0 + 8.0 + 400.0) } else { tallest };
         let search = self.st.search.view.is_some();
-        self.layout_surface_for(if search { self.st.settings.expanded_width.max(crate::search::WIDTH) } else { self.st.settings.expanded_width },
+        self.layout_surface_for(if search || self.st.page==PageKind::Ai { self.st.settings.expanded_width.max(crate::search::WIDTH) } else { self.st.settings.expanded_width },
             (pages::HEADER_H + tallest + pages::PAD).max(if search {crate::search::HEIGHT} else {0.0}));
         // The band Step aside watches follows the monitor and its scale.
         self.sync_top_watch();
@@ -830,7 +841,7 @@ impl App {
         let need_w = ((bw + 2.0 * self.island.side_room()) * s).ceil() as i32;
         let need_h = ((bh + self.island.bottom_room() + self.island.top()) * s).ceil() as i32;
         if need_w > self.surface.w || need_h > self.surface.h {
-            let tallest = PageKind::ALL.iter().map(|p| pages::content_height(*p, &self.st)).fold(0.0f32, f32::max);
+            let tallest = PageKind::ALL.iter().filter(|p|**p!=PageKind::Ai||self.st.page==PageKind::Ai).map(|p| pages::content_height(*p, &self.st)).fold(0.0f32, f32::max);
             let body_h = (pages::HEADER_H + tallest + pages::PAD).max(bh / OVERSHOOT * 1.1);
             pinfo!("island outgrew the window; growing it to fit {bw:.0}x{bh:.0} DIP");
             self.layout_surface_for(self.st.settings.expanded_width.max(bw / OVERSHOOT * 1.1), body_h);
@@ -888,7 +899,9 @@ impl App {
 
     fn handle_island(&mut self, msg: u32, wp: WPARAM, lp: LPARAM, deferred: &mut Vec<Deferred>) -> Option<LRESULT> {
         match msg {
+            services::workspace_dismiss::OUTSIDE_PRESS=>{self.search_lost_activation(HWND(lp.0 as _));Some(LRESULT(0))},
             WM_SEARCH_ACTIVATION=>{let next=unsafe{GetForegroundWindow()};if !next.is_invalid(){self.search_lost_activation(next);}Some(LRESULT(0))},
+            crate::ai_window::CHECK_ACTIVATION=>{self.handle_ai_window(HWND(lp.0 as *mut _),crate::ai_window::CHECK_ACTIVATION,WPARAM(0),LPARAM(0));Some(LRESULT(0))},
             WM_APP_FRAME => {
                 // Clear `pending` after the frame so a slow frame can't keep the
                 // queue permanently non-empty (which starves WM_TIMER).
@@ -904,19 +917,15 @@ impl App {
                 self.request_frame();
                 Some(LRESULT(0))
             }
-            0x031d if self.st.ai.snipping => {
-                if unsafe { windows::Win32::System::DataExchange::IsClipboardFormatAvailable(8) }.is_ok() {
-                    self.stop_ai_snip();
-                    services::ai::run(&mut self.st,crate::ai::Action::ReadSnip,SendHwnd::new(self.hwnd),self.sink.clone());
-                }
-                Some(LRESULT(0))
-            }
             services::ai_shortcut::MODIFIER_CHANGED => {self.input.ctrl=services::ai_shortcut::control_down();self.request_frame();Some(LRESULT(0))}
             WM_TIMER => {
                 self.on_timer(wp.0);
                 Some(LRESULT(0))
             }
             WM_MOUSEMOVE => {
+                if self.wheel_input.is_none() && !self.locked && !self.display_off && self.st.settings.mouse_wheel_shortcuts {
+                    self.wheel_input=Some(services::wheel_input::Watch::start());
+                }
                 self.input.ctrl=services::ai_shortcut::control_down();
                 let p = self.mouse_dip(lp);
                 if self.ai_resize_hold.is_some() && (!self.island.settled() || !self.hovering_inside(p)) {
@@ -962,6 +971,7 @@ impl App {
                 Some(LRESULT(0))
             }
             WM_MOUSELEAVE => {
+                self.wheel_input=None;
                 self.ai_ctrl_watch=None;
                 self.input.ctrl=false;
                 self.hovering = false;
@@ -979,7 +989,11 @@ impl App {
                     // A press on the floating pill's shadow (software renderer): not the island.
                     return Some(LRESULT(0));
                 }
-                if self.st.search.active{self.focus_text();unsafe{let _=SetFocus(self.hwnd);}}
+                // Search and AI own keyboard focus for the whole workspace.
+                // Moving from their editor to a toolbar/button must not give
+                // focus back to the previous app and trigger outside dismissal.
+                let workspace=self.st.search.active||(self.expanded&&self.st.page==PageKind::Ai);
+                if workspace{self.focus_workspace();unsafe{let _=SetFocus(self.hwnd);}}
                 self.page_interaction(p);
                 self.dbl_press = msg == WM_LBUTTONDBLCLK;
                 self.input.double_click=self.dbl_press;self.input.shift=unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0;
@@ -997,8 +1011,7 @@ impl App {
                     let ai_shortcut = self.input.pressed_id == Some(wid("ai.shortcut")) && self.input.ctrl && services::ai_shortcut::control_down();
                     let inline = self.st.notice.as_ref().and_then(|n| n.inline).filter(|_| self.input.pressed_id == Some(wid("notice.act")));
                     if ai_shortcut {
-                        self.set_page(PageKind::Ai);
-                        self.expand();
+                        self.open_ai(false);
                     } else if let Some(a) = inline {
                         // The notice's inline pill acts in place without
                         // expanding. The press is consumed here, so the
@@ -1029,7 +1042,7 @@ impl App {
                         self.st.hud = None;
                         if directed { self.expand(); } else { self.open_island(); }
                     }
-                } else if self.text_focus && !self.st.search.active && self.input.pressed_id != self.input.focused {
+                } else if self.text_focus && !workspace && self.input.pressed_id != self.input.focused {
                     self.blur_text();
                 }
                 self.request_frame();
@@ -1118,10 +1131,12 @@ impl App {
             WM_MOUSEHWHEEL => {
                 let delta = (wp.0 >> 16) as u16 as i16;
                 if self.locked || self.display_off { return Some(LRESULT(0)); }
-                if self.st.search.active || !self.expanded {
+                if self.st.search.active || !self.expanded || self.st.page==PageKind::Ai {
                     if self.search_gesture.feed(delta,clock::mono()) {
                         if self.st.search.active { self.close_search(); }
-                        else if self.st.settings.search.horizontal_scroll { self.open_search(); }
+                        else if self.expanded && self.st.page==PageKind::Ai {self.collapse();}
+                        else if delta>0 && self.st.settings.search.horizontal_scroll { self.open_search(); }
+                        else if delta<0 && self.st.settings.ai.horizontal_scroll && self.st.ai_on(){self.open_ai(false);}
                     }
                 } else {
                     if let Some(forward)=self.wheel_pager.feed(delta,clock::mono()) {
@@ -1131,31 +1146,10 @@ impl App {
                 Some(LRESULT(0))
             }
             WM_MOUSEWHEEL => {
-                let delta = (wp.0 >> 16) as u16 as i16;
-                // Wheel messages carry screen coordinates. Use this packet's
-                // position, not an older WM_MOUSEMOVE, to choose the header
-                // versus page content. Handle each packet before frames can
-                // merge it with another axis or the gesture's inertial tail.
-                let mut pt = POINT { x: lp.0 as i16 as i32, y: (lp.0 >> 16) as i16 as i32 };
-                unsafe { let _ = windows::Win32::Graphics::Gdi::ScreenToClient(self.hwnd, &mut pt); }
-                let scale = self.gfx.scale();
-                let p = Point::new(pt.x as f32 / scale, pt.y as f32 / scale);
-                self.input.mouse = Some(p);
-                let body = self.island.body_rect_at(self.cx);
-                let over_header = self.expanded && !self.st.search.active && p.x >= body.x && p.x <= body.right()
-                    && p.y >= 0.0 && p.y < body.y + pages::HEADER_H;
-                if over_header {
-                    if let Some(forward) = self.wheel_pager.feed_vertical(delta, clock::mono()) {
-                        let next = pages::step_tab(self.st.page, &self.st, forward);
-                        self.set_page(next);
-                        self.request_frame();
-                    }
-                } else {
-                    self.page_interaction(p);
-                    self.input.wheel += f32::from(delta) / WHEEL_DELTA as f32;
-                    self.request_frame();
-                }
-                Some(LRESULT(0))
+                let delta=(wp.0>>16)as u16 as i16;
+                let source=self.wheel_input.as_ref().map_or(services::wheel_input::Source::Unknown,|w|w.source());
+                let shift=wp.0&4!=0;
+                self.island_vertical_wheel(delta,lp,source,shift,deferred)
             }
             WM_SETCURSOR => {
                 let kind = self.input.mouse.and_then(|p| self.hit_at(p)).map(|h| h.cursor).unwrap_or(CursorKind::Arrow);
@@ -1197,6 +1191,7 @@ impl App {
                 if let Some(action)=crate::search_web::Action::from_key(wp.0 as u32,unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0,alt){self.search_web_action(action);Some(LRESULT(0))}else{None}
             }
             WM_KEYDOWN => {
+                if self.expanded&&self.st.page==PageKind::Ai&&!self.st.search.active{if let Some(field)=crate::ai::workspace_key(&mut self.st,wp.0 as u32,unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0,unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0){self.input.focused=Some(field);self.input.caret=0;self.focus_text();self.request_frame();return Some(LRESULT(0));}}
                 if self.st.search.active {
                     let key=VIRTUAL_KEY(wp.0 as u16);
                     if key==VK_ESCAPE {if self.st.search.embedded()&&self.input.focused==Some(wid("search.query")){self.input.keys.push(KeyInput::Escape);self.request_frame();}else{self.close_search();}return Some(LRESULT(0));}
@@ -1215,27 +1210,28 @@ impl App {
                     if matches!(key,VK_UP|VK_DOWN|VK_PRIOR|VK_NEXT|VK_TAB) {self.request_frame();return Some(LRESULT(0));}
                 }
                 if wp.0==VK_ESCAPE.0 as usize && self.st.page==PageKind::Ai && (self.st.ai.model_menu || self.st.ai.reasoning_menu || self.st.ai.attach_menu) {
-                    self.st.ai.close_popovers();self.input.focused=Some(wid("ai.prompt"));self.input.caret=self.st.ai.draft.chars().count();self.request_frame();return Some(LRESULT(0));
+                    self.st.ai.dismiss_popup();self.input.focused=Some(wid(if self.st.ai.model_menu{"ai.model-search"}else{"ai.prompt"}));self.input.caret=0;self.request_frame();return Some(LRESULT(0));
                 }
+                if wp.0==VK_ESCAPE.0 as usize&&self.expanded&&self.st.page==PageKind::Ai&&!self.st.search.active{self.collapse();return Some(LRESULT(0));}
                 if self.text_focus {
                     self.reopen.interacted(self.st.page, clock::mono());
                     let k = match VIRTUAL_KEY(wp.0 as u16) {
                         VK_A if unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0 => Some(KeyInput::SelectAll),
-                        VK_C if self.st.search.active && unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0=>Some(KeyInput::Copy),
-                        VK_X if self.st.search.active && unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0=>Some(KeyInput::Cut),
+                        VK_C if (self.st.search.active||self.st.page==PageKind::Ai) && unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0=>Some(KeyInput::Copy),
+                        VK_X if (self.st.search.active||self.st.page==PageKind::Ai) && unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0=>Some(KeyInput::Cut),
                         VK_BACK => Some(KeyInput::Backspace),
                         VK_DELETE => Some(KeyInput::Delete),
                         VK_RETURN => Some(if !self.st.search.active && self.st.page==PageKind::Ai && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::Char('\n')}else{KeyInput::Enter}),
                         VK_ESCAPE => Some(KeyInput::Escape),
-                        VK_LEFT => Some(if self.st.search.active && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::SelectLeft}else{KeyInput::Left}),
-                        VK_RIGHT => Some(if self.st.search.active && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::SelectRight}else{KeyInput::Right}),
+                        VK_LEFT => Some(if (self.st.search.active||self.st.page==PageKind::Ai) && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::SelectLeft}else{KeyInput::Left}),
+                        VK_RIGHT => Some(if (self.st.search.active||self.st.page==PageKind::Ai) && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::SelectRight}else{KeyInput::Right}),
                         VK_UP => Some(KeyInput::Up),
                         VK_DOWN => Some(KeyInput::Down),
-                        VK_HOME => Some(if self.st.search.active && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::SelectHome}else{KeyInput::Home}),
-                        VK_END => Some(if self.st.search.active && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::SelectEnd}else{KeyInput::End}),
+                        VK_HOME => Some(if (self.st.search.active||self.st.page==PageKind::Ai) && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::SelectHome}else{KeyInput::Home}),
+                        VK_END => Some(if (self.st.search.active||self.st.page==PageKind::Ai) && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0{KeyInput::SelectEnd}else{KeyInput::End}),
                         VK_V if unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0 => {
                             let prompt=!self.st.search.active && self.st.page==PageKind::Ai && self.input.focused==Some(wid("ai.prompt"));
-                            if !crate::ai::paste_image(&mut self.st,prompt,services::ai::clipboard_has_image) {if let Some(text) = services::clipboard::read_text(self.hwnd) {
+                            if !crate::ai::paste_attachment(&mut self.st,prompt,services::ai::clipboard_has_attachment) {if let Some(text) = services::clipboard::read_text(self.hwnd) {
                                 for c in text.chars().take(16000).filter(|c| !c.is_control() || (self.st.page==PageKind::Ai && *c=='\n')) {
                                     self.input.keys.push(KeyInput::Char(c));
                                 }
@@ -1256,14 +1252,14 @@ impl App {
                 if self.text_focus {
                     self.reopen.interacted(self.st.page, clock::mono());
                     let prompt=!self.st.search.active && self.st.page==PageKind::Ai && self.input.focused==Some(wid("ai.prompt"));
-                    if !crate::ai::paste_image(&mut self.st,prompt,services::ai::clipboard_has_image){crate::ai_window::paste_text(&mut self.input,self.hwnd);}
+                    if !crate::ai::paste_attachment(&mut self.st,prompt,services::ai::clipboard_has_attachment){crate::ai_window::paste_text(&mut self.input,self.hwnd);}
                     self.request_frame();
                 }
                 Some(LRESULT(0))
             }
             WM_ACTIVATE => {
                 if (wp.0 & 0xffff) as u32 == WA_INACTIVE {
-                    if self.st.search.active {self.search_lost_activation(HWND(lp.0 as *mut _));}
+                    if self.st.search.active || (self.expanded&&self.st.page==PageKind::Ai) {self.search_lost_activation(HWND(lp.0 as *mut _));}
                     else if self.text_focus && !self.st.search.context_menu {
                         self.text_focus = false;
                         self.input.focused = None;
@@ -1275,6 +1271,7 @@ impl App {
                 None
             }
             WM_DISPLAYCHANGE | WM_DPICHANGED | WM_SETTINGCHANGE => {
+                if msg != WM_SETTINGCHANGE { self.focus_light = None; }
                 self.refresh_monitor();
                 if msg == WM_SETTINGCHANGE {
                     if let Some(a) = services::system_accent() {
@@ -1339,7 +1336,7 @@ impl App {
             WM_POWERBROADCAST => {
                 if let Some(on) = services::power::display_state_change(wp, lp) {
                     self.display_off = !on;
-                    if !on { self.close_search(); }
+                    if !on { self.focus_light=None;self.wheel_input=None;self.workspace_dismiss=None;self.close_search(); }
                     if on { if let Some(window) = self.settings_window.as_ref() { window.invalidate(); } if let Some(window) = self.ai_window.as_ref() { window.invalidate(); } }
                 }
                 let p = services::power::query();
@@ -1355,7 +1352,7 @@ impl App {
                     WTS_SESSION_UNLOCK_ => self.locked = false,
                     _ => {}
                 }
-                if self.locked { self.close_search(); }
+                if self.locked { self.focus_light=None;self.wheel_input=None;self.workspace_dismiss=None;self.close_search(); }
                 if !self.locked { if let Some(window) = self.settings_window.as_ref() { window.invalidate(); } if let Some(window) = self.ai_window.as_ref() { window.invalidate(); } }
                 self.tell_sysmon_rest();
                 self.update_due();
@@ -1393,7 +1390,6 @@ impl App {
 
     fn on_timer(&mut self, id: usize) {
         match id {
-            TIMER_AI_SNIP => {self.stop_ai_snip();self.st.ai.snipping=false;self.request_frame();}
             TIMER_HOVER => {
                 unsafe {
                     let _ = KillTimer(self.hwnd, TIMER_HOVER);
@@ -1557,22 +1553,89 @@ impl App {
         }
     }
 
-    fn choose_music_path(&mut self, kind: crate::commands::MusicPick) {
+    fn choose_folder(&mut self, kind: crate::commands::FolderPick) {
         let flag = match &kind {
-            crate::commands::MusicPick::Directory => &mut self.st.ui.choosing_music_dir,
-            crate::commands::MusicPick::LyricsDirectory => &mut self.st.ui.choosing_lyrics_dir,
+            crate::commands::FolderPick::Directory => &mut self.st.ui.choosing_music_dir,
+            crate::commands::FolderPick::LyricsDirectory => &mut self.st.ui.choosing_lyrics_dir,
+            crate::commands::FolderPick::PhoneInbox => &mut self.st.ui.choosing_phone_dir,
         };
         if *flag { return; }
         *flag = true;
-        let initial=if kind==crate::commands::MusicPick::LyricsDirectory {paths::lyrics_download_dir(&self.st.settings).unwrap_or_else(||paths::music_dir(&self.st.settings))} else {paths::music_dir(&self.st.settings)};
+        let initial = match kind {
+            crate::commands::FolderPick::Directory => paths::music_dir(&self.st.settings),
+            crate::commands::FolderPick::LyricsDirectory => paths::lyrics_download_dir(&self.st.settings).unwrap_or_else(|| paths::music_dir(&self.st.settings)),
+            crate::commands::FolderPick::PhoneInbox => paths::phone_inbox_dir(&self.st.settings),
+        };
         if let Err(e) = services::music_files::choose(kind, SendHwnd::new(self.helper), initial, self.sink.clone()) {
             *flag = false;
             self.st.notify(Icon::Folder, palette::ORANGE, "Couldn't start the picker", e.to_string(), 6.0, None);
         }
     }
 
+    fn island_vertical_wheel(&mut self,delta:i16,lp:LPARAM,source:services::wheel_input::Source,shift:bool,_deferred:&mut Vec<Deferred>)->Option<LRESULT> {
+        if self.locked||self.display_off||delta==0{return Some(LRESULT(0));}
+                // Wheel messages carry screen coordinates. Use this packet's
+                // position, not an older WM_MOUSEMOVE, to choose the header
+                // versus page content. Handle each packet before frames can
+                // merge it with another axis or the gesture's inertial tail.
+                let mut pt = POINT { x: lp.0 as i16 as i32, y: (lp.0 >> 16) as i16 as i32 };
+                unsafe { let _ = windows::Win32::Graphics::Gdi::ScreenToClient(self.hwnd, &mut pt); }
+                let scale = self.gfx.scale();
+                let p = Point::new(pt.x as f32 / scale, pt.y as f32 / scale);
+                self.input.mouse = Some(p);
+                let body = self.island.body_rect_at(self.cx);
+                let mouse_shortcut=source==services::wheel_input::Source::Mouse && self.st.settings.mouse_wheel_shortcuts && !shift && !self.input.down;
+                if mouse_shortcut && !self.expanded && body.contains(p) {
+                    if self.search_gesture.feed(delta,clock::mono()) {
+                        if delta>0 && self.st.ai_on(){self.open_ai(false);}
+                        else if delta<0{self.open_search();}
+                    }
+                    return Some(LRESULT(0));
+                }
+                let workspace_header=self.expanded && (self.st.search.active||self.st.page==PageKind::Ai)
+                    && p.x>=body.x&&p.x<=body.right()&&p.y>=0.0&&p.y<body.y+pages::HEADER_H;
+                if mouse_shortcut&&workspace_header {
+                    if self.search_gesture.feed(delta,clock::mono()) {
+                        self.st.closed_view=Default::default();self.collapse();
+                    }
+                    return Some(LRESULT(0));
+                }
+                let over_header = self.expanded && !self.st.search.active && self.st.page!=PageKind::Ai && p.x >= body.x && p.x <= body.right()
+                    && p.y >= 0.0 && p.y < body.y + pages::HEADER_H;
+                if !self.expanded && self.st.settings.closed_scroll && body.contains(p) {
+                    if let Some(next)=self.wheel_pager.feed_vertical(delta,clock::mono()){
+                        self.st.closed_view=self.st.closed_view.step(next);self.request_frame();
+                    }
+                } else if over_header {
+                    self.music_wheel=Default::default();
+                    if let Some(forward) = self.wheel_pager.feed_vertical(delta, clock::mono()) {
+                        let next = pages::step_tab(self.st.page, &self.st, forward);
+                        self.set_page(next);
+                        self.request_frame();
+                    }
+                } else if self.expanded && !self.st.search.active && self.st.page==PageKind::Media
+                    && self.st.settings.music_scroll_tracks && self.st.media.is_some() && !self.input.down
+                    && crate::pill::music::player_rect(&self.st,pages::content_area(body)).contains(p) {
+                    self.page_interaction(p);
+                    if let Some(next)=self.music_wheel.feed_vertical(delta,clock::mono()) {
+                        let allowed=self.st.media.as_ref().is_some_and(|m|if next{m.can_next}else{m.can_prev});
+                        if allowed{pages::media::push_media(&mut self.st,if next{crate::commands::MediaCmd::Next}else{crate::commands::MediaCmd::Prev});}
+                    }
+                    self.request_frame();
+                } else {
+                    self.music_wheel=Default::default();
+                    self.page_interaction(p);
+                    self.input.wheel += f32::from(delta) / WHEEL_DELTA as f32;
+                    self.request_frame();
+                }
+        Some(LRESULT(0))
+    }
+
     /// Apply side effects of a settings change (from the menu, a reload or a page).
     fn settings_changed(&mut self, before: &Settings) {
+        if before.mouse_wheel_shortcuts!=self.st.settings.mouse_wheel_shortcuts {self.wheel_input=None;self.search_gesture=Default::default();}
+        if before.closed_scroll&&!self.st.settings.closed_scroll{self.st.closed_view=Default::default();self.wheel_pager=Default::default();}
+        if (before.ai.mini_width,before.ai.mini_height)!=(self.st.settings.ai.mini_width,self.st.settings.ai.mini_height){if let Some(w)=self.ai_window.as_ref(){w.apply_size(&self.st.settings.ai);}}
         if before.search != self.st.settings.search {
             if before.search.apps!=self.st.settings.search.apps && !self.st.settings.search.apps {
                 for pending in [&mut self.st.search.pending,&mut self.st.search.icon_pending]{if let Some(p)=pending.take(){p.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}}
@@ -1612,6 +1675,7 @@ impl App {
             self.fetch_setup();
         }
         let now = &self.st.settings;
+        if before.music_scroll_tracks!=now.music_scroll_tracks {self.music_wheel=Default::default();}
         if before.theme != now.theme {
             self.st.accent = theme_accent(now.theme);
         }
@@ -1650,6 +1714,7 @@ impl App {
             self.st.lyrics.request_id = 0;
         }
         self.st.pomodoro.cfg = self.st.settings.pomodoro.clone();
+        if before.focus_spotlight && !self.st.settings.focus_spotlight { self.focus_light = None; }
         if let Some(s) = self.services.as_ref() {
             s.set_clipboard_history(self.st.settings.clipboard_history);
         }
@@ -1677,9 +1742,7 @@ impl App {
             }
             crate::ai::clear_ready(&mut self.st);
             self.st.ai.close_popovers();
-            self.st.ai.snipping = false;
             self.st.ai.full_open = false;
-            self.stop_ai_snip();
             self.ai_ctrl_watch = None;
             self.ai_window = None;
             self.ai_resize_hold = None;
@@ -1701,18 +1764,7 @@ impl App {
             }
             self.peek_game(if self.st.settings.game_peek { "peeks picked" } else { "picked to stay" });
         }
-        let history = self.st.settings.system_history;
-        if before.system_history != history && self.selftest.is_none() {
-            match &self.sysmon {
-                Some(s) => s.background(history),
-                None if history => self.start_sysmon(),
-                None => {}
-            }
-            // Off while the page is closed: the kept minute goes, so the next opening starts fresh.
-            if !history && !self.sysmon_on && !self.st.game.active {
-                self.st.system.clear();
-            }
-        }
+
     }
 
     fn on_menu(&mut self, cmd: tray::MenuCmd) {
@@ -1723,7 +1775,7 @@ impl App {
             ToggleIdleStyle(style) => s.idle_style = style,
             SetTheme(theme) => s.theme = theme,
             ToggleClipboard => s.clipboard_history = !s.clipboard_history,
-            ToggleSystemHistory => s.system_history = !s.system_history,
+            ToggleSystemHistory => s.system_history = false,
             ToggleLyrics => s.island_lyrics = !s.island_lyrics,
             TogglePronunciation => s.lyrics_pronunciation = !s.lyrics_pronunciation,
             SetHideFullscreen(hide) => s.hide_in_fullscreen = hide,
@@ -1799,7 +1851,7 @@ impl App {
 
     pub fn on_event(&mut self, ev: AppEvent) {
         // Only events that change Settings content repaint the auxiliary window.
-        let refresh_settings = matches!(&ev, AppEvent::Ai(_) | AppEvent::Autostart(_) | AppEvent::MusicPathChosen { .. } | AppEvent::Update(_) | AppEvent::ForegroundApp(_));
+        let refresh_settings = matches!(&ev, AppEvent::Ai(_) | AppEvent::Autostart(_) | AppEvent::FolderChosen { .. } | AppEvent::Update(_) | AppEvent::ForegroundApp(_));
         let now = clock::mono();
         self.st.now = now;
         let media_before = matches!(ev, AppEvent::Media(_) | AppEvent::MediaTimeline { .. }).then(|| self.media_snapshot());
@@ -1807,7 +1859,7 @@ impl App {
             AppEvent::SearchIcons(event)=>{
                 if self.st.search.icon_pending.as_ref().is_some_and(|p|p.request==event.request) {
                     let cancelled=self.st.search.icon_pending.take().unwrap().cancel.load(std::sync::atomic::Ordering::Relaxed);
-                    if !cancelled && self.st.search.active && self.st.settings.search.apps {for (id,image) in event.images {self.st.search.icons.insert(id,image);}}
+                    if !cancelled && self.st.search.active && (self.st.settings.search.apps||self.st.settings.search.powertoys) {for (id,image) in event.images {self.st.search.icons.insert(id,image);}}
                 }
             },
             AppEvent::Search(event)=>{
@@ -1837,8 +1889,7 @@ impl App {
                 if refresh{if let Some(p)=self.st.search.integrations_pending.take(){p.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}self.start_search_integrations();}
             },
             AppEvent::Ai(event) => {
-                let attached=matches!(&event,crate::ai::Event::Attached(_));
-                let snipped=self.st.ai_on() && self.st.ai.snipping && matches!(&event,crate::ai::Event::Attached(_));
+                let attached=matches!(&event,crate::ai::Event::Attached{..});
                 let reply_chat=match &event{crate::ai::Event::Reply{chat,..}=>Some(*chat),_=>None};
                 let showing_ai=(!self.st.search.active && self.expanded && self.st.page==PageKind::Ai) || self.ai_window.as_ref().is_some_and(|w|unsafe{IsWindowVisible(w.hwnd)}.as_bool() && !unsafe{IsIconic(w.hwnd)}.as_bool());
                 let notify=self.st.ai_on() && !(showing_ai && reply_chat==Some(self.st.ai.current.id));
@@ -1846,7 +1897,6 @@ impl App {
                 if reply_chat == Some(self.st.ai.current.id) && !self.st.search.active && self.expanded && self.st.page == PageKind::Ai {
                     self.reopen.interacted(PageKind::Ai, now);
                 }
-                if snipped {if let Some(w)=self.ai_window.as_ref(){w.show();}else{self.st.page=PageKind::Ai;self.expand();}}
                 if attached && self.st.ai_on() && !self.locked && !self.display_off {
                     if let Some(w)=self.ai_window.as_mut(){w.focus_prompt(self.st.ai.draft.chars().count());}
                     else if !self.st.search.active && self.expanded && self.st.page==PageKind::Ai {self.input.focused=Some(wid("ai.prompt"));self.input.caret=self.st.ai.draft.chars().count();self.focus_text();}
@@ -1908,15 +1958,16 @@ impl App {
                     }
                 }
             }
-            AppEvent::MusicPathChosen { kind, result } => {
-                use crate::commands::MusicPick;
+            AppEvent::FolderChosen { kind, result } => {
+                use crate::commands::FolderPick;
                 match &kind {
-                    MusicPick::Directory => self.st.ui.choosing_music_dir = false,
-                    MusicPick::LyricsDirectory => self.st.ui.choosing_lyrics_dir = false,
+                    FolderPick::Directory => self.st.ui.choosing_music_dir = false,
+                    FolderPick::LyricsDirectory => self.st.ui.choosing_lyrics_dir = false,
+                    FolderPick::PhoneInbox => self.st.ui.choosing_phone_dir = false,
                 }
                 match result {
                     Ok(Some(path)) => match kind {
-                        MusicPick::Directory => {
+                        FolderPick::Directory => {
                             let directory = path.to_string_lossy().into_owned();
                             if self.st.settings.music_directory == directory {
                                 self.refetch_lyrics();
@@ -1924,8 +1975,12 @@ impl App {
                             self.st.settings.music_directory = directory;
                             self.st.cmd(Command::SaveSettings);
                         }
-                        MusicPick::LyricsDirectory => {
+                        FolderPick::LyricsDirectory => {
                             self.st.settings.lyrics_download_directory=path.to_string_lossy().into_owned();
+                            self.st.cmd(Command::SaveSettings);
+                        }
+                        FolderPick::PhoneInbox => {
+                            self.st.settings.phone_download_directory = path.to_string_lossy().into_owned();
                             self.st.cmd(Command::SaveSettings);
                         }
                     },
@@ -1984,6 +2039,7 @@ impl App {
             AppEvent::Power(p) => {
                 let old = self.st.power;
                 self.st.power = p;
+                if p.saver { self.focus_light = None; }
                 if p.saver {self.st.search.cancel();if self.search_web.is_some(){self.search_web=None;self.st.search.web_ready=false;self.st.search.web_visible=false;self.st.search.web_error="Web search is paused in battery saver.".into();self.st.search.navigation.loading=false;self.st.search.navigation.progress=0.0;}}
                 self.request_frame();
                 if old.saver && !p.saver {self.start_search_catalog(false);}
@@ -2037,13 +2093,21 @@ impl App {
                     self.request_frame();
                 }
             }
-            AppEvent::ShelfAdd(paths) if self.expanded && self.st.page == PageKind::Script && pages::script::take_drop(&mut self.st, &paths) => {
+            AppEvent::FilesDropped { owner, paths } if self.ai_drop_owner(owner.hwnd()) => {
+                self.drag_hover=false;self.st.drag_hover=false;self.drag_owner=None;
+                self.st.ai.close_popovers();
+                self.st.cmd(Command::Ai(crate::ai::Action::AttachFiles(paths)));
+                self.request_frame();
+            }
+            AppEvent::FilesDropped { owner, .. } if owner.hwnd()!=self.hwnd => {},
+            AppEvent::FilesDropped { paths, .. } if self.expanded && self.st.page == PageKind::Script && pages::script::take_drop(&mut self.st, &paths) => {
                 // A text file dropped on the Script page becomes the script.
                 self.drag_hover = false;
                 self.st.drag_hover = false;
+                self.drag_owner=None;
                 self.request_frame();
             }
-            AppEvent::ShelfAdd(paths) => {
+            AppEvent::FilesDropped { paths, .. } => {
                 let n = self.st.store.shelf.add_paths(&paths, self.st.unix);
                 for p in &paths {
                     self.st.cmds.push(Command::LoadThumb(p.clone()));
@@ -2052,14 +2116,27 @@ impl App {
                 self.st.page = PageKind::Shelf;
                 self.drag_hover = false;
                 self.st.drag_hover = false;
+                self.drag_owner=None;
                 self.expand();
                 pinfo!("shelf: {n} new item(s)");
             }
-            AppEvent::DragHover(on) => {
+            AppEvent::DragHover { owner, on } => {
+                let ai=self.ai_drop_owner(owner.hwnd());
+                if on {
+                    if owner.hwnd()!=self.hwnd && !ai {return;}
+                    self.drag_owner=Some(owner.hwnd());
+                }else{
+                    if self.drag_owner!=Some(owner.hwnd()){return;}
+                    self.drag_owner=None;
+                }
                 self.drag_hover = on;
                 self.st.drag_hover = on;
-                if on {
-                    // The Script page takes a text file; everything else goes to the Shelf.
+                if on && ai {
+                    self.st.ai.close_popovers();
+                    self.collapse_due=false;unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}
+                    if let Some(w)=self.ai_window.as_ref(){w.invalidate();}
+                } else if on {
+                    // Script handles text files; ordinary island pages use Shelf.
                     if !(self.expanded && self.st.page == PageKind::Script) {
                         self.st.page = PageKind::Shelf;
                     }
@@ -2083,7 +2160,7 @@ impl App {
             }
             AppEvent::System(m) => {
                 // A reading still on its way when the page closed is dropped.
-                if self.sysmon_on || self.st.game.active {
+                if self.sysmon_on || self.sysmon_compact || self.st.game.active {
                     self.st.system = *m;
                 }
                 // Over a game the frame rate goes with each reading, once a second.
@@ -2121,7 +2198,6 @@ impl App {
             }
             AppEvent::AppleMusic(status) => self.on_apple_music(status),
             AppEvent::Phone(e) => self.on_phone(e),
-            AppEvent::Paired(e) => self.on_paired(e),
             AppEvent::Autostart(on) => self.st.ui.autostart = Some(on),
             AppEvent::Addon { id, status } => {
                 // A late report from before a switch-off doesn't bring it back.
@@ -2201,7 +2277,7 @@ impl App {
     fn open_island(&mut self) {
         if !self.expanded {
             self.st.now = clock::mono();
-            let page = self.reopen.page(&self.st, self.st.now);
+            let page = if self.st.closed_view!=lumo_core::settings::ClosedView::Time{PageKind::System}else{self.reopen.page(&self.st, self.st.now)};
             // Automatic routing must not write a new remembered preference.
             self.apply_page(page, false);
         }
@@ -2225,7 +2301,8 @@ impl App {
         crate::ai::clear_ready(&mut self.st);
         self.st.ai.history=false;
         self.st.ai.scroll_to_reply=self.st.ai.current.messages.iter().rposition(|m|m.role=="assistant");
-        self.set_page(PageKind::Ai);
+        self.open_ai(true);
+        if self.st.ai.full_open{return;}
         self.reopen.interacted(PageKind::Ai, clock::mono());
         self.ai_reply_peek=true;
         self.expand();
@@ -2281,7 +2358,13 @@ impl App {
     }
 
     fn collapse(&mut self) {
+        self.workspace_dismiss=None;
+        let closing_ai=self.expanded&&self.st.page==PageKind::Ai;
         if self.st.search.active {self.st.search.active=false;self.st.search.cancel();self.cancel_hover();self.park_search_web();}
+        if self.expanded&&self.st.page==PageKind::Ai {
+            if !self.st.ai.full_open {self.st.ai.close_workspace(self.st.settings.ai.resume);}
+            if let Some(page)=self.st.ai.return_page.take(){self.st.page=page;}
+        }
         self.st.ai.close_popovers();
         self.ai_resize_hold=None;
         self.ai_reply_peek=false;
@@ -2304,14 +2387,14 @@ impl App {
                 n.until = n.until.max(min_until);
             }
         }
-        if self.st.page==PageKind::Ai && self.fullscreen_on {self.apply_fullscreen(self.st.now);}
+        if closing_ai && self.fullscreen_on {self.apply_fullscreen(self.st.now);}
         self.request_frame();
     }
 
     /// Nothing holds the open island: no pointer on it, no pin, typing,
     /// file drag, press or Phone drop.
     fn free_to_collapse(&self) -> bool {
-        !self.hovering && !(self.st.search.active&&self.st.settings.search.keep_open) && self.ai_resize_hold.is_none() && !self.st.ai.attaching && !self.st.pinned && !self.text_focus && !self.drag_hover && self.input.pressed_id.is_none() && !self.phone_holds()
+        !self.hovering && !(self.st.search.active&&self.st.settings.search.keep_open) && !(self.expanded&&self.st.page==PageKind::Ai&&self.st.settings.ai.keep_open) && self.ai_resize_hold.is_none() && !self.st.ai.attaching && !self.st.pinned && !self.text_focus && !self.drag_hover && self.input.pressed_id.is_none() && !self.phone_holds()
     }
 
     /// The pointer left the open island: it starts closing on the next frame,
@@ -2333,16 +2416,15 @@ impl App {
 
     /// A hold ended (see [`HOLD_GRACE_MS`]): close soon unless the pointer is on the island.
     fn maybe_schedule_collapse(&mut self) {
-        if self.expanded && !(self.st.search.active&&self.st.settings.search.keep_open) && self.ai_resize_hold.is_none() && !self.hovering && !self.st.pinned && !self.text_focus && !self.drag_hover && !self.phone_holds() {
+        if self.expanded && !(self.st.search.active&&self.st.settings.search.keep_open) && !(self.expanded&&self.st.page==PageKind::Ai&&self.st.settings.ai.keep_open) && self.ai_resize_hold.is_none() && !self.hovering && !self.st.pinned && !self.text_focus && !self.drag_hover && !self.phone_holds() {
             unsafe {
                 SetTimer(self.hwnd, TIMER_COLLAPSE, HOLD_GRACE_MS.max(self.st.settings.collapse_delay_ms), None);
             }
         }
     }
 
-    /// The System page opened or closed. Open, its readings arrive each
-    /// second; with the history kept the minute behind them arrives at once,
-    /// else each opening starts a fresh minute.
+    /// Full System-page sampling only. Compact visibility is independent so
+    /// an ordinary page-close message cannot cancel its live kernel readings.
     fn set_sysmon(&mut self, on: bool) {
         if on == self.sysmon_on {
             return;
@@ -2359,14 +2441,28 @@ impl App {
             s.open(on);
         }
         // The readout over a game still draws from them.
-        if !on && !self.st.settings.system_history && !self.st.game.active {
+        if !on && !self.sysmon_compact && !self.st.game.active {
             self.st.system.clear();
         }
     }
 
+    fn sync_system_views(&mut self){
+        self.sync_workspace_dismiss();
+        if self.locked||self.display_off||!self.hovering {self.wheel_input=None;}
+        let rest=self.locked||self.display_off||self.st.power.saver||self.fullscreen_hidden||self.widgets_open;
+        let compact=!rest&&!self.expanded&&matches!(self.target_mode(),Mode::Readout(_));
+        if compact!=self.sysmon_compact{
+            self.sysmon_compact=compact;
+            if compact&&self.sysmon.is_none()&&self.selftest.is_none(){self.start_sysmon();}
+            if let Some(s)=&self.sysmon{s.compact(compact);}
+            if !compact&&!self.sysmon_on&&!self.st.game.active{self.st.system.clear();}
+        }
+        self.set_sysmon(!rest&&!self.st.search.active&&self.expanded&&self.st.page==PageKind::System);
+    }
+
     fn start_sysmon(&mut self) {
         self.sysmon_rest = self.rest_now();
-        match services::sysmon::SysMon::start(self.sink.clone(), self.st.settings.system_history, self.sysmon_rest) {
+        match services::sysmon::SysMon::start(self.sink.clone(), false, self.sysmon_rest) {
             Ok(s) => self.sysmon = Some(s),
             Err(e) => pwarn!("sysmon: couldn't start ({e})"),
         }
@@ -2389,7 +2485,7 @@ impl App {
         if let Some(s) = &self.sysmon {
             s.rest(rest);
         }
-        if !lumo_core::sysmon::reads(self.sysmon_on, self.st.game.active, self.st.settings.system_history, rest) {
+        if !lumo_core::sysmon::reads(self.sysmon_on||self.sysmon_compact, self.st.game.active, false, rest) {
             self.st.system.clear();
         }
     }
@@ -2709,6 +2805,12 @@ impl App {
         }
     }
 
+    /// Retry activation only on an explicit workspace opening/press, never on
+    /// each editor repaint when Windows refuses a wheel-opened focus request.
+    fn focus_workspace(&mut self) {
+        if unsafe{GetForegroundWindow()}!=self.hwnd{self.text_focus=false;}
+        self.focus_text();
+    }
     fn focus_text(&mut self) {
         if self.text_focus {
             return;
@@ -2902,6 +3004,10 @@ impl App {
             let web=self.st.search.embedded();let height=((self.monitor.work.bottom-self.monitor.top()) as f32/self.gfx.scale()-32.0).max(300.0);
             return Geom::new((if web && self.st.settings.search.browser_wide{900.0}else{crate::search::WIDTH}).min(available).max(320.0),(if web{f32::from(self.st.settings.search.browser_height)}else{self.st.search.view.as_ref().map(|view|view.height(&self.st)).unwrap_or(crate::search::HEIGHT)}).min(height),if pill::on(self.st.settings.theme){40.0}else{30.0});
         }
+        if *m==Mode::Expanded(PageKind::Ai) {
+            let available=(self.monitor.rect.right-self.monitor.rect.left) as f32/self.gfx.scale()-32.0;
+            return Geom::new(crate::search::WIDTH.min(available).max(320.0),self.st.ai.island_height.min(self.st.ai.max_island_height),if pill::on(self.st.settings.theme){40.0}else{30.0});
+        }
         if *m == Mode::Aside {
             let rest = activities::geom(&activities::resting_mode(&self.st), &self.st);
             // Retract at the compact width, without stretching sideways into
@@ -2960,8 +3066,13 @@ impl App {
         if self.updater.as_mut().is_some_and(|u| u.announce(&mut self.st, free)) {
             self.request_frame();
         }
+        let focus_due = match self.st.pomodoro.run {
+            lumo_core::pomodoro::RunState::Running { ends_at } => now - ends_at < 5.0,
+            _ => false,
+        };
         if let Some(ended) = self.st.pomodoro.tick(now) {
             pages::focus::on_phase_ended(&mut self.st, ended);
+            if ended.ended == lumo_core::pomodoro::Phase::Focus && focus_due { self.start_focus_light(false); }
         }
         self.script_tick();
     }
@@ -2969,12 +3080,16 @@ impl App {
     /// Draw and show one frame. `tick` is the vblank that triggered it (None
     /// for self-test captures, which run off the clock).
     fn frame(&mut self, deferred: &mut Vec<Deferred>, tick: Option<FrameTick>) {
+        if self.locked || self.display_off || self.st.power.saver || self.fullscreen_hidden || self.widgets_open || (!self.st.settings.focus_spotlight && !self.focus_light_preview) { self.focus_light = None; }
+        self.sync_system_views();
+        self.input.begin_frame();
         if self.locked || self.display_off || self.widgets_open || self.st.power.saver {self.st.search.suggestions.cancel();self.st.search.browser_transition=None;if let Some(p)=self.st.search.integrations_pending.take(){p.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}}
         if self.st.search.detached && (self.locked || self.display_off || self.widgets_open || self.st.power.saver) { self.sync_search_web(); }
         if !self.expanded && !matches!(self.mode,Mode::Expanded(_)) && self.island.settled() && !self.st.search.active && self.st.search.view.is_some() {self.park_search_view();self.layout_surface();}
+        if let Some(w)=self.ai_window.as_mut(){w.rest(self.locked||self.display_off||self.st.power.saver||self.widgets_open);}
         let watch=self.st.ai_on() && self.hovering && !self.expanded && !self.locked && !self.display_off && !self.st.power.saver && !self.fullscreen_hidden && self.st.notice.is_none() && self.st.hud.is_none();
         if watch && self.ai_ctrl_watch.is_none(){self.input.ctrl=services::ai_shortcut::control_down();self.ai_ctrl_watch=services::ai_shortcut::Watch::start(self.hwnd).ok();}else if !watch{self.ai_ctrl_watch=None;}
-        if !self.expanded && !matches!(self.mode,Mode::Expanded(_)) && self.island.settled() && self.st.ai.canvas_height>240.0{self.st.ai.canvas_height=240.0;self.st.ai.island_height=240.0;self.layout_surface();}
+        if !self.expanded && !matches!(self.mode,Mode::Expanded(_)) && self.island.settled() && self.st.ai.canvas_height>240.0{self.st.ai.canvas_height=240.0;self.layout_surface();}
 
         if self.lyrics_window.is_some() && (self.locked || self.display_off) {
             self.refresh_time(); self.tick();
@@ -3088,7 +3203,7 @@ impl App {
             (self.aside_visibility - delta).max(aside_target)
         };
         let visibility = self.aside_visibility * self.aside_visibility * (3.0 - 2.0 * self.aside_visibility);
-        self.set_sysmon(!self.st.search.active && self.mode == Mode::Expanded(PageKind::System));
+        self.sync_system_views();
         // The Pill theme floats the island below the top edge.
         self.island.set_floating(pill::on(self.st.settings.theme).then_some(pill::TOP_GAP));
         self.island.step(dt, now);
@@ -3303,6 +3418,7 @@ impl App {
         self.draw_browser_window(deferred);
 
         let (popup_moving, popup_live) = self.draw_lyrics_window(deferred);
+        let focus_light_live = self.draw_focus_light();
 
         // Decide whether to keep the frame clock running. Real motion runs
         // at the display's full refresh rate; ambient motion runs on every
@@ -3341,7 +3457,7 @@ impl App {
         } else {
             ambient_divisor(hz, 30.0)
         });
-        self.clock.set_active(moving || eq_live || drift_live || popup_live);
+        self.clock.set_active(moving || eq_live || drift_live || popup_live || focus_light_live);
         self.schedule_wake();
         if !self.log_queue.is_empty() {
             let lines = std::mem::take(&mut self.log_queue);
@@ -3429,6 +3545,9 @@ impl App {
                 next = Some(next.map_or(t, |n: f64| n.min(t)));
             }
         };
+        if self.expanded&&self.text_focus&&!self.locked&&!self.display_off&&!self.widgets_open&&!self.st.power.saver&&unsafe{GetForegroundWindow()}==self.hwnd{
+            if let Some(t)=self.input.caret_wake{consider(t+0.002);}
+        }
         if !self.locked && !self.display_off && !self.widgets_open && !self.st.power.saver {
             if let Some(t)=self.st.search.suggestions.due{consider(t);}
         }
@@ -3679,37 +3798,52 @@ impl App {
         result
     }
 
-    fn stop_ai_snip(&mut self) {
-        unsafe {let _=windows::Win32::System::DataExchange::RemoveClipboardFormatListener(self.hwnd);let _=KillTimer(self.hwnd,TIMER_AI_SNIP);}
+    fn ai_drop_owner(&self,owner:HWND)->bool{
+        self.st.ai_on()&&!self.locked&&!self.display_off&&
+            ((owner==self.hwnd&&self.expanded&&!self.st.search.active&&self.st.page==PageKind::Ai)||
+             self.ai_window.as_ref().is_some_and(|w|w.hwnd==owner&&unsafe{IsWindowVisible(owner)}.as_bool()&&!unsafe{IsIconic(owner)}.as_bool()))
+    }
+    fn open_ai(&mut self,preserve:bool) {
+        if !self.st.ai_on()||self.locked||self.display_off{return;}
+        if self.ai_window.is_some(){if let Some(w)=self.ai_window.as_ref(){w.show();}return;}
+        if self.st.search.active{self.close_search();}self.park_search_view();
+        if !preserve&&self.st.ai.fresh_on_open {let temporary=self.st.ai.temporary;crate::ai::local(&mut self.st,&crate::ai::Action::New(temporary));}
+        self.st.closed_view=Default::default();self.st.ai.fresh_on_open=false;self.st.ai.close_popovers();self.st.ai.canvas_height=self.st.ai.island_height;
+        if self.st.page!=PageKind::Ai {self.st.ai.return_page=Some(self.st.page);}
+        self.apply_page(PageKind::Ai,false);self.page_anim=None;self.ai_reply_peek=true;
+        if self.st.ai.previews.is_empty()&&self.st.ai.current.messages.iter().any(|m|m.attachments.iter().any(|a|a.mime.starts_with("image/"))){self.st.cmd(Command::Ai(crate::ai::Action::Previews));}
+        self.layout_surface();self.expand();self.collapse_due=false;unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}
+        self.input.focused=Some(wid("ai.prompt"));self.input.caret=self.st.ai.draft.chars().count();self.focus_workspace();self.sync_workspace_dismiss();self.apply_fullscreen(self.st.now);self.raise_topmost();self.request_frame();
     }
     fn open_ai_window(&mut self) {
         if !self.st.ai_on() { return; }
-        if self.ai_window.is_none(){match crate::ai_window::AiWindow::new(){Ok(w)=>self.ai_window=Some(w),Err(e)=>{self.st.ai.error=format!("Couldn't open full chat: {e}");return;}}}
-        self.st.ai.full_open=true;if let Some(w)=self.ai_window.as_ref(){w.show();}self.collapse();
+        if self.ai_window.is_none(){match crate::ai_window::AiWindow::with_config(&self.st.settings.ai){Ok(mut w)=>{if let Err(e)=w.enable_file_drop(self.sink.clone()){pwarn!("AI file drop: {e}");}self.ai_window=Some(w);},Err(e)=>{self.st.ai.error=format!("Couldn't open full chat: {e}");return;}}}
+        self.st.ai.full_open=true;if let Some(w)=self.ai_window.as_mut(){w.focus_prompt(self.st.ai.draft.chars().count());w.show();}self.collapse();
     }
     pub fn handle_ai_window(&mut self,hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->Option<LRESULT> {
         if !self.ai_window.as_ref().is_some_and(|w|w.hwnd==hwnd){return None;}
-        if (msg==WM_PASTE || (msg==WM_KEYDOWN && wp.0==VK_V.0 as usize && unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0)) && crate::ai::paste_image(&mut self.st,self.ai_window.as_ref().is_some_and(|w|w.prompt_focused()),services::ai::clipboard_has_image) {
+        if msg==crate::ai_window::CHECK_ACTIVATION {if !self.locked&&!self.display_off&&!self.st.power.saver&&!self.widgets_open{let next=unsafe{GetForegroundWindow()};if !next.is_invalid(){self.handle_ai_window(hwnd,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(next.0 as isize));}}return Some(LRESULT(0));}
+        if msg==WM_KEYDOWN{if let Some(field)=crate::ai::workspace_key(&mut self.st,wp.0 as u32,unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0,unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0){if let Some(w)=self.ai_window.as_mut(){w.focus_field(field,0);}self.request_frame();return Some(LRESULT(0));}}
+        if (msg==WM_PASTE || (msg==WM_KEYDOWN && wp.0==VK_V.0 as usize && unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0)) && crate::ai::paste_attachment(&mut self.st,self.ai_window.as_ref().is_some_and(|w|w.prompt_focused()),services::ai::clipboard_has_attachment) {
             self.request_frame();return Some(LRESULT(0));
         }
         if msg==WM_KEYDOWN && wp.0==VK_ESCAPE.0 as usize && (self.st.ai.model_menu || self.st.ai.reasoning_menu || self.st.ai.attach_menu) {
-            self.st.ai.close_popovers();if let Some(w)=self.ai_window.as_mut(){w.focus_prompt(self.st.ai.draft.chars().count());}return Some(LRESULT(0));
+            self.st.ai.dismiss_popup();if let Some(w)=self.ai_window.as_mut(){if self.st.ai.model_menu{w.focus_field(wid("ai.model-search"),0);}else{w.focus_prompt(self.st.ai.draft.chars().count());}}self.request_frame();return Some(LRESULT(0));
         }
-        if msg==WM_CLOSE {
-            self.ai_window=None;self.st.ai.full_open=false;self.set_page(PageKind::Ai);self.ai_reply_peek=true;self.expand();
-            // The pointer is still by the bottom popup, far from the island.
-            // Wait for it to return instead of immediately auto-closing.
-            self.ai_resize_hold=Some(HWND::default());self.collapse_due=false;
-            unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}
-            self.apply_fullscreen(self.st.now);self.request_frame();return Some(LRESULT(0));
+        if msg==WM_KEYDOWN&&wp.0==VK_ESCAPE.0 as usize{self.handle_ai_window(hwnd,WM_CLOSE,WPARAM(0),LPARAM(0));return Some(LRESULT(0));}
+        let outside=msg==WM_ACTIVATE&&(wp.0&0xffff)as u32==WA_INACTIVE&&!self.st.settings.ai.keep_open&&!self.st.ai.attaching&&HWND(lp.0 as *mut _)!=hwnd&&!unsafe{IsChild(hwnd,HWND(lp.0 as *mut _))}.as_bool();
+        if msg==WM_CLOSE || outside {
+            self.ai_window=None;self.st.ai.full_open=false;self.st.ai.close_workspace(self.st.settings.ai.resume);self.request_frame();return Some(LRESULT(0));
         }
-        if msg==WM_PAINT {unsafe{let _=windows::Win32::Graphics::Gdi::ValidateRect(hwnd,None);}self.st.now=clock::mono();if !self.locked && !self.display_off && !unsafe{IsIconic(hwnd)}.as_bool() {if let Some(w)=self.ai_window.as_mut(){if let Err(e)=w.draw(&mut self.st){pwarn!("AI window: {e}");}}let mut deferred=vec![];self.run_commands(&mut deferred);self.request_frame();}return Some(LRESULT(0));}
+        if msg==WM_EXITSIZEMOVE {if let Some(w)=self.ai_window.as_ref(){let(width,height)=w.size();self.st.settings.ai.mini_width=width;self.st.settings.ai.mini_height=height;self.st.cmd(Command::SaveSettings);}}
+        if msg==WM_PAINT {unsafe{let _=windows::Win32::Graphics::Gdi::ValidateRect(hwnd,None);}self.st.now=clock::mono();if !self.locked && !self.display_off && !self.st.power.saver && !self.widgets_open && !unsafe{IsIconic(hwnd)}.as_bool() {if let Some(w)=self.ai_window.as_mut(){if let Err(e)=w.draw(&mut self.st){pwarn!("AI window: {e}");}}let mut deferred=vec![];self.run_commands(&mut deferred);self.request_frame();}return Some(LRESULT(0));}
         self.ai_window.as_mut()?.message(msg,wp,lp)
     }
 
     fn open_search(&mut self) {
         if self.locked || self.display_off {return;}
         self.st.now=clock::mono();
+        if self.expanded&&self.st.page==PageKind::Ai {self.collapse();}
         self.st.ai.close_popovers();
         self.st.search.view=Some(if self.st.settings.search.resume_page{self.st.search.saved_view.take().or(self.st.search.view.take()).unwrap_or_else(||crate::search::View::new(&self.st))}else{crate::search::View::new(&self.st)});
         self.st.search.active=true;
@@ -3717,7 +3851,7 @@ impl App {
         self.page_anim=None;self.collapse_due=false;unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}
         self.layout_surface();self.expand();
         self.input.focused=Some(wid("search.query"));self.input.caret=self.st.search.view.as_ref().map_or(0,|v|v.query.chars().count());self.input.selection_all=false;self.input.selection_anchor=None;self.input.selection_owner=None;self.input.text_scroll=0.0;self.input.keys.clear();
-        self.st.search.notice.clear();self.focus_text();self.start_search_catalog(false);self.start_search_integrations();
+        self.st.closed_view=Default::default();self.st.search.notice.clear();self.focus_workspace();self.sync_workspace_dismiss();self.start_search_catalog(false);self.start_search_integrations();
         if let Some(url)=self.st.search.web_url.clone().filter(|_|!self.st.search.detached){
             if self.search_web.as_ref().is_none_or(|browser|!browser.resume()){self.execute_search(lumo_core::search::Target::Web{query:String::new(),url});}
             self.input.focused=None;
@@ -3741,13 +3875,20 @@ impl App {
     /// then be reconciled with the real foreground window, without stealing
     /// focus back. WebView child windows belong to the same surface.
     fn search_lost_activation(&mut self,next:HWND) {
-        if !self.st.search.active || self.st.search.context_menu || next==self.hwnd || unsafe{IsChild(self.hwnd,next)}.as_bool(){return;}
+        let ai=self.expanded&&self.st.page==PageKind::Ai&&!self.st.search.active;
+        if !(self.st.search.active||ai) || self.st.search.context_menu || (ai&&(self.st.ai.attaching)) || next==self.hwnd || unsafe{IsChild(self.hwnd,next)}.as_bool(){return;}
         self.text_focus=false;self.input.focused=None;self.set_noactivate(true);
-        if !self.st.settings.search.keep_open{self.close_search();}
+        if ai {if !self.st.settings.ai.keep_open{self.collapse();}}else if !self.st.settings.search.keep_open{self.close_search();}
         self.request_frame();
     }
+    fn sync_workspace_dismiss(&mut self) {
+        let open=self.expanded&&(if self.st.search.active{!self.st.settings.search.keep_open&&!self.st.search.context_menu}else{self.st.page==PageKind::Ai&&!self.st.settings.ai.keep_open&&!self.st.ai.attaching});
+        if open&&!self.locked&&!self.display_off&&!self.widgets_open {
+            if self.workspace_dismiss.is_none(){self.workspace_dismiss=services::workspace_dismiss::Watch::start(self.hwnd).ok();}
+        }else{self.workspace_dismiss=None;}
+    }
     fn start_search_icons(&mut self, items:Vec<(String,lumo_core::search::Target)>) {
-        if !self.st.search.active || !self.st.settings.search.apps || self.locked || self.display_off || self.st.power.saver || self.st.search.icon_pending.is_some() || self.selftest.is_some(){return;}
+        if !self.st.search.active || !(self.st.settings.search.apps||self.st.settings.search.powertoys) || self.locked || self.display_off || self.st.power.saver || self.st.search.icon_pending.is_some() || self.selftest.is_some(){return;}
         let items:Vec<_>=items.into_iter().filter(|(id,_)|!self.st.search.icons.contains_key(id)).take(6).collect();
         if items.is_empty(){return;}
         // Bounded 48px icon cache: under 576 KiB of pixels, no persistent worker.
@@ -3850,7 +3991,7 @@ impl App {
         }else if let Some(id)=id{view.result_at(id)}else if point.is_none(){view.selected()}else{None};
         let Some(entry)=entry else{return;};
         let body=self.island.body_rect_at(self.cx);let p=point.unwrap_or(Point::new(body.x+80.0,body.y+96.0));let scale=self.gfx.scale();let mut screen=POINT{x:(p.x*scale).round()as i32,y:(p.y*scale).round()as i32};unsafe{let _=windows::Win32::Graphics::Gdi::ClientToScreen(self.hwnd,&mut screen);}
-        self.st.search.context_menu=true;deferred.push(Deferred::SearchMenu(entry,screen));self.request_frame();
+        self.st.search.context_menu=true;self.sync_workspace_dismiss();deferred.push(Deferred::SearchMenu(entry,screen));self.request_frame();
     }
     fn search_web_action(&mut self,action:crate::search_web::Action){
         use crate::search_web::Action;
@@ -3958,7 +4099,7 @@ impl App {
     pub fn handle_settings(&mut self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         if !self.settings_window.as_ref().is_some_and(|w| w.hwnd == hwnd) { return None; }
         if msg==WM_KEYDOWN && wp.0==VK_ESCAPE.0 as usize && self.st.ai.model_menu && self.st.ai.model_settings {
-            self.st.ai.close_models();if let Some(w)=self.settings_window.as_mut(){w.dismiss_model_picker();}return Some(LRESULT(0));
+            self.st.ai.dismiss_popup();if let Some(w)=self.settings_window.as_mut(){w.dismiss_model_picker();}return Some(LRESULT(0));
         }
         if msg == WM_CLOSE {
             self.settings_window = None;
@@ -3997,7 +4138,7 @@ impl App {
             if p!=PageKind::Ai {self.ai_reply_peek=false;}
             self.st.page = p;
             // Settings is never where the island opens next time.
-            if p != PageKind::Settings {
+            if p != PageKind::Settings && p!=PageKind::Ai {
                 self.st.update.sheet = false;
                 if remember {
                     self.st.store.last_page = p.key().to_string();
@@ -4018,7 +4159,7 @@ impl App {
     fn run_commands(&mut self, deferred: &mut Vec<Deferred>) {
         let cmds = std::mem::take(&mut self.st.cmds);
         for c in cmds {
-            if !self.st.ai_on() && matches!(c, Command::Ai(_) | Command::OpenAiWindow | Command::AiHeight(_)) { continue; }
+            if !self.st.ai_on() && matches!(c, Command::Ai(_) | Command::OpenAiWindow | Command::ReturnAiToIsland | Command::CloseAi | Command::ToggleAiKeepOpen | Command::ToggleAiResume | Command::AiHeight(_)) { continue; }
             match c {
                 Command::OpenSearch => self.open_search(),
                 Command::ExecuteSearch(target) => self.execute_search(target),
@@ -4032,21 +4173,18 @@ impl App {
                 Command::ToggleSearchResume=>{self.st.settings.search.resume_page=!self.st.settings.search.resume_page;if !self.st.settings.search.resume_page{self.st.search.saved_view=None;if !self.st.search.active && !self.st.search.detached{self.close_search_web();}}self.st.cmd(Command::SaveSettings);},
                 Command::SearchWeb(action)=>self.search_web_action(action),
                 Command::NavigateSearchWeb(url)=>{self.st.search.address_editing=false;self.st.search.address_suggestions.clear();self.st.search.suggestions.cancel();if let Some(w)=self.browser_window.as_mut(){w.blur_address();}if self.search_web.is_some(){self.st.search.address=url.clone();self.st.search.address_dirty=false;if let Some(browser)=self.search_web.as_ref(){browser.navigate(&url);}self.input.focused=None;}else if self.st.search.detached{self.restart_mini_browser(url);}else{self.execute_search(lumo_core::search::Target::Web{query:String::new(),url});}},
-                Command::RefreshSearchApps => {self.start_search_catalog(true);if let Some(p)=self.st.search.integrations_pending.take(){p.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}self.start_search_integrations();},
+                Command::RefreshSearchApps => {if let Some(p)=self.st.search.icon_pending.take(){p.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}self.st.search.icons.clear();self.start_search_catalog(true);if let Some(p)=self.st.search.integrations_pending.take(){p.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}self.start_search_integrations();},
                 Command::AiHeight(height) => {let dragging=self.input.pressed_id==Some(wid("ai.resize-grip"));self.resize_ai_chat(height,dragging);},
                 Command::OpenAiWindow => self.open_ai_window(),
-                Command::Ai(crate::ai::Action::Snip) => {
-                    self.stop_ai_snip();
-                    if !self.locked && !self.display_off {
-                        self.st.ai.snipping=true;unsafe{let _=windows::Win32::System::DataExchange::AddClipboardFormatListener(self.hwnd);SetTimer(self.hwnd,TIMER_AI_SNIP,60000,None);}
-                        self.collapse();if let Some(w)=self.ai_window.as_ref(){unsafe{let _=ShowWindow(w.hwnd,SW_MINIMIZE);}}shell::open("ms-screenclip:");
-                    }
-                }
+                Command::ReturnAiToIsland=>{self.ai_window=None;self.st.ai.full_open=false;self.open_ai(true);},
+                Command::CloseAi=>{self.ai_window=None;self.st.ai.full_open=false;if self.expanded&&self.st.page==PageKind::Ai{self.collapse();}self.st.ai.close_workspace(self.st.settings.ai.resume);},
+                Command::ToggleAiKeepOpen=>{self.st.settings.ai.keep_open=!self.st.settings.ai.keep_open;self.collapse_due=false;unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}if !self.st.settings.ai.keep_open{let next=unsafe{GetForegroundWindow()};if let Some(hwnd)=self.ai_window.as_ref().map(|w|w.hwnd){self.handle_ai_window(hwnd,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(next.0 as isize));}else{self.search_lost_activation(next);}}self.st.cmd(Command::SaveSettings);},
+                Command::ToggleAiResume=>{self.st.settings.ai.resume=!self.st.settings.ai.resume;if self.st.settings.ai.resume{self.st.ai.fresh_on_open=false;}self.st.cmd(Command::SaveSettings);},
                 Command::Ai(a) => {
                     let owner=self.ai_window.as_ref().map(|w|w.hwnd).or_else(||self.settings_window.as_ref().map(|w|w.hwnd)).unwrap_or(self.hwnd);
                     services::ai::run(&mut self.st,a,SendHwnd::new(owner),self.sink.clone());
                 }
-                Command::OpenSettings => {self.open_settings();if self.st.page==PageKind::Ai {if let Some(w)=self.settings_window.as_mut(){w.show_ai();}}},
+                Command::OpenSettings => {let ai=self.st.page==PageKind::Ai||self.st.ai.full_open;self.open_settings();if ai {if let Some(w)=self.settings_window.as_mut(){w.show_ai();}}},
                 Command::OpenUpdateSettings => { self.open_settings(); if let Some(window) = self.settings_window.as_mut() { window.show_about(); } },
                 Command::CheckUpdates => self.check_updates(),
                 Command::OpenLyricsWindow => self.open_lyrics_window(),
@@ -4074,8 +4212,10 @@ impl App {
                         }
                     }
                 }
-                Command::ChooseMusicDirectory => self.choose_music_path(crate::commands::MusicPick::Directory),
-                Command::ChooseLyricsDownloadDirectory => self.choose_music_path(crate::commands::MusicPick::LyricsDirectory),
+                Command::ChooseMusicDirectory => self.choose_folder(crate::commands::FolderPick::Directory),
+                Command::ChoosePhoneDownloadDirectory => self.choose_folder(crate::commands::FolderPick::PhoneInbox),
+                Command::PreviewFocusSpotlight => self.start_focus_light(true),
+                Command::ChooseLyricsDownloadDirectory => self.choose_folder(crate::commands::FolderPick::LyricsDirectory),
                 Command::OpenPath(p) => shell::open(&p),
                 Command::RevealPath(p) => shell::reveal(&p),
                 Command::DragOut(paths) => deferred.push(Deferred::DragOut(paths)),
@@ -4142,14 +4282,40 @@ impl App {
                     crate::autostart::report(self.sink.clone(), Some(on));
                 }
                 Command::Phone(c) => self.phone_cmd(c),
-                Command::Pair(c) => self.pair_cmd(c),
             }
         }
         self.sync_phone_offer();
-        self.sync_pair_offer();
     }
 
     // ------------------------------------------------------------ phone drop
+
+    fn start_focus_light(&mut self, preview: bool) {
+        if (!self.st.settings.focus_spotlight && !preview) || self.locked || self.display_off || self.st.power.saver || self.fullscreen_hidden || self.widgets_open { return; }
+        let body = self.island.body_rect_at(self.cx);
+        let scale = self.gfx.scale();
+        let island = RECT {
+            left: self.surface.x + (body.x * scale).round() as i32,
+            top: self.surface.y + (body.y * scale).round() as i32,
+            right: self.surface.x + (body.right() * scale).round() as i32,
+            bottom: self.surface.y + (body.bottom() * scale).round() as i32,
+        };
+        let color = crate::focus_light::color(self.st.settings.focus_spotlight_color, self.st.accent);
+        self.focus_light = match crate::focus_light::Spotlight::new(self.hwnd, self.monitor.rect, island, scale, color, self.st.now) {
+            Ok(light) => Some(light),
+            Err(error) => { pwarn!("focus light couldn't start: {error}"); None }
+        };
+        self.focus_light_preview = preview;
+        self.request_frame();
+    }
+
+    fn draw_focus_light(&mut self) -> bool {
+        let Some(light) = self.focus_light.as_mut() else { return false; };
+        match light.frame(self.st.now) {
+            Ok(true) => true,
+            Ok(false) => { self.focus_light = None; self.focus_light_preview = false; false }
+            Err(error) => { pwarn!("focus light stopped: {error}"); self.focus_light = None; self.focus_light_preview = false; false }
+        }
+    }
 
     /// The QR code waits for a phone, or a phone waits for an answer (Shelf
     /// page only), or a reading is under way (Script page only).
@@ -4189,10 +4355,11 @@ impl App {
             pd.error = Some("Phone drop is off in the self-test.".into());
         } else {
             let offer = self.st.store.shelf.paths();
-            match services::phonedrop::PhoneDrop::start(self.sink.clone(), offer.iter().map(PathBuf::from).collect()) {
+            match services::phonedrop::PhoneDrop::start(self.sink.clone(), offer.iter().map(PathBuf::from).collect(), paths::phone_inbox_dir(&self.st.settings)) {
                 Ok((svc, url)) => {
                     pd.qr = QrMatrix::encode(&url);
                     pd.url = url;
+                    pd.pc_name = services::phonedrop::pc_name();
                     self.phone_offer = offer;
                     self.phone = Some(svc);
                 }
@@ -4210,11 +4377,6 @@ impl App {
     fn close_phone(&mut self) {
         if let Some(svc) = self.phone.take() {
             svc.stop();
-        }
-        if matches!(self.st.phone.as_ref().map(|p| &p.view), Some(PhoneView::Pairing { .. })) {
-            if let Some(s) = &self.services {
-                s.pair_cancel();
-            }
         }
         self.st.phone = None;
         self.phone_offer.clear();
@@ -4306,144 +4468,6 @@ impl App {
         }
     }
 
-    // ------------------------------------------------------------ paired phones
-
-    fn pair_cmd(&mut self, c: PairCmd) {
-        let now = self.st.now;
-        match c {
-            PairCmd::Begin => {
-                let r = match &self.services {
-                    Some(s) => s.pair_begin(),
-                    None => Err("Pairing is off in the self-test.".into()),
-                };
-                let Some(pd) = self.st.phone.as_mut() else { return };
-                pd.outcome = None;
-                match r {
-                    Ok(url) => {
-                        pinfo!("pair drop: showing a pairing code");
-                        pd.view = PhoneView::Pairing { qr: QrMatrix::encode(&url), url, until: now + lumo_core::pairdrop::meet::PAIRING_FOR.as_secs_f64() };
-                    }
-                    Err(e) => {
-                        pwarn!("pair drop: {e}");
-                        pd.outcome = Some((e, false, now + pages::shelf::PHONE_OUTCOME_S));
-                    }
-                }
-            }
-            PairCmd::Back => {
-                if matches!(self.st.phone.as_ref().map(|p| &p.view), Some(PhoneView::Pairing { .. })) {
-                    if let Some(s) = &self.services {
-                        s.pair_cancel();
-                    }
-                }
-                if let Some(pd) = self.st.phone.as_mut() {
-                    pd.view = PhoneView::Lan;
-                }
-            }
-            PairCmd::List => {
-                if matches!(self.st.phone.as_ref().map(|p| &p.view), Some(PhoneView::Pairing { .. })) {
-                    if let Some(s) = &self.services {
-                        s.pair_cancel();
-                    }
-                }
-                if let Some(pd) = self.st.phone.as_mut() {
-                    pd.view = PhoneView::Paired;
-                }
-            }
-            PairCmd::Remove(room) => {
-                if let Some(s) = &self.services {
-                    s.pair_remove(&room);
-                }
-                if let Some(i) = self.st.paired.iter().position(|p| p.room == room) {
-                    let p = self.st.paired.remove(i);
-                    pinfo!("pair drop: removed a paired phone");
-                    if let Some(pd) = self.st.phone.as_mut() {
-                        pd.outcome = Some((format!("{} can't send to this PC any more", p.name), false, now + pages::shelf::PHONE_OUTCOME_S));
-                        pd.outcome_line = Some("Pair it again any time from Pair a phone.".into());
-                    }
-                }
-            }
-        }
-        self.request_frame();
-    }
-
-    /// Keep the files paired phones may save in step with the Shelf.
-    fn sync_pair_offer(&mut self) {
-        let Some(svc) = &self.services else { return };
-        let paths = self.st.store.shelf.paths();
-        if self.pair_offer.as_ref() != Some(&paths) {
-            svc.pair_shelf(paths.iter().map(PathBuf::from).collect());
-            self.pair_offer = Some(paths);
-        }
-    }
-
-    fn on_paired(&mut self, e: MeetEvent) {
-        let now = self.st.now;
-        let until = now + pages::shelf::PHONE_OUTCOME_S;
-        match e {
-            MeetEvent::Pairs(list) => self.st.paired = paired_phones(list),
-            MeetEvent::Server { reachable } => {
-                if self.st.pair_server.is_some() || !reachable {
-                    pinfo!("pair drop: meeting server {}", if reachable { "reachable again" } else { "unreachable" });
-                }
-                self.st.pair_server = Some(reachable);
-            }
-            MeetEvent::Paired { name, .. } => {
-                pinfo!("pair drop: a phone finished pairing");
-                if let Some(pd) = self.st.phone.as_mut() {
-                    pd.view = PhoneView::Lan;
-                    pd.outcome = Some((format!("{name} is paired"), true, until));
-                    pd.outcome_line = Some("It can now send from any network, even with this panel closed.".into());
-                }
-                if !self.hovering {
-                    // The island closes now that nothing waits: say it on the pill.
-                    self.st.notify(Icon::Phone, palette::GREEN, format!("{name} is paired"), "It can send from any network now", 6.0, Some(NoticeAction::OpenPage(PageKind::Shelf)));
-                }
-                self.st.chime();
-                self.maybe_schedule_collapse();
-            }
-            MeetEvent::Phone { phone, ev, .. } => match ev {
-                PeerEvent::Hello { .. } => pinfo!("pair drop: a paired phone connected"),
-                PeerEvent::Progress { files, done: 0, .. } => {
-                    if !self.expanded {
-                        self.st.notify(Icon::Phone, palette::GREEN, format!("{phone} is sending {}", files_label(files)), "They go straight onto the Shelf", 4.0, None);
-                    }
-                }
-                PeerEvent::Progress { .. } => {}
-                PeerEvent::Received { paths } => {
-                    let n = paths.len();
-                    let title = format!("{} from {phone} {} on the Shelf", files_label(n), if n == 1 { "is" } else { "are" });
-                    let added: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-                    self.st.store.shelf.add_paths(&added, self.st.unix);
-                    for p in added {
-                        self.st.cmds.push(Command::LoadThumb(p));
-                    }
-                    self.st.save();
-                    pinfo!("pair drop: {} from a paired phone", files_label(n));
-                    if let Some(pd) = self.st.phone.as_mut() {
-                        pd.outcome = Some((title.clone(), true, until));
-                        pd.outcome_line = None;
-                    }
-                    if !self.expanded {
-                        self.st.notify(Icon::Phone, palette::GREEN, title, "Open the Shelf to see them", 6.0, Some(NoticeAction::OpenPage(PageKind::Shelf)));
-                    }
-                    self.st.chime();
-                    self.maybe_schedule_collapse();
-                }
-                PeerEvent::Failed { reason, detail } => {
-                    pwarn!("pair drop: a send from a paired phone failed: {reason} {detail}");
-                    if !self.expanded {
-                        self.st.notify(Icon::Phone, palette::TEXT, format!("Nothing kept from {phone}"), format!("{reason}."), 6.0, None);
-                    } else if let Some(pd) = self.st.phone.as_mut() {
-                        pd.outcome = Some((format!("Nothing kept from {phone}. {reason}."), false, until));
-                        pd.outcome_line = None;
-                    }
-                }
-                PeerEvent::Ended { .. } => {}
-            },
-        }
-        self.request_frame();
-    }
-
     fn save_now(&mut self) {
         if !self.store_writable {
             pwarn!("data.json couldn't be read at start; not overwriting it");
@@ -4488,7 +4512,7 @@ impl App {
     /// Self-test only: start the real Phone drop service, fetch its page from
     /// the network address it picked, and stop it. Returns (ok, detail).
     pub fn selftest_phone_drop(&mut self) -> (bool, String) {
-        match services::phonedrop::PhoneDrop::start(self.sink.clone(), Vec::new()) {
+        match services::phonedrop::PhoneDrop::start(self.sink.clone(), Vec::new(), paths::phone_inbox_dir(&self.st.settings)) {
             Err(e) => (false, e),
             Ok((svc, url)) => {
                 let r = selftest::fetch_phone_page(&url);
@@ -4664,13 +4688,6 @@ fn motion_name(from: &Mode, to: &Mode) -> &'static str {
 }
 
 /// "1 file", "3 files".
-/// The panel's list: most recently used first.
-fn paired_phones(pairs: Vec<lumo_core::pairdrop::Pair>) -> Vec<PairedPhone> {
-    let mut v: Vec<PairedPhone> = pairs.into_iter().map(|p| PairedPhone { room: p.room(), name: p.name, seen: p.seen.max(p.added) }).collect();
-    v.sort_by_key(|a| std::cmp::Reverse(a.seen));
-    v
-}
-
 fn files_label(n: usize) -> String {
     format!("{n} {}", if n == 1 { "file" } else { "files" })
 }
@@ -4680,6 +4697,123 @@ mod tests {
     use super::*;
     use crate::island::HIT_MARGIN;
     use crate::state::MediaSession;
+
+    #[test]
+    #[ignore = "native effect uses an off-screen monitor fixture, with no personal files"]
+    fn focus_completion_preview_and_suspend_respect_the_setting() {
+        use lumo_core::pomodoro::{Phase, RunState};
+        unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT { DefWindowProcW(hwnd, msg, wp, lp) }
+        window::register_classes(proc, proc).unwrap();
+        let hwnd = window::create_island_window().unwrap();
+        let helper = window::create_helper_window().unwrap();
+        let (tx, rx) = mpsc::channel(); let sink = EventSink::new(tx, SendHwnd::new(hwnd));
+        let mut app = App::new(hwnd, helper, sink, rx, Settings::default(), Store::default(), Some("unused".into()), false, false).unwrap();
+        app.settings_writable = false;
+        app.monitor.rect = RECT { left: -4200, top: -1800, right: -3400, bottom: -1200 };
+        app.surface.x = -4200; app.surface.y = -1800;
+        app.st.now = 100.0; clock::hold(Some(100.0));
+        let mut deferred = vec![];
+        app.st.cmd(Command::PreviewFocusSpotlight);
+        app.run_commands(&mut deferred);
+        assert!(app.focus_light.is_some() && app.focus_light_preview);
+        assert!(!app.st.settings.focus_spotlight);
+        assert!(app.draw_focus_light());
+        app.st.now = 104.0;
+        assert!(!app.draw_focus_light()); assert!(app.focus_light.is_none());
+        app.st.settings.focus_spotlight = true;
+        app.st.now = 105.0;
+        app.st.pomodoro.phase = Phase::Focus; app.st.pomodoro.run = RunState::Running { ends_at: 105.0 };
+        app.tick(); assert!(app.focus_light.is_some());
+        assert!(!app.focus_light_preview);
+        app.focus_light = None;
+        app.st.pomodoro.phase = Phase::ShortBreak; app.st.pomodoro.run = RunState::Running { ends_at: 105.0 };
+        app.tick(); assert!(app.focus_light.is_none(), "break completion does not trigger the effect");
+        app.st.pomodoro.phase = Phase::Focus; app.st.pomodoro.run = RunState::Running { ends_at: 90.0 };
+        app.tick(); assert!(app.focus_light.is_none(), "stale completions after sleep do not replay lighting");
+        for state in 0..3 {
+            app.locked = false; app.display_off = false; app.st.power.saver = false;
+            app.start_focus_light(true); assert!(app.focus_light.is_some());
+            match state { 0 => app.locked = true, 1 => app.display_off = true, _ => app.st.power.saver = true }
+            app.frame(&mut deferred, None);
+            assert!(app.focus_light.is_none());
+            app.start_focus_light(true); assert!(app.focus_light.is_none());
+        }
+        app.clock.set_active(false); app.gfx.set_shown(false); clock::hold(None);
+        unsafe { DestroyWindow(hwnd).unwrap(); DestroyWindow(helper).unwrap(); }
+    }
+
+    #[test]
+    #[ignore = "renders isolated native fixtures, without starting network services"]
+    fn search_scroll_and_local_phone_drop_layouts() {
+        unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT { DefWindowProcW(hwnd, msg, wp, lp) }
+        window::register_classes(proc, proc).unwrap();
+        let hwnd = window::create_island_window().unwrap();
+        let helper = window::create_helper_window().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let sink = EventSink::new(tx, SendHwnd::new(hwnd));
+        let mut app = App::new(hwnd, helper, sink, rx, Settings::default(), Store::default(), Some("unused".into()), false, false).unwrap();
+        app.settings_writable = false;
+        app.st.settings.search.settings = false;
+        app.st.search.loaded_at = Some(0.0);
+        app.st.search.apps = (0..18).map(|i| lumo_core::search::Entry::new(format!("example-{i}"), format!("Example app {i:02}"), String::new(), "example", lumo_core::search::Group::App, lumo_core::search::Target::Windows(lumo_core::search::WindowsSetting::About))).collect();
+        app.st.pinned = true;
+        app.st.notice = None;
+        let mut deferred = vec![];
+        clock::hold(Some(100.0));
+        app.open_search();
+        app.input.keys.extend("example".chars().map(KeyInput::Char));
+        app.frame(&mut deferred, None);
+        app.island.snap(app.geom_for(&app.target_mode()));
+        app.frame(&mut deferred, None);
+        let first = app.hits.iter().find(|h| h.id == crate::ui::wid_n("search.result", 0)).unwrap().rect;
+        app.input.wheel = -0.125;
+        clock::hold(Some(100.016));
+        app.frame(&mut deferred, None);
+        let moving = app.hits.iter().find(|h| h.id == crate::ui::wid_n("search.result", 0)).unwrap().rect;
+        assert!(moving.h < first.h && moving.h > first.h - 5.0, "fractional movement clips only the scrolled-away part of a row");
+        assert_eq!(app.st.search.view.as_ref().unwrap().selected, 0, "scrolling does not move keyboard selection");
+        for step in 1..=90 { clock::hold(Some(100.016 + step as f64 / 60.0)); app.frame(&mut deferred, None); }
+        for _ in 0..12 { app.handle_island(WM_KEYDOWN, WPARAM(VK_DOWN.0 as usize), LPARAM(0), &mut deferred); }
+        for step in 1..=90 { clock::hold(Some(102.0 + step as f64 / 60.0)); app.frame(&mut deferred, None); }
+        assert!(app.hits.iter().any(|h| h.id == crate::ui::wid_n("search.result", 12)), "keyboard navigation reveals the selected row");
+        app.collapse();
+        app.st.search.view = None;
+
+        let url = "HTTP://192.168.1.20:53530/EXAMPLESESSION/";
+        for theme in [Theme::Classic, Theme::Pill] {
+            app.st.settings.theme = theme;
+            app.island.set_floating(pill::on(theme).then_some(pill::TOP_GAP));
+            for scene in ["ip", "ask", "receiving", "complete", "error"] {
+                clock::hold(Some(200.0)); app.st.now = 200.0;
+                let mut pd = PhoneDrop { url: url.into(), qr: QrMatrix::encode(url), pc_name: "Studio-PC".into(), ..Default::default() };
+                match scene {
+                    "ask" => pd.ask = Some(PhoneAsk { id: 1, from: "iPhone".into(), files: vec![("Harbor walk.mov".into(), 18_402_331)], total: 18_402_331 }),
+                    "receiving" => pd.transfer = Some(PhoneTransfer { id: 1, from: "iPhone".into(), file: 0, files: 2, done: 9_100_000, total: 24_000_000 }),
+                    "complete" => pd.outcome = Some(("2 files are on the Shelf".into(), true, 208.0)),
+                    "error" => pd.error = Some("This PC isn't on a Wi-Fi or wired network.".into()),
+                    _ => {}
+                }
+                app.st.search.active = false;
+                app.st.phone = Some(pd);
+                app.st.page = PageKind::Shelf;
+                app.expanded = true;
+                app.mode = Mode::Expanded(PageKind::Shelf);
+                app.island.snap(app.geom_for(&app.mode));
+                app.frame(&mut deferred, None);
+                assert!(!app.hits.iter().any(|h| h.id == wid("shelf.pair.open") || h.id == wid("shelf.pair.another")));
+                assert!(app.hits.iter().any(|h| h.id == wid("shelf.phone.done")));
+                assert!(!app.hits.iter().any(|h| h.id == wid("shelf.phone.name")));
+                if let Some(root) = std::env::var_os("LUMO_PHONE_QA") {
+                    let root = PathBuf::from(root); std::fs::create_dir_all(&root).unwrap();
+                    let (w, h, pixels, _) = app.selftest_capture();
+                    crate::png::save_rgba(root.join(format!("phone-{scene}-{theme:?}.png")), w as u32, h as u32, &crate::png::pbgra_to_rgba(&pixels)).unwrap();
+                }
+            }
+        }
+        app.clock.set_active(false); app.gfx.set_shown(false);
+        unsafe { DestroyWindow(hwnd).unwrap(); DestroyWindow(helper).unwrap(); }
+        clock::hold(None);
+    }
 
     #[test]
     #[ignore = "requires a Windows desktop"]
@@ -4836,6 +4970,69 @@ mod tests {
         unsafe {DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
     }
 
+    #[test]#[ignore="requires a Windows desktop; offline song-transition and action-hint fixture"]
+    fn music_toolbar_stays_fixed_across_song_gaps_and_lyric_updates(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;let mut deferred=vec![];
+        let fixture=crate::lyrics_window::sample_state();let song=fixture.media.unwrap();let lyrics=fixture.lyrics;
+        for(index,theme)in[Theme::Classic,Theme::Pill].into_iter().enumerate(){for width in[480.0,620.0]{
+            clock::hold(Some(100.0+index as f64*10.0));app.st.settings.theme=theme;app.st.settings.expanded_width=width;app.st.settings.hide_over_maximized=false;app.st.media=Some(song.clone());app.st.lyrics=lyrics.clone();app.st.power.saver=true;app.st.foreground_app=Some(crate::state::ForegroundApp{executable:"code.exe".into(),name:"Code".into(),maximized_here:true});app.st.settings.keep_app_visible("code.exe".into(),true);app.st.page=PageKind::Media;app.expanded=true;app.mode=Mode::Expanded(PageKind::Media);app.st.notice=None;app.st.hud=None;app.input.mouse=None;app.island.set_floating(pill::on(theme).then_some(pill::TOP_GAP));app.layout_surface();app.island.snap(app.geom_for(&app.mode));app.frame(&mut deferred,None);
+            let find=|app:&App,id:&str|app.hits.iter().find(|h|h.id==wid(id)).unwrap().rect;
+            let pin=find(&app,"pin");let mini=find(&app,"media.lyrics-popup");let visible=find(&app,"header.keep-visible");
+            for status in[crate::state::LyricsStatus::Idle,crate::state::LyricsStatus::Loading,crate::state::LyricsStatus::NotFound,crate::state::LyricsStatus::Instrumental,crate::state::LyricsStatus::Found]{app.st.lyrics.status=status;app.frame(&mut deferred,None);assert_eq!(find(&app,"pin"),pin);assert_eq!(find(&app,"header.keep-visible"),visible);if app.st.lyrics.status==crate::state::LyricsStatus::Found{assert_eq!(find(&app,"media.lyrics-popup"),mini);}}
+            app.on_event(AppEvent::Media(None));app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);assert_eq!(find(&app,"pin"),pin);assert_eq!(find(&app,"header.keep-visible"),visible);
+            let mut next=song.clone();next.track_key="next-song-fixture".into();next.title="Next song".into();app.on_event(AppEvent::Media(Some(next)));app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);assert_eq!(find(&app,"header.keep-visible"),visible);assert!(!app.hits.iter().any(|h|h.id==wid("media.lyrics-popup")));
+            app.input.mouse=Some(mini.center());if let Some(dir)=std::env::var_os("LUMO_LYRICS_QA"){let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(dir).join(format!("waiting-mini-hint-{theme:?}-{width}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            app.input.mouse=None;app.st.lyrics=lyrics.clone();app.st.lyrics.track_key="next-song-fixture".into();app.frame(&mut deferred,None);assert_eq!(find(&app,"media.lyrics-popup"),mini);assert_eq!(find(&app,"header.keep-visible"),visible);
+            let(w,_,quiet,_)=app.selftest_capture();for(id,button)in[("pin",pin),("mini",mini),("visible",visible)]{app.input.mouse=Some(button.center());let(_,_,hovered,_)=app.selftest_capture();let scale=app.gfx.scale();let changed=quiet.chunks_exact(4).zip(hovered.chunks_exact(4)).enumerate().filter(|(n,(a,b))|a!=b&&!button.inset(-2.0,-2.0).contains(Point::new(((n%w as usize)as f32+app.capture_rect.left as f32)/scale,((n/w as usize)as f32+app.capture_rect.top as f32)/scale))).count();assert_eq!(changed,0,"{id} must not draw hover descriptions in Music");}
+        }}
+        clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
+    #[test]#[ignore="requires a Windows desktop; offline Music layout fixture"]
+    fn music_player_controls_fit_with_and_without_lyrics_at_supported_sizes(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;let mut deferred=vec![];
+        let sample=crate::lyrics_window::sample_state();app.st.media=sample.media;app.st.lyrics=sample.lyrics;app.st.page=PageKind::Media;app.expanded=true;app.mode=Mode::Expanded(PageKind::Media);app.st.notice=None;app.st.hud=None;app.st.power.saver=true;
+        for theme in [Theme::Classic,Theme::Pill]{for scale in [1.0,1.25,1.5,2.0]{for width in [480.0,620.0]{for lyrics in [false,true]{
+            app.st.settings.theme=theme;app.gfx.set_dpi(scale*96.0);app.st.settings.expanded_width=width;app.st.settings.lyrics=true;app.st.settings.music_lyrics=lyrics;app.island.set_floating(pill::on(theme).then_some(pill::TOP_GAP));app.layout_surface();app.island.snap(app.geom_for(&app.mode));app.frame(&mut deferred,None);
+            let body=app.island.body_rect_at(app.cx);let area=pages::content_area(body);
+            for id in ["media_prev","media_play","media_next","media_seek","media.lrc-toggle"]{let r=app.hits.iter().find(|h|h.id==wid(id)).unwrap().rect;assert!(r.x>=area.x-1.0&&r.y>=area.y-1.0&&r.right()<=area.right()+1.0&&r.bottom()<=area.bottom()+1.0,"{id} exceeds {theme:?} at {width}/{scale}");}
+            let bar=app.hits.iter().find(|h|h.id==wid("media_seek")).unwrap().rect;
+            let player=crate::pill::music::player_rect(&app.st,area);
+            assert!(bar.w>player.w*0.5&&bar.right()<=player.right(),"progress spans the player and stays clear of lyrics");
+            let rows:Vec<_>=app.hits.iter().filter(|h|(0..7).any(|i|h.id==crate::ui::wid_n("media_lyric",i))).collect();
+            assert_eq!(!rows.is_empty(),lyrics,"lyrics preference controls the inline column");
+            if let Some(col)=crate::pill::music::lyrics_rect(&app.st,area){for row in rows{assert!(row.rect.x>=col.x&&row.rect.right()<=col.right()+1.0);}}
+            for id in ["media_prev","media_play","media_next"]{let r=app.hits.iter().find(|h|h.id==wid(id)).unwrap().rect;assert!(r.x>=player.x&&r.right()<=player.right(),"transport must stay inside its column");}
+            if scale==1.25&&width==620.0&&lyrics{if let Some(dir)=std::env::var_os("LUMO_LYRICS_QA"){let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(dir).join(format!("music-inline-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}}
+            if theme==Theme::Pill&&scale==1.25&&width==620.0&&!lyrics{if let Some(dir)=std::env::var_os("LUMO_LYRICS_QA"){let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(dir).join("music-player-wide.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}}
+        }}}}
+        app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
+    #[test]#[ignore="requires a Windows desktop; offline native Music wheel routing"]
+    fn music_scroll_changes_tracks_only_over_the_enabled_player_and_respects_capabilities(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;let mut deferred=vec![];
+        let sample=crate::lyrics_window::sample_state();app.st.media=sample.media;app.st.lyrics=sample.lyrics;app.st.page=PageKind::Media;app.expanded=true;app.mode=Mode::Expanded(PageKind::Media);app.st.notice=None;app.st.hud=None;app.st.power.saver=true;clock::hold(Some(100.0));
+        for theme in [Theme::Classic,Theme::Pill] {
+            app.st.settings.theme=theme;app.st.page=PageKind::Media;app.st.settings.music_scroll_tracks=true;app.island.set_floating(pill::on(theme).then_some(pill::TOP_GAP));app.layout_surface();app.island.snap(app.geom_for(&app.mode));app.frame(&mut deferred,None);app.music_wheel=Default::default();app.wheel_pager=Default::default();app.input.wheel=0.0;
+            let body=app.island.body_rect_at(app.cx);let area=pages::content_area(body);let player=crate::pill::music::player_rect(&app.st,area);let lyrics=crate::pill::music::lyrics_rect(&app.st,area).unwrap();
+            let send=|app:&mut App,delta:i16,p:Point,now:f64,deferred:&mut Vec<Deferred>|{clock::hold(Some(now));app.st.cmds.clear();let scale=app.gfx.scale();let x=app.surface.x+(p.x*scale).round()as i32;let y=app.surface.y+(p.y*scale).round()as i32;let packet=LPARAM((((y as u16 as usize)<<16)|(x as u16 as usize))as isize);app.handle_island(WM_MOUSEWHEEL,WPARAM((delta as u16 as usize)<<16),packet,deferred);};
+            for(delta,now,expected)in[(120,100.0,Some(crate::commands::MediaCmd::Prev)),(120,100.03,None),(-120,100.04,Some(crate::commands::MediaCmd::Next)),(-20,100.5,None),(-40,100.51,Some(crate::commands::MediaCmd::Next))]{
+                send(&mut app,delta,player.center(),now,&mut deferred);let commands:Vec<_>=app.st.cmds.iter().filter_map(|c|if let Command::Media(m)=c{Some(m.clone())}else{None}).collect();assert_eq!(commands,expected.into_iter().collect::<Vec<_>>(),"{theme:?}: wheel pacing/direction");
+            }
+            app.st.settings.music_scroll_tracks=false;send(&mut app,120,player.center(),101.0,&mut deferred);assert!(!app.st.cmds.iter().any(|c|matches!(c,Command::Media(_))));
+            app.input.wheel=0.0;app.st.settings.music_scroll_tracks=true;app.st.media.as_mut().unwrap().can_next=false;send(&mut app,-120,player.center(),102.0,&mut deferred);assert!(app.st.cmds.is_empty(),"disabled Next must not dispatch");app.st.media.as_mut().unwrap().can_next=true;
+            send(&mut app,-120,lyrics.center(),103.0,&mut deferred);assert!(app.st.cmds.is_empty(),"lyrics scrolling must not skip tracks");assert!(app.input.wheel<0.0);app.input.wheel=0.0;
+            app.input.down=true;send(&mut app,-120,player.center(),104.0,&mut deferred);assert!(app.st.cmds.is_empty(),"a seek drag must not skip tracks");app.input.down=false;app.input.wheel=0.0;
+            let row=app.hits.iter().find(|h|h.id==crate::ui::wid_n("media_lyric",1)).unwrap().id;app.input.clicked=Some((row,MouseButton::Left));app.frame(&mut deferred,None);assert_eq!(app.st.media.as_ref().unwrap().timeline.position_s,8.0,"inline lyrics retain click-to-seek");
+            app.expanded=false;send(&mut app,-120,player.center(),105.0,&mut deferred);assert!(app.st.cmds.is_empty(),"closed island must not dispatch track scrolling");app.expanded=true;app.input.wheel=0.0;
+            send(&mut app,-120,pages::header_rect(body).center(),106.0,&mut deferred);assert_eq!(app.st.page,PageKind::Focus,"header keeps section navigation");assert!(!app.st.cmds.iter().any(|c|matches!(c,Command::Media(_))));
+            app.st.page=PageKind::Media;app.page_anim=None;app.st.settings.lyrics=false;assert!(crate::pill::music::lyrics_rect(&app.st,area).is_none());app.st.settings.lyrics=true;
+            app.st.media.as_mut().unwrap().music_source=None;assert!(crate::pill::music::lyrics_rect(&app.st,area).is_none());app.st.media.as_mut().unwrap().music_source=Some(lumo_core::nowplaying::MusicSource::Streaming);
+        }
+        clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
     #[test]
     #[ignore = "requires a Windows desktop"]
     fn lyrics_popup_handoff_visibility_idle_clock_and_return_work_in_both_themes() {
@@ -4868,14 +5065,21 @@ mod tests {
                 app.st.settings.expanded_width = width; app.layout_surface(); app.island.snap(app.geom_for(&app.mode));
                 app.frame(&mut deferred, None);
                 let pop = app.hits.iter().find(|hit| hit.id == wid("media.lyrics-popup")).unwrap().rect;
+                let pin=app.hits.iter().find(|hit|hit.id==wid("pin")).unwrap().rect;
+                let visible=app.hits.iter().find(|hit|hit.id==wid("header.keep-visible")).unwrap().rect;
+                assert!((pop.center().y-pin.center().y).abs()<1.0 && (pin.x-pop.right()).abs()<=3.0,"mini player belongs beside Pin in the header");
+                let lrc=app.hits.iter().find(|hit|hit.id==wid("media.lrc-toggle")).unwrap().rect;
+                assert!(lrc.w>=44.0,"the LRC text button remains readable");
                 let cues=(0..7).filter(|&i|app.hits.iter().any(|hit|hit.id==crate::ui::wid_n("media_lyric",i))).count();
-                assert!(cues>=3,"{theme:?} at {width}: keep the current cue and its neighbours visible, got {cues}");
+                assert!(cues>0,"{theme:?} at {width}: expanded Music restores synced lyrics");
                 assert!(!app.hits.iter().any(|hit|hit.id==wid("media_lyrics_credit")),"lyric source labels must not appear in the player");
                 let controls:[Rect;4]=["media_prev","media_play","media_next","media_seek"].map(|id|app.hits.iter().find(|hit|hit.id==wid(id)).unwrap().rect);
                 let height=pages::media::height(&app.st);
                 for status in [crate::state::LyricsStatus::Loading,crate::state::LyricsStatus::NotFound,crate::state::LyricsStatus::Found] {
                     app.st.lyrics.status=status;app.frame(&mut deferred,None);
                     assert_eq!(pages::media::height(&app.st),height,"lookup states must not resize the island");
+                    assert_eq!(app.hits.iter().find(|hit|hit.id==wid("pin")).unwrap().rect,pin,"lyric updates must not move Pin");
+                    assert_eq!(app.hits.iter().find(|hit|hit.id==wid("header.keep-visible")).unwrap().rect,visible,"lyric updates must not move the toolbar into the mini-player slot");
                     for (id,expected) in ["media_prev","media_play","media_next","media_seek"].into_iter().zip(controls) {
                         assert_eq!(app.hits.iter().find(|hit|hit.id==wid(id)).unwrap().rect,expected,"{theme:?}: lookup moved {id}");
                     }
@@ -4929,7 +5133,7 @@ mod tests {
             app.st.ui.lyric_track.clear();
             app.expand();app.mode=Mode::Expanded(PageKind::Media);app.island.snap(app.geom_for(&app.mode));
             clock::hold(Some(base+1.02));app.frame(&mut deferred,None);
-            assert!(app.st.ui.lyric_track.is_empty(),"the expanded Music lyrics column must not render while the popup is open");
+            assert!(crate::pill::music::lyrics_rect(&app.st,pages::content_area(app.island.body_rect_at(app.cx))).is_none(),"the popup owns lyrics during the handoff");
             assert!(!app.hits.iter().any(|hit|hit.id==wid("media.lrc-toggle")),"the lyrics toggle must be disabled while the popup is open");
             app.input.clicked=Some((wid("media.lrc-toggle"),MouseButton::Left));app.frame(&mut deferred,None);
             assert!(app.st.settings.island_lyrics,"a queued click must not change the disabled lyrics toggle");
@@ -4965,7 +5169,7 @@ mod tests {
             assert!(!unsafe { IsWindow(popup).as_bool() });
             clock::hold(Some(base+1.5)); app.frame(&mut deferred, None);
             assert!(unsafe { IsWindowVisible(hwnd).as_bool() });
-            assert_eq!(app.st.ui.lyric_track,"lyrics-window-fixture","closing must restore the expanded lyrics column");
+            assert_eq!(app.st.ui.lyric_track,app.st.media.as_ref().unwrap().track_key,"returning from mini player restores the inline lyrics");
             assert!(app.hits.iter().any(|hit|hit.id==wid("media.lrc-toggle")),"closing must re-enable the lyrics toggle");
             if let Some(dir) = std::env::var_os("LUMO_LYRICS_QA").map(std::path::PathBuf::from) {
                 let (w,h,pixels,_)=app.selftest_capture();
@@ -5200,7 +5404,7 @@ mod tests {
         app.expanded = true;
         app.mode = Mode::Expanded(PageKind::Media);
         app.st.page = PageKind::Media;
-        app.st.settings.lyrics = false;
+        app.st.settings.lyrics = true;
         app.layout_surface();
         let mut deferred = Vec::new();
         for (index, (theme, playing)) in [(Theme::Classic, false), (Theme::Pill, false), (Theme::Classic, true), (Theme::Pill, true)].into_iter().enumerate() {
@@ -5212,9 +5416,11 @@ mod tests {
                 music_source: Some(lumo_core::nowplaying::MusicSource::Local), title: "Seek fixture".into(), artist: "Artist".into(), album: "Album".into(),
                 art: None, art_color: None, timeline: lumo_core::timeline::Timeline::new(30.0, 200.0, base, playing),
                 can_prev: true, can_next: true, can_play_pause: true, can_seek: true, track_key: "seek-fixture".into() });
+            app.st.lyrics=LyricsState{track_key:"seek-fixture".into(),status:LyricsStatus::Found,lyrics:Some(lumo_core::lrc::parse_lrc("[00:00]Start\n[00:20]Earlier\n[00:40]Before\n[02:00]Approaching\n[02:30]Selected\n[03:00]Later")),..Default::default()};
             app.island.snap(app.geom_for(&app.mode));
             app.frame(&mut deferred, None);
             release_at(&mut app, 0.75, &mut deferred);
+            assert!((app.st.ui.lyric_pos-4.0).abs()<0.01,"seek-release frame must show the selected lyric immediately");
             assert!((app.st.media.as_ref().unwrap().timeline.position_at(base) - 150.0).abs() < 0.001);
             assert!(app.st.media_pending_seek.is_some());
             let old = lumo_core::timeline::Timeline::new(30.0, 200.0, base - 0.1, playing);
@@ -5232,10 +5438,12 @@ mod tests {
             clock::hold(Some(base + 0.3));
             app.on_event(AppEvent::MediaTimeline { track_key: "seek-fixture".into(), timeline: lumo_core::timeline::Timeline::new(30.0, 200.0, base + 0.29, playing) });
             app.frame(&mut deferred, None);
+            assert!((app.st.ui.lyric_pos-4.0).abs()<0.01,"stale reports must never animate lyrics back toward the beginning");
             let want = if playing { 150.3 } else { 150.0 };
             assert!((app.st.media.as_ref().unwrap().timeline.position_at(base + 0.3) - want).abs() < 0.001, "{theme:?}: feedback must keep moving from the selected position");
             clock::hold(Some(base + 0.4));
             release_at(&mut app, 0.1, &mut deferred);
+            assert!((app.st.ui.lyric_pos-1.0).abs()<0.01,"backward seeks must also snap to their cue");
             clock::hold(Some(base + 0.5));
             app.on_event(AppEvent::MediaTimeline { track_key: "seek-fixture".into(), timeline: lumo_core::timeline::Timeline::new(150.0, 200.0, base + 0.5, playing) });
             let want = if playing { 20.1 } else { 20.0 };
@@ -5376,7 +5584,7 @@ mod tests {
             app.layout_surface();
             app.island.snap(app.geom_for(&app.mode));
             app.frame(&mut deferred, None);
-            for id in ["header.keep-visible", "header.gear", "pin"] {
+            for id in ["header.keep-visible", "pin"] {
                 assert!(app.hits.iter().any(|hit| hit.id == wid(id)), "{theme:?}: {id} must fit at the narrowest width");
             }
             app.st.settings.expanded_width = 620.0;
@@ -5441,6 +5649,23 @@ mod tests {
         unsafe { DestroyWindow(hwnd).unwrap(); DestroyWindow(helper).unwrap(); }
     }
 
+    #[test]#[ignore="requires a Windows desktop; section rail and native wheel fixture"]
+    fn section_tabs_restore_icons_and_active_name_with_wheel_navigation(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;let mut deferred=vec![];
+        for(i,theme)in[Theme::Classic,Theme::Pill].into_iter().enumerate(){
+            let now=100.0+i as f64*10.0;clock::hold(Some(now));app.st.settings.theme=theme;app.st.page=PageKind::Media;app.expanded=true;app.mode=Mode::Expanded(PageKind::Media);app.page_anim=None;app.st.notice=None;app.st.hud=None;app.island.set_floating(pill::on(theme).then_some(pill::TOP_GAP));app.layout_surface();app.island.snap(app.geom_for(&app.mode));app.frame(&mut deferred,None);
+            let body=app.island.body_rect_at(app.cx);let rail=pages::header_rect(body);let area=pages::content_area(body);
+            assert!(rail.bottom()<area.y);assert!(!app.hits.iter().any(|h|h.id==wid("header.gear")));
+            assert!(app.hits.iter().find(|h|h.id==crate::ui::wid_n("tab",0)).unwrap().rect.w>60.0,"Music includes its name");
+            let count=pages::tabs(&app.st).len();for n in 0..count{let hit=app.hits.iter().find(|h|h.id==crate::ui::wid_n("tab",n as u64)).unwrap();assert!(rail.contains(hit.rect.center()));}
+            if let Some(dir)=std::env::var_os("LUMO_AI_QA"){let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(dir).join(format!("section-tabs-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            let scale=app.gfx.scale();let p=POINT{x:app.surface.x+(rail.center().x*scale)as i32,y:app.surface.y+(rail.center().y*scale)as i32};let packet=LPARAM((((p.y as u16 as usize)<<16)|(p.x as u16 as usize))as isize);app.wheel_pager=Default::default();
+            app.handle_island(WM_MOUSEWHEEL,WPARAM(((-120i16 as u16 as usize)<<16)as usize),packet,&mut deferred);assert_eq!(app.st.page,PageKind::Focus);
+            clock::hold(Some(now+1.0));app.handle_island(WM_MOUSEWHEEL,WPARAM((120usize)<<16),packet,&mut deferred);assert_eq!(app.st.page,PageKind::Media);
+        }
+        clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
     /// Feed real Windows message handlers and render between packets. This
     /// catches skips hidden by tests of the pager or static screenshots alone.
     #[test]
@@ -5546,29 +5771,75 @@ mod tests {
     }
 
     #[test]
-    #[ignore="requires a Windows desktop"]
-    fn horizontal_gestures_open_search_in_both_directions_and_ignore_inertia() {
+    #[ignore="requires a Windows desktop; offline mouse versus touchpad routing"]
+    fn mouse_wheel_opens_workspaces_and_touchpad_retains_existing_navigation() {
+        use services::wheel_input::Source;
         unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
         window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();
         let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));
         let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();
-        app.settings_writable=false;let mut deferred=vec![];
+        app.settings_writable=false;app.st.settings.set_addon("ai",true);app.st.ai.loaded=true;app.st.power.saver=true;let mut deferred=vec![];
+        let send=|app:&mut App,source,delta:i16,shift,p:Point,now:f64,deferred:&mut Vec<Deferred>|{
+            clock::hold(Some(now));let mut point=POINT{x:(p.x*app.gfx.scale()).round()as i32,y:(p.y*app.gfx.scale()).round()as i32};
+            unsafe{windows::Win32::Graphics::Gdi::ClientToScreen(hwnd,&mut point).unwrap();}
+            let lp=LPARAM(((point.x as u16 as u32)|((point.y as u16 as u32)<<16))as isize);
+            app.island_vertical_wheel(delta,lp,source,shift,deferred);
+        };
+        let closed=|app:&mut App|{app.expanded=false;app.st.search.active=false;app.st.page=PageKind::Media;app.st.closed_view=Default::default();app.st.notice=None;app.mode=Mode::Idle;app.search_gesture=Default::default();app.wheel_pager=Default::default();app.layout_surface();app.island.snap(app.geom_for(&app.mode));app.input.end_frame();};
+        for (i,theme) in [Theme::Classic,Theme::Pill].into_iter().enumerate(){
+            app.st.settings.theme=theme;closed(&mut app);let t=900.0+i as f64*30.0;let p=app.island.body_rect_at(app.cx).center();
+            send(&mut app,Source::Mouse,-120,false,p,t,&mut deferred);assert!(app.expanded&&app.st.search.active,"mouse down opens Search");
+            app.island.snap(app.geom_for(&app.target_mode()));let body=app.island.body_rect_at(app.cx);let header=Point::new(body.center().x,body.y+12.0);
+            send(&mut app,Source::Mouse,120,false,header,t+0.7,&mut deferred);assert!(!app.expanded&&!app.st.search.active,"the next wheel gesture returns to Time first");
+            app.island.snap(app.geom_for(&app.target_mode()));let p=app.island.body_rect_at(app.cx).center();send(&mut app,Source::Mouse,120,false,p,t+1.1,&mut deferred);assert!(app.expanded&&app.st.page==PageKind::Ai);
+            app.island.snap(app.geom_for(&app.target_mode()));let body=app.island.body_rect_at(app.cx);let header=Point::new(body.center().x,body.y+12.0);
+            send(&mut app,Source::Mouse,-120,false,header,t+1.4,&mut deferred);assert!(!app.expanded&&!app.st.search.active,"AI also closes to Time before Search");
+            app.island.snap(app.geom_for(&app.target_mode()));let p=app.island.body_rect_at(app.cx).center();send(&mut app,Source::Mouse,-120,false,p,t+1.8,&mut deferred);assert!(app.st.search.active);
+            app.st.search.view.as_mut().unwrap().query="settings".into();app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));let body=app.island.body_rect_at(app.cx);let p=Point::new(body.center().x,body.y+90.0);send(&mut app,Source::Mouse,120,false,p,t+2.1,&mut deferred);assert!(app.st.search.active,"result scrolling does not change the workspace");
+            closed(&mut app);let p=app.island.body_rect_at(app.cx).center();send(&mut app,Source::Mouse,120,false,p,t+3.0,&mut deferred);assert!(app.expanded&&app.st.page==PageKind::Ai,"mouse up opens AI");
+            // The same event delta from a touchpad (or an unknown sender)
+            // retains compact views instead of opening either workspace.
+            for source in [Source::Touchpad,Source::Unknown] {
+                closed(&mut app);let p=app.island.body_rect_at(app.cx).center();send(&mut app,source,-120,false,p,t+4.0,&mut deferred);
+                assert!(!app.expanded&&app.st.closed_view==lumo_core::settings::ClosedView::Performance);
+            }
+            closed(&mut app);let p=app.island.body_rect_at(app.cx).center();send(&mut app,Source::Mouse,-120,true,p,t+5.0,&mut deferred);assert!(!app.expanded&&app.st.closed_view==lumo_core::settings::ClosedView::Performance,"Shift+wheel keeps compact views accessible");
+            closed(&mut app);app.st.settings.mouse_wheel_shortcuts=false;let p=app.island.body_rect_at(app.cx).center();send(&mut app,Source::Mouse,-120,false,p,t+6.0,&mut deferred);assert!(!app.expanded);app.st.settings.mouse_wheel_shortcuts=true;
+            closed(&mut app);app.st.settings.set_addon("ai",false);let p=app.island.body_rect_at(app.cx).center();send(&mut app,Source::Mouse,120,false,p,t+7.0,&mut deferred);assert!(!app.expanded,"disabled AI is never opened");app.st.settings.set_addon("ai",true);
+            closed(&mut app);app.expanded=true;app.mode=Mode::Expanded(PageKind::Media);app.island.snap(app.geom_for(&app.mode));let body=app.island.body_rect_at(app.cx);let p=Point::new(body.center().x,body.y+12.0);
+            send(&mut app,Source::Mouse,-120,false,p,t+8.0,&mut deferred);assert_eq!(app.st.page,PageKind::Focus,"mouse header wheel advances sections");
+            send(&mut app,Source::Mouse,120,false,p,t+8.7,&mut deferred);assert_eq!(app.st.page,PageKind::Media,"mouse up returns a section");
+            app.locked=true;closed(&mut app);let p=app.island.body_rect_at(app.cx).center();send(&mut app,Source::Mouse,-120,false,p,t+9.4,&mut deferred);assert!(!app.expanded);app.locked=false;
+            app.hovering=true;app.wheel_input=Some(services::wheel_input::Watch::start());app.handle_island(WM_MOUSELEAVE,WPARAM(0),LPARAM(0),&mut deferred);assert!(app.wheel_input.is_none());
+            app.wheel_input=Some(services::wheel_input::Watch::start());app.display_off=true;app.sync_system_views();assert!(app.wheel_input.is_none());app.display_off=false;
+        }
+        clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
+
+    #[test]
+    #[ignore="requires a Windows desktop"]
+    fn horizontal_gestures_route_left_to_ai_right_to_search_and_ignore_inertia() {
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();
+        let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));
+        let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();
+        app.settings_writable=false;app.st.settings.set_addon("ai",true);app.st.ai.loaded=true;let mut deferred=vec![];
         let wheel=|delta:i16|WPARAM(usize::from(delta as u16)<<16);
         for (i,delta) in [-120i16,120].into_iter().enumerate(){
             let now=10.0+i as f64*10.0;clock::hold(Some(now));
             app.expanded=false;app.st.search.active=false;app.st.search.view=None;app.st.notice=None;
             let before=app.st.page;let closed=app.geom_for(&app.target_mode());
             app.handle_island(WM_MOUSEHWHEEL,wheel(delta),LPARAM(0),&mut deferred);
-            assert!(app.st.search.active && app.expanded && app.text_focus);
-            assert_eq!(app.st.page,before,"search preserves the normal page");
+            assert!(app.expanded&&app.text_focus);assert_eq!(app.st.search.active,delta>0);
+            assert_eq!(app.st.page,if delta<0{PageKind::Ai}else{before},"each direction opens its own surface");
             let opened=app.geom_for(&app.target_mode());assert!(opened.w>closed.w && opened.h>closed.h);
             assert_eq!(app.hwnd,hwnd,"Search shares the island window");
             app.handle_island(WM_MOUSEHWHEEL,wheel(delta),LPARAM(0),&mut deferred);
-            assert!(app.st.search.active,"opening inertia must not close Search");
+            assert!(app.expanded,"opening inertia must not close either surface");
             clock::hold(Some(now+0.6));app.handle_island(WM_MOUSEHWHEEL,wheel(-delta),LPARAM(0),&mut deferred);
             assert!(!app.st.search.active && !app.expanded && !app.text_focus,"a new swipe collapses Search");
             clock::hold(Some(now+0.7));app.handle_island(WM_MOUSEHWHEEL,wheel(delta),LPARAM(0),&mut deferred);
-            assert!(!app.st.search.active,"closing inertia cannot reopen Search");
+            assert!(!app.st.search.active&&!app.expanded,"closing inertia cannot reopen either surface");
         }
         // Opening Search is independent from normal expanded-page navigation.
         clock::hold(Some(40.0));app.st.search.view=None;app.expanded=true;app.st.page=PageKind::Media;
@@ -5578,6 +5849,128 @@ mod tests {
         clock::hold(Some(50.0));app.handle_island(WM_MOUSEHWHEEL,wheel(120),LPARAM(0),&mut deferred);assert!(!app.st.search.active);
         app.locked=true;app.st.settings.search.horizontal_scroll=true;
         clock::hold(Some(60.0));app.handle_island(WM_MOUSEHWHEEL,wheel(120),LPARAM(0),&mut deferred);assert!(!app.st.search.active);
+        clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
+
+    #[test]#[ignore="requires a Windows desktop; routes fictional file drops without reading files"]
+    fn file_drags_attach_to_open_ai_hosts_and_ordinary_pages_keep_the_shelf(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        unsafe{OleInitialize(None).unwrap();}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;
+        let sample=crate::ai_window::sample_state_for_selftest();app.st.ai=sample.ai;app.st.settings.ai=sample.settings.ai;app.st.settings.set_addon("ai",true);app.st.settings.ai.keep_open=true;app.st.page=PageKind::Media;app.st.ai.draft="Keep this draft".into();app.open_ai(true);app.st.cmds.clear();
+        app.on_event(AppEvent::DragHover{owner:SendHwnd::new(hwnd),on:true});
+        assert!(app.expanded&&app.st.page==PageKind::Ai&&app.st.drag_hover);assert_eq!(app.st.ai.draft,"Keep this draft");
+        let paths=vec![r"C:\fictional\Review.pdf".to_owned()];
+        app.on_event(AppEvent::FilesDropped{owner:SendHwnd::new(hwnd),paths:paths.clone()});
+        assert!(!app.st.drag_hover);assert_eq!(app.st.page,PageKind::Ai);assert!(app.st.store.shelf.items.is_empty());
+        assert!(app.st.cmds.iter().any(|c|matches!(c,Command::Ai(crate::ai::Action::AttachFiles(p))if p==&paths)));app.st.cmds.clear();
+        app.open_ai_window();let mini=app.ai_window.as_ref().unwrap().hwnd;app.st.cmds.clear();
+        app.on_event(AppEvent::DragHover{owner:SendHwnd::new(mini),on:true});assert!(app.st.drag_hover&&app.ai_window.is_some());
+        app.on_event(AppEvent::FilesDropped{owner:SendHwnd::new(mini),paths:paths.clone()});
+        assert!(app.st.cmds.iter().any(|c|matches!(c,Command::Ai(crate::ai::Action::AttachFiles(p))if p==&paths)));assert!(app.st.store.shelf.items.is_empty());app.st.cmds.clear();
+        app.on_event(AppEvent::DragHover{owner:SendHwnd::new(mini),on:true});
+        app.ai_window=None;app.st.ai.full_open=false;
+        app.on_event(AppEvent::DragHover{owner:SendHwnd::new(mini),on:false});assert!(!app.drag_hover&&!app.st.drag_hover);
+        app.on_event(AppEvent::FilesDropped{owner:SendHwnd::new(mini),paths});assert!(app.st.cmds.is_empty());
+        app.st.page=PageKind::Media;app.expanded=true;app.on_event(AppEvent::DragHover{owner:SendHwnd::new(hwnd),on:true});assert_eq!(app.st.page,PageKind::Shelf);
+        app.on_event(AppEvent::DragHover{owner:SendHwnd::new(hwnd),on:false});assert!(!app.st.drag_hover);
+        app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();OleUninitialize();}
+    }
+    #[test]#[ignore="requires a Windows desktop; uses an offline AI fixture"]
+    fn ai_workspace_preserves_handoffs_resume_pin_and_pauses_while_away(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;let mut deferred=vec![];
+        let home=std::env::var_os("LUMO_HOME");std::env::set_var("LUMO_HOME",std::env::current_dir().unwrap().join(".tools/ai-workspace-profile"));
+        let output=std::env::var_os("LUMO_AI_QA").map(std::path::PathBuf::from);if let Some(out)=&output{std::fs::create_dir_all(out).unwrap();}
+        for (i,theme) in [Theme::Classic,Theme::Pill].into_iter().enumerate(){
+            clock::hold(Some(100.0+i as f64*100.0));let sample=crate::ai_window::sample_state_for_selftest();app.st.ai=sample.ai;app.st.settings.ai=sample.settings.ai;app.st.settings.set_addon("ai",true);app.st.settings.theme=theme;app.st.page=PageKind::Media;app.st.pinned=false;app.st.notice=None;app.island.set_floating(pill::on(theme).then_some(pill::TOP_GAP));app.st.ai.draft="Keep this draft".into();app.fullscreen_on=true;app.st.settings.hide_in_fullscreen=true;app.ai_reply_peek=false;app.apply_fullscreen(app.st.now);assert!(app.fullscreen_hidden);app.open_ai(true);assert!(!app.fullscreen_hidden,"explicit AI opening is visible over fullscreen");
+            assert!(!pages::tabs(&app.st).contains(&PageKind::Ai));assert!(!app.st.search.active&&app.expanded&&app.st.page==PageKind::Ai);
+            app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);let body=app.island.body_rect_at(app.cx);assert!((body.w-crate::search::WIDTH).abs()<1.0&&body.h>400.0,"browser-sized standalone AI");
+            for id in ["ai.prompt","ai.models","ai.open-full","ai.keep-open","ai.resume","ai.history","ai.new"]{assert!(app.hits.iter().any(|h|h.id==wid(id)),"workspace control {id}");}
+            assert!(!app.hits.iter().any(|h|h.id==wid("header.settings")),"AI has its own header");
+            if let Some(out)=&output{let now=app.st.now;for step in 1..=12{clock::hold(Some(now+step as f64*0.05));unsafe{let mut msg=MSG::default();while PeekMessageW(&mut msg,None,0,0,PM_REMOVE).as_bool(){let _=TranslateMessage(&msg);DispatchMessageW(&msg);}let _=windows::Win32::Graphics::Dwm::DwmFlush();}app.frame(&mut deferred,None);}let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(out.join(format!("ai-workspace-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            let id=app.st.ai.current.id;app.st.settings.ai.resume=true;app.collapse();assert_eq!(app.st.page,PageKind::Media);app.open_ai(false);assert_eq!(app.st.ai.current.id,id);assert_eq!(app.st.ai.draft,"Keep this draft");
+            app.st.settings.ai.keep_open=true;app.search_lost_activation(helper);assert!(app.expanded);app.st.settings.ai.keep_open=false;app.search_lost_activation(helper);assert!(!app.expanded);assert!(app.fullscreen_hidden,"closing AI restores the ordinary fullscreen visibility policy");
+            app.open_ai(false);app.st.ai.pending.push(lumo_core::ai::Attachment{name:"Project notes.pdf".into(),mime:"application/pdf".into(),data:String::new()});let attachments=app.st.ai.pending.len();
+            app.st.ai.scroll=12.0;app.open_ai_window();assert!(app.ai_window.is_some()&&app.st.ai.full_open&&!app.expanded);assert!(app.ai_window.as_ref().unwrap().prompt_focused(),"mini handoff is immediately ready for typing");assert_eq!(app.st.ai.current.id,id);assert_eq!(app.st.ai.draft,"Keep this draft");assert_eq!(app.st.ai.pending.len(),attachments);
+            if let Some(out)=&output{app.ai_window.as_mut().unwrap().capture(&mut app.st,&out.join(format!("ai-mini-{theme:?}.png")));}
+            let mini=app.ai_window.as_ref().unwrap().hwnd;app.st.settings.ai.keep_open=true;app.handle_ai_window(mini,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(helper.0 as isize));assert!(app.ai_window.is_some(),"mini pin prevents outside dismissal");app.st.settings.ai.keep_open=false;
+            // The native procedure must preserve an activation delivered while
+            // the app cannot be borrowed, just as the island does.
+            unsafe{SendMessageW(mini,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(helper.0 as isize));let mut queued=MSG::default();assert!(PeekMessageW(&mut queued,mini,crate::ai_window::CHECK_ACTIVATION,crate::ai_window::CHECK_ACTIVATION,PM_REMOVE).as_bool());}
+            MISSED.with(|messages|messages.borrow_mut().clear());APP.with(|slot|*slot.borrow_mut()=Some(app));
+            with_app(|_|unsafe{SendMessageW(mini,crate::ai_window::CHECK_ACTIVATION,WPARAM(0),LPARAM(0));}).unwrap();
+            app=APP.with(|slot|slot.borrow_mut().take().unwrap());
+            unsafe{let mut queued=MSG::default();assert!(PeekMessageW(&mut queued,hwnd,crate::ai_window::CHECK_ACTIVATION,crate::ai_window::CHECK_ACTIVATION,PM_REMOVE).as_bool(),"nested activation checks replay after the App borrow ends");assert_eq!(queued.lParam.0,mini.0 as isize);}
+            let s=app.gfx.scale();unsafe{SetWindowPos(mini,None,0,0,(420.0*s).round()as i32,(500.0*s).round()as i32,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE).unwrap();}
+            app.handle_ai_window(mini,WM_EXITSIZEMOVE,WPARAM(0),LPARAM(0));assert_eq!((app.st.settings.ai.mini_width,app.st.settings.ai.mini_height),(420,500));
+            app.locked=true;app.frame(&mut deferred,None);assert!(!unsafe{IsWindowVisible(mini)}.as_bool());app.locked=false;app.frame(&mut deferred,None);assert!(unsafe{IsWindowVisible(mini)}.as_bool());
+            app.st.cmd(Command::ReturnAiToIsland);app.run_commands(&mut deferred);assert!(app.ai_window.is_none()&&!app.st.ai.full_open&&app.expanded&&app.st.page==PageKind::Ai);assert_eq!(app.st.ai.draft,"Keep this draft");assert_eq!(app.st.ai.current.id,id);
+            app.st.settings.ai.resume=false;app.collapse();assert!(app.st.ai.draft.is_empty()&&app.st.ai.pending.is_empty(),"closing with Resume off releases unsent buffers immediately");app.open_ai(false);assert_ne!(app.st.ai.current.id,id);assert!(app.st.ai.draft.is_empty()&&app.st.ai.pending.is_empty());
+            app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);assert!(!app.hits.iter().any(|h|h.id==wid("ai.send")),"empty prompt cannot send");
+            if let Some(out)=&output{let now=app.st.now;for step in 1..=12{clock::hold(Some(now+step as f64*0.05));unsafe{let mut msg=MSG::default();while PeekMessageW(&mut msg,None,0,0,PM_REMOVE).as_bool(){let _=TranslateMessage(&msg);DispatchMessageW(&msg);}let _=windows::Win32::Graphics::Dwm::DwmFlush();}app.frame(&mut deferred,None);}let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(out.join(format!("ai-empty-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            app.open_ai_window();let mini=app.ai_window.as_ref().unwrap().hwnd;app.handle_ai_window(mini,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(helper.0 as isize));assert!(app.ai_window.is_none()&&!app.expanded,"unpinned mini closes on outside activation");
+            for field in [None,Some(wid("ai.history-filter"))]{app.open_ai(true);app.input.focused=field;app.handle_island(WM_KEYDOWN,WPARAM(VK_ESCAPE.0 as usize),LPARAM(0),&mut deferred);assert!(!app.expanded,"Escape closes AI with any editor focus");}
+            app.open_ai_window();let mini=app.ai_window.as_ref().unwrap().hwnd;app.st.ai.history=true;app.ai_window.as_mut().unwrap().focus_field(wid("ai.history-filter"),0);app.handle_ai_window(mini,WM_KEYDOWN,WPARAM(VK_ESCAPE.0 as usize),LPARAM(0));assert!(app.ai_window.is_none(),"Escape closes mini AI from history");
+            app.open_search();assert!(app.st.search.active&&app.st.page!=PageKind::Ai);app.close_search();
+        }
+        clock::hold(None);app.st.cmds.clear();app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+        if let Some(home)=home{std::env::set_var("LUMO_HOME",home);}else{std::env::remove_var("LUMO_HOME");}
+    }
+
+    #[test]#[ignore="requires a Windows desktop; uses an offline AI fixture"]
+    fn ai_internal_mouse_presses_keep_workspace_focus(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;let mut deferred=vec![];
+        let wheel_point=|p:Point,s:f32|LPARAM(((((p.y*s).round()as u16)as usize)<<16|(p.x*s).round()as u16 as usize)as isize);
+        for theme in [Theme::Classic,Theme::Pill]{
+            let sample=crate::ai_window::sample_state_for_selftest();app.st.ai=sample.ai;app.st.settings.ai=sample.settings.ai;app.st.settings.set_addon("ai",true);app.st.settings.theme=theme;app.st.page=PageKind::Media;app.st.pinned=false;app.st.settings.ai.keep_open=false;app.st.ai.draft="Do not send this draft".into();app.st.notice=None;app.island.set_floating(pill::on(theme).then_some(pill::TOP_GAP));app.open_ai(true);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+            for id in ["ai.history","ai.new","ai.temporary","ai.keep-open","ai.resume","ai.open-full","ai.close","ai.plus","ai.models","ai.send","ai.prompt"]{
+                app.input.focused=Some(wid("ai.prompt"));app.text_focus=true;let at=app.hits.iter().find(|h|h.id==wid(id)).unwrap().rect.center();let at=wheel_point(at,app.gfx.scale());
+                app.handle_island(WM_LBUTTONDOWN,WPARAM(0),at,&mut deferred);
+                assert!(app.expanded&&app.st.page==PageKind::Ai&&app.text_focus,"pressing {id} must keep keyboard focus in the {theme:?} AI workspace");
+                // Test the press of Close/Send/Settings without invoking those
+                // actions. A real press is where the erroneous blur occurred.
+                app.release_mouse();app.input.end_frame();
+            }
+            for (id,open) in [("ai.history",true),("ai.history",false),("ai.plus",true),("ai.plus",false),("ai.models",true)] {
+                let at=app.hits.iter().find(|h|h.id==wid(id)).unwrap().rect.center();let at=wheel_point(at,app.gfx.scale());
+                app.handle_island(WM_LBUTTONDOWN,WPARAM(0),at,&mut deferred);app.frame(&mut deferred,None);app.handle_island(WM_LBUTTONUP,WPARAM(0),at,&mut deferred);app.frame(&mut deferred,None);
+                assert!(app.expanded&&app.text_focus,"clicking {id} must not dismiss AI");
+                assert_eq!(if id=="ai.history"{app.st.ai.history}else if id=="ai.plus"{app.st.ai.attach_menu}else{app.st.ai.model_menu},open);
+            }
+            assert_eq!(app.st.ai.draft,"Do not send this draft");app.st.ai.close_popovers();app.search_lost_activation(helper);assert!(!app.expanded,"an actual outside activation must still dismiss unpinned AI");app.st.cmds.clear();
+        }
+        app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
+
+    #[test]#[ignore="requires a Windows desktop; no injected user input"]
+    fn wheel_workspaces_dismiss_on_background_press_without_activation_and_release_watch() {
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));
+        let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;app.st.power.saver=true;app.st.ai.loaded=true;app.st.settings.set_addon("ai",true);let mut deferred=vec![];
+        let child=unsafe{CreateWindowExW(WINDOW_EX_STYLE::default(),w!("STATIC"),w!("Lumo child fixture"),WS_CHILD,0,0,10,10,hwnd,None,None,None).unwrap()};
+        for theme in [Theme::Classic,Theme::Pill]{app.st.settings.theme=theme;
+            for ai in [false,true]{
+                if ai{app.open_ai(true);}else{app.open_search();}assert!(app.workspace_dismiss.is_some());app.text_focus=false;app.input.focused=None;
+                app.handle_island(services::workspace_dismiss::OUTSIDE_PRESS,WPARAM(0),LPARAM(child.0 as isize),&mut deferred);assert!(app.expanded,"inside child click keeps the workspace");
+                app.handle_island(services::workspace_dismiss::OUTSIDE_PRESS,WPARAM(0),LPARAM(helper.0 as isize),&mut deferred);
+                assert!(!app.expanded&&!app.st.search.active&&app.workspace_dismiss.is_none(),"background press closes immediately without WM_ACTIVATE");
+                assert_eq!(app.st.closed_view,lumo_core::settings::ClosedView::Time);
+            }
+            app.st.settings.ai.keep_open=true;app.open_ai(true);assert!(app.workspace_dismiss.is_none());app.handle_island(services::workspace_dismiss::OUTSIDE_PRESS,WPARAM(0),LPARAM(helper.0 as isize),&mut deferred);assert!(app.expanded);app.st.settings.ai.keep_open=false;app.sync_workspace_dismiss();assert!(app.workspace_dismiss.is_some());
+            app.st.ai.attaching=true;app.sync_workspace_dismiss();assert!(app.workspace_dismiss.is_none());app.st.ai.attaching=false;
+            app.locked=true;app.sync_workspace_dismiss();assert!(app.workspace_dismiss.is_none());app.locked=false;app.collapse();
+            app.st.settings.search.keep_open=true;app.open_search();assert!(app.workspace_dismiss.is_none());app.handle_island(services::workspace_dismiss::OUTSIDE_PRESS,WPARAM(0),LPARAM(helper.0 as isize),&mut deferred);assert!(app.expanded);app.close_search();app.st.settings.search.keep_open=false;
+            // One continuous contact: no 350-ms quiet gap anywhere in this
+            // sequence, and no synthetic touch or mouse input is injected.
+            app.search_gesture=Default::default();
+            for (delta,t,open,search) in [(-80i16,300.0,true,false),(-40,300.08,true,false),(30,300.24,true,false),(40,300.26,false,false),(20,300.43,false,false),(20,300.57,false,false),(20,300.72,false,false),(80,300.92,false,false),(80,300.94,false,false),(40,300.96,true,true)] {
+                clock::hold(Some(t));app.handle_island(WM_MOUSEHWHEEL,WPARAM((delta as u16 as usize)<<16),LPARAM(0),&mut deferred);
+                assert_eq!((app.expanded,app.st.search.active),(open,search),"continuous-contact gesture at {t}");
+            }
+            app.close_search();
+        }
         clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
     }
 
@@ -5611,6 +6004,26 @@ mod tests {
         assert!(unsafe{PeekMessageW(&mut queued,hwnd,WM_SEARCH_ACTIVATION,WM_SEARCH_ACTIVATION,PM_REMOVE)}.as_bool(),"reentrant deactivation queues a final foreground check");
         unsafe{SetWindowLongPtrW(hwnd,GWLP_WNDPROC,test_proc as *const () as isize);}app.search_lost_activation(helper);assert!(!app.st.search.active);
         app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
+
+    #[test]#[ignore="requires a native desktop; offline tool-result icon fixture"]
+    fn search_tool_results_use_a_small_code_mark_and_powertoys_fallback() {
+        use lumo_core::search::{Entry,Group,Target,Usage};
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));
+        let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;app.st.power.saver=true;app.st.settings.search.apps=false;app.st.settings.search.settings=false;app.st.settings.search.powertoys=true;app.st.settings.search.vscode_commands=true;
+        app.st.search.integrations=vec![
+            Entry::new("code-fixture".into(),"Command Palette".into(),"Project — Visual Studio Code".into(),"",Group::VSCode,Target::AppCommand{window:hwnd.0 as u64,pid:unsafe{windows::Win32::System::Threading::GetCurrentProcessId()},keys:vec![0x11,0x10,0x50]}),
+            Entry::new("toy-ColorPicker".into(),"Color Picker".into(),"PowerToys · Open tool".into(),"",Group::PowerToys,Target::PowerToy{event:"offline-fixture".into()})];
+        for e in &app.st.search.integrations{app.st.store.search_usage.insert(e.id.clone(),Usage{count:1,last:1});}
+        let mut deferred=vec![];
+        for theme in [Theme::Classic,Theme::Pill] {
+            app.st.settings.theme=theme;app.open_search();app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+            assert!(app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.code-result",crate::ui::wid("code-fixture"))));
+            if let Some(dir)=std::env::var_os("LUMO_SEARCH_QA"){let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(dir).join(format!("search-tool-icons-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            app.close_search();
+        }
+        assert!(!app.st.cmds.iter().any(|c|matches!(c,Command::ExecuteSearch(_))));app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
     }
 
     #[test]#[ignore="requires a Windows desktop and installed apps"]
@@ -5914,6 +6327,16 @@ mod tests {
             app.search_web.as_ref().unwrap().parent_moved();app.browser_window.as_mut().unwrap().mark_dirty();app.frame(&mut deferred,None);
             unsafe{let _=windows::Win32::Graphics::Dwm::DwmFlush();}
             app.browser_window.as_mut().unwrap().capture_screen(&mut app.st,&root.join("mini-browser.png"));
+            // Capture an action hint over a real offline WebView, rather than
+            // only the fallback page painted by the toolbar unit fixture.
+            let mut client=RECT::default();unsafe{GetClientRect(mini,&mut client).unwrap();}
+            let scale=app.browser_window.as_ref().unwrap().page_bounds().1;
+            let toolbar=crate::search::browser_toolbar(Rect::new(0.0,0.0,client.right as f32/scale,client.bottom as f32/scale),true);
+            let point=toolbar.pin.center();let x=(point.x*scale).round()as u32;let y=(point.y*scale).round()as u32;
+            app.handle_browser_window(mini,WM_MOUSEMOVE,WPARAM(0),LPARAM(((y<<16)|x)as isize));
+            app.frame(&mut deferred,None);unsafe{let _=windows::Win32::Graphics::Dwm::DwmFlush();}
+            app.browser_window.as_mut().unwrap().capture_screen(&mut app.st,&root.join("mini-browser-action-hint.png"));
+            app.handle_browser_window(mini,0x02a3,WPARAM(0),LPARAM(0));
             app.toggle_mini_browser();app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
         }
         // Pin only prevents automatic dismissal; explicit close still works.
@@ -6142,16 +6565,15 @@ mod tests {
         app.settings_changed(&before);
         assert_eq!(app.st.settings.ai, before.ai);
         assert_eq!(app.st.ai.draft, "Keep this draft");
-        assert!(!app.st.ai.busy && !app.st.ai.full_open && !app.st.ai.snipping);
+        assert!(!app.st.ai.busy && !app.st.ai.full_open);
         assert!(app.ai_window.is_none() && app.ai_ctrl_watch.is_none());
         assert_eq!(app.st.page, PageKind::Addons);
-        app.on_event(AppEvent::Ai(crate::ai::Event::Reply { request: 10, chat: 1, result: Ok(lumo_core::ai::Message { role: "assistant".into(), text: "Late reply".into(), ..Default::default() }), images: vec![] }));
+        app.on_event(AppEvent::Ai(crate::ai::Event::Reply { request: 10, chat: 1, result: Ok(lumo_core::ai::Message { role: "assistant".into(), text: "Late reply".into(), ..Default::default() }), images: vec![], unavailable: None }));
         assert!(app.st.ai.ready_reply.is_none());
         assert_eq!(app.st.ai.current.messages.len(), message_count);
         app.st.cmd(Command::OpenAiWindow);
-        app.st.cmd(Command::Ai(crate::ai::Action::Snip));
         app.run_commands(&mut vec![]);
-        assert!(app.ai_window.is_none() && !app.st.ai.snipping);
+        assert!(app.ai_window.is_none());
         app.set_page(PageKind::Ai);
         assert_eq!(app.st.page, PageKind::Media);
         app.hovering = true;
@@ -6183,7 +6605,7 @@ mod tests {
                 app.st.page=if activity==1 {PageKind::Focus}else{PageKind::Media};app.expanded=true;app.hovering=true;app.mode=Mode::Expanded(app.st.page);
                 app.layout_surface();app.island.snap(app.geom_for(&app.mode));app.frame(&mut deferred,None);
                 app.st.ai.busy=true;app.st.ai.request=1;app.st.ai.running_chat=1;
-                app.on_event(AppEvent::Ai(crate::ai::Event::Reply{request:1,chat:1,result:Ok(lumo_core::ai::Message{role:"assistant".into(),text:"# Answer ready\nThe result is here.".into(),..Default::default()}),images:vec![]}));
+                app.on_event(AppEvent::Ai(crate::ai::Event::Reply{request:1,chat:1,result:Ok(lumo_core::ai::Message{role:"assistant".into(),text:"# Answer ready\nThe result is here.".into(),..Default::default()}),images:vec![],unavailable:None}));
                 assert!(app.st.notice.as_ref().unwrap().is_ai_reply(),"another open page must not suppress a ready reply");
                 assert!(!app.st.cmds.iter().any(|c|matches!(c,Command::Play(_))));app.st.cmds.clear();
                 app.collapse();app.hovering=false;app.input.mouse=None;
@@ -6210,25 +6632,14 @@ mod tests {
                 assert!(app.expanded);assert_eq!(app.st.page,PageKind::Ai);assert_eq!(app.st.ai.current.id,1,"the notice opens the completed chat");assert!(app.st.ai.ready_reply.is_none());
                 app.handle_island(WM_LBUTTONUP,WPARAM(0),point(at,scale),&mut deferred);app.st.cmds.clear();app.frame(&mut deferred,None);
                 assert_eq!(app.st.page,PageKind::Ai);assert!(!app.fullscreen_hides(app.st.now),"the explicitly opened reply remains visible");
-                // A Compact action under the old bottom edge must not dismiss
-                // the island when Windows reports leaving the smaller panel.
-                app.resize_ai_chat(app.st.ai.max_island_height,false);app.island.snap(app.geom_for(&Mode::Expanded(PageKind::Ai)));app.frame(&mut deferred,None);
-                let old=app.island.body_rect_at(app.cx);app.input.mouse=Some(Point::new(old.center().x,old.bottom()-30.0));
-                app.st.cmd(Command::AiHeight(240.0));app.run_commands(&mut deferred);
-                app.handle_island(WM_MOUSELEAVE,WPARAM(0),LPARAM(0),&mut deferred);app.on_timer(TIMER_COLLAPSE);
-                app.island.snap(app.geom_for(&Mode::Expanded(PageKind::Ai)));app.frame(&mut deferred,None);
-                assert!(app.expanded && app.ai_resize_hold.is_some(),"compacting keeps the smaller chat open");
-                let body=app.island.body_rect_at(app.cx);let at=Point::new(body.center().x,body.y+20.0);
-                app.input.mouse=Some(at);app.frame(&mut deferred,None);
-                assert!(app.ai_resize_hold.is_some() && app.expanded,"cached coordinates cannot release a compacting hold");
-                app.handle_island(WM_MOUSEMOVE,WPARAM(0),point(at,scale),&mut deferred);assert!(app.ai_resize_hold.is_none());
-                app.handle_island(WM_MOUSELEAVE,WPARAM(0),LPARAM(0),&mut deferred);app.frame(&mut deferred,None);assert!(!app.expanded);
+                app.st.settings.ai.keep_open=false;
+                app.search_lost_activation(helper);assert!(!app.expanded,"outside activation closes the unpinned AI surface after reading its reply");
                 app.fullscreen_on=false;app.apply_fullscreen(app.st.now);app.st.cmds.clear();
                 if activity==0 {
                     let popup=crate::ai_window::AiWindow::new().unwrap();let popup_hwnd=popup.hwnd;
                     app.ai_window=Some(popup);app.st.ai.full_open=true;app.hovering=false;app.input.mouse=None;
                     app.handle_ai_window(popup_hwnd,WM_CLOSE,WPARAM(0),LPARAM(0));app.st.cmds.clear();app.on_event(AppEvent::Foreground);app.on_timer(TIMER_COLLAPSE);
-                    app.frame(&mut deferred,None);assert!(app.expanded && app.st.page==PageKind::Ai && app.ai_resize_hold.is_some(),"returning from the popup keeps the island open");
+                    app.frame(&mut deferred,None);assert!(!app.expanded&&app.ai_window.is_none(),"closing the mini window does not reopen the island");
                     app.collapse();
                 }
             }
@@ -6236,45 +6647,18 @@ mod tests {
         clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
     }
     #[test]#[ignore="requires a Windows desktop"]
-    fn markdown_hover_actions_ctrl_shortcut_and_mid_screen_resize(){
+    fn markdown_hover_actions_ctrl_shortcut_and_browser_sized_workspace(){
         unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
         window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;let mut deferred=vec![];
         for (index,theme)in [Theme::Classic,Theme::Pill].into_iter().enumerate(){
             clock::hold(Some(800.0+index as f64*20.0));let sample=crate::ai_window::sample_state_for_selftest();app.st.ai=sample.ai;app.st.ai.current.messages[1].text=crate::ai_window::markdown_fixture().into();app.st.settings.ai=sample.settings.ai;app.st.settings.set_addon("ai",true);app.st.settings.theme=theme;app.st.page=PageKind::Ai;app.st.pinned=true;app.st.notice=None;app.expanded=true;app.mode=Mode::Expanded(PageKind::Ai);app.hovering=true;app.input.mouse=None;app.layout_surface();app.island.snap(app.geom_for(&app.mode));app.frame(&mut deferred,None);
             assert!(!app.hits.iter().any(|h|h.id==wid("ai.copy.1")),"message actions stay hidden without hover");
-            app.st.cmd(Command::AiHeight(app.st.ai.max_island_height));app.run_commands(&mut deferred);app.island.snap(app.geom_for(&app.mode));app.frame(&mut deferred,None);
-            let body=app.island.body_rect_at(app.cx);let middle=app.monitor.work.top+(app.monitor.work.bottom-app.monitor.work.top)/2;let bottom=app.surface.y+(body.bottom()*app.gfx.scale()).round() as i32;
-            if app.st.ai.max_island_height>245.0{assert!(bottom<=middle+2,"expanded chat must stop at the desktop middle: {bottom} > {middle}");}
-            let area=pages::content_area(body);app.input.mouse=Some(Point::new(area.x+110.0,area.y+145.0));app.frame(&mut deferred,None);
-            assert!(app.hits.iter().any(|h|h.id==wid("ai.resize-grip")));
-            if let Some(root)=std::env::var_os("LUMO_AI_QA"){let root=std::path::PathBuf::from(root);std::fs::create_dir_all(&root).unwrap();let(w,h,p,_) = app.selftest_capture();crate::png::save_rgba(root.join(format!("markdown-expanded-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            let body=app.island.body_rect_at(app.cx);assert!((body.w-crate::search::WIDTH).abs()<1.0&&body.h>400.0,"AI uses browser geometry");
+            assert!(!app.hits.iter().any(|h|h.id==wid("ai.resize-grip")),"old compact-panel grip is removed");
+            let area=body.inset(20.0,16.0);app.input.mouse=Some(Point::new(area.x+110.0,area.y+145.0));app.frame(&mut deferred,None);
             app.st.ai.scroll=f32::MAX;app.frame(&mut deferred,None);
-            assert!(app.hits.iter().any(|h|h.id==wid("ai.copy.1") && h.rect.w<=34.0));assert!(app.hits.iter().any(|h|h.id==wid("ai.markdown.1")));
-            if let Some(root)=std::env::var_os("LUMO_AI_QA"){let root=std::path::PathBuf::from(root);let(w,h,p,_) = app.selftest_capture();crate::png::save_rgba(root.join(format!("markdown-actions-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
-            // Dragging is clamped, and the next closed state releases the larger surface.
-            app.st.cmd(Command::AiHeight(100000.0));app.run_commands(&mut deferred);assert_eq!(app.st.ai.island_height,app.st.ai.max_island_height);
-            if app.st.ai.max_island_height > 245.0 {
-                // Reproduce a grip outrunning the window mask, including a
-                // mouse-up delivered before the final mouse-move can paint.
-                for (start_height,dy) in [(240.0,(app.st.ai.max_island_height-240.0).min(70.0)),(app.st.ai.max_island_height,240.0-app.st.ai.max_island_height)] {
-                    app.st.pinned=false;app.hovering=true;app.resize_ai_chat(start_height,true);app.frame(&mut deferred,None);
-                    let start=app.hits.iter().find(|h|h.id==wid("ai.resize-grip")).unwrap().rect.center();
-                    let point=|p:Point,s:f32|LPARAM(((((p.y*s).round() as i32 as u16) as usize)<<16|((p.x*s).round() as i32 as u16) as usize) as isize);
-                    let scale=app.gfx.scale();
-                    app.handle_island(WM_LBUTTONDOWN,WPARAM(0),point(start,scale),&mut deferred);if dy>0.0{app.frame(&mut deferred,None);}
-                    app.handle_island(WM_MOUSELEAVE,WPARAM(0),LPARAM(0),&mut deferred);
-                    assert!(app.input.mouse.is_some(),"capture retains the drag pointer");
-                    let end=Point::new(start.x,start.y+dy);
-                    app.handle_island(WM_MOUSEMOVE,WPARAM(0),point(end,scale),&mut deferred);
-                    app.handle_island(WM_MOUSELEAVE,WPARAM(0),LPARAM(0),&mut deferred);
-                    app.handle_island(WM_LBUTTONUP,WPARAM(0),point(end,scale),&mut deferred);
-                    if app.gfx.needs_hit_mask(){assert_eq!(app.mask.map(|(mask,_)|mask),Some(app.hit_mask()),"release presents the final input mask before capture ends");}
-                    app.frame(&mut deferred,None);
-                    assert!(app.expanded && app.hovering,"resizing {dy} must not dismiss the chat");
-                    assert!((app.st.ai.island_height-(start_height+dy)).abs()<1.0,"final pointer position is committed without a paint");
-                    assert!(app.st.ai.resize_dragged);
-                }
-            }
+            assert!(app.hits.iter().any(|h|h.id==wid("ai.copy.1")&&h.rect.w<=34.0));assert!(app.hits.iter().any(|h|h.id==wid("ai.markdown.1")));
+            app.st.cmds.clear();
             app.st.pinned=false;app.collapse();app.mode=Mode::Idle;app.st.page=PageKind::Media;app.st.media=None;app.st.notice=None;app.st.hud=None;app.st.settings.idle_style=IdleStyle::Clock;app.st.settings.open_on_hover=false;app.island.snap(app.geom_for(&Mode::Idle));app.hovering=true;app.input.ctrl=false;app.input.mouse=Some(app.island.body_rect_at(app.cx).center());app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.mode));app.input.mouse=Some(app.island.body_rect_at(app.cx).center());app.frame(&mut deferred,None);
             assert!(!app.hits.iter().any(|h|h.id==wid("ai.shortcut")));assert_eq!(app.st.ai.canvas_height,240.0);assert!(app.ai_ctrl_watch.is_some());
             app.locked=true;app.frame(&mut deferred,None);assert!(app.ai_ctrl_watch.is_none());app.locked=false;app.frame(&mut deferred,None);assert!(app.ai_ctrl_watch.is_some());
@@ -6290,7 +6674,7 @@ mod tests {
         unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
         window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;app.layout_surface();let mut deferred=vec![];
         for (i,theme)in [Theme::Classic,Theme::Pill].into_iter().enumerate(){let base=500.0+i as f64*20.0;clock::hold(Some(base));let sample=crate::ai_window::sample_state_for_selftest();app.st.ai=sample.ai;app.st.settings.ai=sample.settings.ai;app.st.settings.set_addon("ai",true);app.st.settings.theme=theme;app.st.page=PageKind::Ai;app.st.aside=false;app.st.notice=None;app.expanded=true;app.st.pinned=true;app.mode=Mode::Expanded(PageKind::Ai);app.layout_surface();app.island.snap(app.geom_for(&app.mode));app.frame(&mut deferred,None);
-            assert!(app.hits.iter().any(|h|h.id==wid("ai.prompt")));assert!(app.hits.iter().any(|h|h.id==wid("ai.send")));
+            assert!(app.hits.iter().any(|h|h.id==wid("ai.prompt")));assert!(!app.hits.iter().any(|h|h.id==wid("ai.send")),"empty composer disables Send");
             if let Some(root)=std::env::var_os("LUMO_AI_QA"){let root=std::path::PathBuf::from(root);std::fs::create_dir_all(&root).unwrap();let(w,h,pixels,_)=app.selftest_capture();crate::png::save_rgba(&root.join(format!("compact-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&pixels)).unwrap();}
             app.st.ai.model_menu=true;app.frame(&mut deferred,None);let model=app.hits.iter().find(|h|h.id==crate::ui::wid_n("ai.model",0)).unwrap().rect;app.input.mouse=Some(model.center());app.frame(&mut deferred,None);assert_eq!(pages::ai::next_wake(&app.st),Some(app.st.now+1.0));clock::hold(Some(base+1.1));app.frame(&mut deferred,None);assert!(pages::ai::next_wake(&app.st).is_none());app.st.ai.model_menu=false;
             app.st.ai.model_menu=true;app.st.ai.attach_menu=true;app.collapse();assert!(!app.st.ai.model_menu && !app.st.ai.attach_menu,"closing the island dismisses transient popovers");app.expand();app.island.snap(app.geom_for(&Mode::Expanded(PageKind::Ai)));app.frame(&mut deferred,None);assert!(!app.st.ai.model_menu,"reopening returns to chat");
@@ -6303,10 +6687,10 @@ mod tests {
             app.frame(&mut deferred,None);
             assert!(app.st.ai.model_menu && !app.st.ai.reasoning_menu);
             let picker=app.hits.iter().find(|h|h.id==wid("ai.model-surface")).unwrap().rect;
-            assert!(picker.y>=app.island.body_rect_at(app.cx).bottom(),"the compact model picker opens below the island");
+            assert!(picker.y>=app.island.body_rect_at(app.cx).y&&picker.bottom()<=app.island.body_rect_at(app.cx).bottom(),"the model picker stays inside the workspace");
             assert!(picker.h>=240.0 && picker.w>=400.0,"the picker must have room to browse");
             assert!(app.hit_mask().contains(picker.center()),"the entire detached picker receives input");
-            assert!(!app.hit_mask().contains(Point::new(app.island.body_rect_at(app.cx).x + 4.0, picker.center().y)),"desktop beside the picker stays click-through");
+            assert!(!app.hit_mask().contains(Point::new(app.island.body_rect_at(app.cx).right()+40.0,picker.center().y)),"desktop beyond the workspace stays click-through");
             if let Some(root)=std::env::var_os("LUMO_AI_QA"){let(w,h,pixels,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(root).join(format!("compact-models-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&pixels)).unwrap();}
             app.input.clicked=Some((crate::ui::wid_n("ai.model",0),MouseButton::Left));app.frame(&mut deferred,None);app.frame(&mut deferred,None);
             assert!(app.st.ai.model_menu && app.st.ai.reasoning_menu,"a starred model opens its effort controls below compact chat");
@@ -6321,22 +6705,23 @@ mod tests {
             app.handle_island(WM_MOUSEMOVE,WPARAM(0),point(bridge,app.gfx.scale()),&mut deferred);
             app.frame(&mut deferred,None);
             assert!(app.expanded && app.hovering,"moving across the picker gap must not collapse chat");
-            app.input.clicked=Some((wid("ai.model-filters"),MouseButton::Left));app.frame(&mut deferred,None);
+            app.focus_text();app.input.clicked=Some((wid("ai.model-filters"),MouseButton::Left));app.frame(&mut deferred,None);assert!(app.text_focus,"opening model filters must not blur the workspace window");
             assert!(app.st.ai.model_filters_open);
             assert!([1,2,4,8].into_iter().all(|mask|app.hits.iter().any(|h|h.id==crate::ui::wid_n("ai.model-filter",mask))));
             if let Some(root)=std::env::var_os("LUMO_AI_QA"){let(w,h,pixels,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(root).join(format!("compact-filters-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&pixels)).unwrap();}
-            let draft="Keep this unfinished message";app.st.ai.draft=draft.into();
+            let draft="Keep this unfinished message";app.st.ai.draft=draft.into();app.frame(&mut deferred,None);
             let send=app.hits.iter().find(|h|h.id==wid("ai.send")).unwrap().rect.center();
             let lp=point(send,app.gfx.scale());
             app.handle_island(WM_LBUTTONDOWN,WPARAM(0),lp,&mut deferred);app.frame(&mut deferred,None);
             assert!(!app.st.ai.model_menu && app.expanded && app.input.pressed_id.is_none(),"clicking chat dismisses the picker and consumes the press");
+            assert!(app.text_focus&&app.input.focused==Some(wid("ai.prompt")),"dismissal returns to the composer without activating another app");
             app.handle_island(WM_LBUTTONUP,WPARAM(0),lp,&mut deferred);app.frame(&mut deferred,None);
             assert_eq!(app.st.ai.draft,draft,"dismissing above Send must never submit the message");
             app.st.pinned=true;app.st.ai.model_menu=true;app.frame(&mut deferred,None);
             app.handle_island(WM_KEYDOWN,WPARAM(VK_ESCAPE.0 as usize),LPARAM(0),&mut deferred);assert!(app.expanded && !app.st.ai.model_menu,"Escape dismisses the picker without closing chat");
             let popup=crate::ai_window::AiWindow::new().unwrap();let popup_hwnd=popup.hwnd;app.ai_window=Some(popup);app.st.ai.full_open=true;app.st.ai.model_menu=true;
             app.handle_ai_window(popup_hwnd,WM_KEYDOWN,WPARAM(VK_ESCAPE.0 as usize),LPARAM(0));assert!(app.ai_window.is_some() && !app.st.ai.model_menu,"Escape keeps the full chat open");app.ai_window=None;app.st.ai.full_open=false;
-            app.st.ai.busy=true;app.st.ai.request=8;app.st.ai.running_chat=1;app.expanded=false;app.st.pinned=false;app.fullscreen_on=true;app.st.settings.hide_in_fullscreen=true;app.st.notice=None;assert!(app.fullscreen_hides(app.st.now));app.on_event(AppEvent::Ai(crate::ai::Event::Reply{request:8,chat:1,result:Ok(lumo_core::ai::Message{role:"assistant".into(),text:"Ready".into(),..Default::default()}),images:vec![]}));assert!(!app.fullscreen_hides(app.st.now));assert!(!app.st.cmds.iter().any(|c|matches!(c,Command::Play(_))));app.widgets_open=true;assert!(app.fullscreen_hides(app.st.now));app.widgets_open=false;clock::hold(Some(base+10.0));app.st.now=base+10.0;app.tick();assert!(!app.fullscreen_hides(app.st.now));crate::ai::clear_ready(&mut app.st);assert!(app.fullscreen_hides(app.st.now));app.fullscreen_on=false;app.apply_fullscreen(app.st.now);
+            app.st.ai.busy=true;app.st.ai.request=8;app.st.ai.running_chat=1;app.expanded=false;app.st.pinned=false;app.fullscreen_on=true;app.st.settings.hide_in_fullscreen=true;app.st.notice=None;assert!(app.fullscreen_hides(app.st.now));app.on_event(AppEvent::Ai(crate::ai::Event::Reply{request:8,chat:1,result:Ok(lumo_core::ai::Message{role:"assistant".into(),text:"Ready".into(),..Default::default()}),images:vec![],unavailable:None}));assert!(!app.fullscreen_hides(app.st.now));assert!(!app.st.cmds.iter().any(|c|matches!(c,Command::Play(_))));app.widgets_open=true;assert!(app.fullscreen_hides(app.st.now));app.widgets_open=false;clock::hold(Some(base+10.0));app.st.now=base+10.0;app.tick();assert!(!app.fullscreen_hides(app.st.now));crate::ai::clear_ready(&mut app.st);assert!(app.fullscreen_hides(app.st.now));app.fullscreen_on=false;app.apply_fullscreen(app.st.now);
             // Do not execute fixture persistence commands against the user's profile.
             app.st.cmds.clear();
         }

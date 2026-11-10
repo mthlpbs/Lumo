@@ -125,6 +125,7 @@ pub struct View {
     results: Vec<usize>,
     pub selected: usize,
     scroll: usize,
+    list_scroll: ListScroll,
     dirty: bool,
     pub suggestions: Vec<String>,
 }
@@ -136,11 +137,13 @@ impl View {
             results: vec![],
             selected: 0,
             scroll: 0,
+            list_scroll: ListScroll::default(),
             dirty: true,
             suggestions: vec![],
         }
     }
     pub fn navigate(&mut self, delta: isize) {
+        self.list_scroll.reveal = true;
         let count=if self.results.is_empty() && !self.suggestions.is_empty(){self.suggestions.len()+1}else{self.results.len()};
         self.selected = (self.selected as isize + delta)
             .clamp(0, count.saturating_sub(1) as isize)
@@ -207,6 +210,41 @@ impl View {
     pub fn can_suggest(&self,st:&AppState)->bool {
         st.search.active && !st.search.embedded() && st.settings.search.web && st.settings.search.google_suggestions
             && self.results.is_empty() && !Self::pending(st) && self.query.trim().chars().count()>=2 && direct_address(&self.query).is_none()
+    }
+}
+
+/// Pixel scrolling preserves precision-pad deltas. Frames stop as soon as
+/// the existing critically damped spring settles, with no idle timer.
+#[derive(Default)]
+struct ListScroll {
+    position: f32,
+    target: f32,
+    velocity: f32,
+    last: Option<f64>,
+    reveal: bool,
+}
+impl ListScroll {
+    fn update(&mut self, wheel: f32, height: f32, count: usize, selected: usize, now: f64, animate: bool) -> bool {
+        let max = (count as f32 * ROW - height).max(0.0);
+        self.target = (self.target - wheel * ROW).clamp(0.0, max);
+        if self.reveal {
+            let top = selected as f32 * ROW;
+            if top < self.target { self.target = top; }
+            if top + ROW > self.target + height { self.target = top + ROW - height; }
+            self.target = self.target.clamp(0.0, max);
+            self.reveal = false;
+        }
+        self.position = self.position.clamp(0.0, max);
+        let dt = self.last.map_or(1.0 / 60.0, |last| (now - last).clamp(0.0, 0.05) as f32);
+        self.last = Some(now);
+        if !animate { self.position = self.target; self.velocity = 0.0; return false; }
+        let dt = crate::pages::media::step_dt(dt, self.velocity, self.position, self.target);
+        crate::pages::media::follow(&mut self.position, &mut self.velocity, self.target, 26.0, dt);
+        if self.position < 0.0 || self.position > max {
+            self.position = self.position.clamp(0.0, max);
+            self.velocity = 0.0;
+        }
+        !crate::pages::media::settle(&mut self.position, &mut self.velocity, self.target, 0.15, 2.0)
     }
 }
 pub fn apply_suggestions(st:&mut AppState,event:SuggestionsEvent){
@@ -298,7 +336,7 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
         wid("search.query"),
         rect(24.0, 16.0, body.w - 48.0, 40.0),
         &mut view.query,
-        "Search apps, settings and actions",
+        "",
         128,
         st.accent,
     );
@@ -307,6 +345,7 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
         view.dirty = true;
         view.selected = 0;
         view.scroll = 0;
+        view.list_scroll = ListScroll::default();
         view.entries = entries(st);
         view.suggestions.clear();
     }
@@ -316,14 +355,8 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
     {
         view.rank(st);
         let visible = ((body.h - LIST_TOP - 16.0) / ROW).floor().max(1.0) as usize;
-        if ui.input.wheel != 0.0 {
+        if view.results.is_empty() && ui.input.wheel != 0.0 {
             view.navigate(-ui.input.wheel.signum() as isize);
-        }
-        if view.selected < view.scroll {
-            view.scroll = view.selected;
-        }
-        if view.selected >= view.scroll + visible {
-            view.scroll = view.selected + 1 - visible;
         }
         let viewport = rect(
             18.0,
@@ -331,6 +364,9 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
             body.w - 36.0,
             (body.h - LIST_TOP - 16.0-if st.search.notice.is_empty(){0.0}else{32.0}).max(0.0),
         );
+        if view.list_scroll.update(ui.input.wheel, viewport.h, view.results.len(), view.selected, ui.now, !st.power.saver) {
+            ui.request_anim();
+        }
         ui.c.clip(viewport);
         let mut web_fallback = None;
         if view.results.is_empty() {
@@ -429,10 +465,14 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
                 );
             }
         }
-        for (row, position) in (view.scroll..view.results.len()).take(visible).enumerate() {
+        let first = (view.list_scroll.position / ROW).floor() as usize;
+        for position in (first..view.results.len()).take(visible + 2) {
             let entry = &view.entries[view.results[position]];
-            let r = rect(20.0, LIST_TOP + row as f32 * ROW, body.w - 40.0, ROW - 2.0);
-            let response = ui.button(result_id(entry,position), r);
+            let r = rect(20.0, LIST_TOP + position as f32 * ROW - view.list_scroll.position, body.w - 40.0, ROW - 2.0);
+            let top = r.y.max(viewport.y);
+            let bottom = r.bottom().min(viewport.bottom());
+            if bottom <= top { continue; }
+            let response = ui.button(result_id(entry,position), Rect::new(r.x, top, r.w, bottom - top));
             let selected = position == view.selected;
             if selected || response.hovered || response.pressed {
                 ui.c.fill_rrect(
@@ -453,25 +493,23 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
                 ui.c.fill_rrect(Rect::new(r.x + 4.0, r.center().y - 8.0, 2.0, 16.0), 1.0, st.accent);
             }
             let badge = Rect::new(r.x + 14.0, r.center().y - 12.0, 24.0, 24.0);
-            if let Some(Some(image)) = st.search.icons.get(&entry.id) {
+            if entry.group==Group::VSCode {
+                // A small source mark, rather than a full app-size command icon.
+                ui.c.icon(Icon::VsCode,Rect::new(badge.x+5.0,badge.center().y-7.0,14.0,14.0),Color::hex(0x48ACF0));
+            } else if let Some(Some(image)) = st.search.icons.get(&entry.id) {
                 ui.c.image(image, badge, 0.0);
             } else {
                 let icon = match entry.target {
                     Target::App(_) => Icon::App,
-                    Target::Windows(_) => Icon::Gear,
-                    Target::Service(_) => Icon::Gear,
-                    Target::PowerToy{..} => Icon::App,
+                    Target::Windows(_) | Target::Service(_) => Icon::Gear,
+                    _ if entry.group==Group::PowerToys=>power_toy_glyph(&entry.id),
                     Target::Launch{..}|Target::AppCommand{..}=>Icon::App,
                     _ => Icon::Search,
                 };
-                ui.c.icon(icon, badge.inset(2.0, 2.0), palette::TEXT_DIM);
-                if st.search.active
-                    && st.search.icon_pending.is_none()
-                    && !st.power.saver
-                    && !st.search.icons.contains_key(&entry.id)
-                    && matches!(entry.target, Target::App(_))
-                {
-                    missing.push((entry.id.clone(), entry.target.clone()));
+                ui.c.icon(icon,badge.inset(2.0,2.0),if entry.group==Group::PowerToys{Color::hex(0xA6C9FA)}else{palette::TEXT_DIM});
+                if st.search.active && st.search.icon_pending.is_none() && !st.power.saver && !st.search.icons.contains_key(&entry.id) {
+                    if matches!(entry.target,Target::App(_)){missing.push((entry.id.clone(),entry.target.clone()));}
+                    else if let Some(path)=&entry.icon_path {missing.push((entry.id.clone(),Target::Launch{path:path.clone(),arguments:String::new()}));}
                 }
             }
             let is_service=matches!(entry.target,Target::Service(_));
@@ -486,7 +524,7 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
             let mut service_clicked=false;
             if let Target::Service(service)=&entry.target{
                 let action=if service.can_start(){Some((true,"Start"))}else if service.can_stop(){Some((false,"Stop"))}else{None};
-                if let Some((start,label))=action{let at=Rect::new(r.right()-76.0,r.y+5.0,68.0,28.0);
+                if let Some((start,label))=action.filter(|_| r.y >= viewport.y && r.bottom() <= viewport.bottom()){let at=Rect::new(r.right()-76.0,r.y+5.0,68.0,28.0);
                     // Both identity and operation stay stable across async
                     // ranking/state refreshes between mouse-down and mouse-up.
                     if !st.search.action_pending && ui.pill(service_action_id(&service.name,start),at,label,None,crate::ui::PillStyle::Utility).clicked{st.cmd(Command::SearchService{name:service.name.clone(),start});service_clicked=true;}
@@ -497,9 +535,10 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
             }
         }
         if view.results.len() > visible {
-            let h = (viewport.h * visible as f32 / view.results.len() as f32).max(18.0);
+            let total = view.results.len() as f32 * ROW;
+            let h = (viewport.h * viewport.h / total).max(18.0).min(viewport.h);
             let y = viewport.y
-                + (viewport.h - h) * view.scroll as f32 / (view.results.len() - visible) as f32;
+                + (viewport.h - h) * view.list_scroll.position / (total - viewport.h).max(1.0);
             ui.c.fill_rrect(
                 Rect::new(body.right() - 12.0, y, 2.0, h),
                 1.0,
@@ -547,6 +586,18 @@ fn browser_target(query: &str, engine: lumo_core::search::Engine) -> Target {
 }
 
 /// One geometry for drawing, native clipping and pointer input, at every DPI.
+fn power_toy_glyph(id:&str)->crate::icons::Icon {
+    use crate::icons::Icon;
+    if id.contains("ColorPicker"){Icon::Eyedropper}
+    else if id.contains("FancyZones")||id.contains("Workspaces"){Icon::App}
+    else if id.contains("Awake"){Icon::Coffee}
+    else if id.contains("PowerOcr"){Icon::Script}
+    else if id.contains("Image")||id.contains("Peek"){Icon::Image}
+    else if id.contains("Paste"){Icon::Clipboard}
+    else if id.contains("AlwaysOnTop"){Icon::Pin}
+    else{Icon::Bolt}
+}
+
 pub fn web_rect(body: lumo_core::geom::Rect) -> lumo_core::geom::Rect {
     let top=76.0;
     lumo_core::geom::Rect::new(body.x + 16.0, body.y + top, body.w - 32.0, (body.h - top - 16.0).max(1.0))
@@ -686,7 +737,7 @@ pub(crate) fn draw_browser(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo
         ]{
             if r.w<=0.0{continue;}
             if enabled{let response=ui.icon_button(wid(id),r,icon,palette::TEXT_DIM,17.0);if response.clicked{st.cmd(action);}if response.hovered{tip=Some(label);}}
-            else{ui.c.icon(icon,r.inset(6.0,6.0),palette::TEXT_FAINT.mul_alpha(0.45));}
+            else{ui.c.icon(icon,r.inset(6.0,6.0),palette::TEXT_FAINT.mul_alpha(0.45));if ui.hovered(r){tip=Some("No next page in browser history");}}
         }
         if let Some(r)=toolbar.more{let response=ui.button(wid("search.more"),r);if response.hovered{ui.c.fill_rrect(r,8.0,Color::white(0.08));tip=Some("More browser actions");}ui.c.text("⋯",r,&TextStyle::body().center());if response.clicked{st.cmd(Command::SearchBrowserMenu(r.center()));}}
         if let Some(r)=toolbar.close{let response=ui.icon_button(wid("search.close"),r,Icon::Close,palette::TEXT_DIM,17.0);if response.clicked{st.cmd(Command::CloseMiniBrowser);}if response.hovered{tip=Some("Close mini browser");}}
@@ -753,6 +804,8 @@ pub(crate) fn draw_browser(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo
             if response.clicked{if let Some(url)=st.settings.search.engine.url(&st.search.address_suggestions[i]){st.cmd(Command::NavigateSearchWeb(url));ui.input.focused=None;st.search.address_editing=false;st.search.address_dirty=false;st.search.address_suggestions.clear();break;}}
         }
     }
+    // Keep hints in the chrome: the native WebView sits above our visual
+    // surface, so drawing below the toolbar would hide part of the label.
     draw_toolbar_tip_at(ui, body, tip,4.0);
 }
 fn draw_browser_controls(
@@ -820,7 +873,7 @@ fn draw_toolbar_tip(ui: &mut crate::ui::Ui, body: lumo_core::geom::Rect, tip: Op
 fn draw_toolbar_tip_at(ui: &mut crate::ui::Ui, body: lumo_core::geom::Rect, tip: Option<&str>, top:f32) {
     use crate::gfx::TextStyle;
     use lumo_core::geom::{Color, Rect};
-    // The visual surface keeps toolbar hints above the native webpage.
+    // The caller keeps the hint clear of any native webpage aperture.
     if let Some(tip) = tip {
         let style = TextStyle::footnote();
         let w = (ui.c.measure(tip, &style, body.w - 48.0).0 + 24.0).min(body.w - 48.0);
@@ -839,6 +892,27 @@ fn draw_toolbar_tip_at(ui: &mut crate::ui::Ui, body: lumo_core::geom::Rect, tip:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pixel_scroll_preserves_small_deltas_settles_and_reveals_keyboard_selection() {
+        let mut scroll = super::ListScroll::default();
+        assert!(scroll.update(-0.125, 200.0, 20, 0, 1.0, true));
+        assert_eq!(scroll.target, 5.0);
+        assert!(scroll.position > 0.0 && scroll.position < 5.0);
+        let mut moving = true;
+        for frame in 1..=120 { moving = scroll.update(0.0, 200.0, 20, 0, 1.0 + frame as f64 / 60.0, true); }
+        assert!(!moving);
+        assert_eq!(scroll.position, 5.0);
+        scroll.reveal = true;
+        scroll.update(0.0, 200.0, 20, 19, 4.0, false);
+        assert_eq!(scroll.position, 600.0);
+        scroll.reveal = true;
+        scroll.update(0.0, 200.0, 20, 0, 5.0, false);
+        assert_eq!(scroll.position, 0.0);
+        scroll.update(-100.0, 200.0, 20, 0, 6.0, false);
+        assert_eq!(scroll.position, 600.0);
+        scroll.update(0.0, 40.0, 1, 0, 7.0, true);
+        assert_eq!(scroll.position, 0.0);
+    }
     #[test]#[ignore="uses an isolated, hidden native window; no Code app is launched"]
     fn closed_code_windows_disappear_from_cached_results(){unsafe{
         use windows::{core::w,Win32::{System::Threading::GetCurrentProcessId,UI::WindowsAndMessaging::*}};

@@ -245,6 +245,7 @@ pub struct PhoneDrop {
     /// The link the QR code carries (empty while starting or after an error).
     pub url: String,
     pub qr: Option<QrMatrix>,
+    pub pc_name: String,
     /// Why it couldn't start, as a sentence for the island.
     pub error: Option<String>,
     /// The kind of phone that last opened the page ("iPhone").
@@ -271,6 +272,7 @@ impl PhoneDrop {
 pub struct PageUiState {
     pub choosing_music_dir: bool,
     pub choosing_lyrics_dir: bool,
+    pub choosing_phone_dir: bool,
     pub task_input: String,
     pub task_scroll: f32,
     pub clip_scroll: f32,
@@ -346,6 +348,7 @@ pub struct ForegroundApp {
 }
 
 pub struct AppState {
+    pub closed_view:lumo_core::settings::ClosedView,
     pub search: crate::search::State,
     pub ai: crate::ai::State,
     pub foreground_app: Option<ForegroundApp>,
@@ -441,6 +444,7 @@ impl AppState {
             &settings.start_page
         });
         let mut st = Self {
+            closed_view:Default::default(),
             search: crate::search::State::default(),
             ai: crate::ai::State::default(),
             settings,

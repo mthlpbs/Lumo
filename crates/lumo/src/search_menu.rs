@@ -29,13 +29,13 @@ unsafe fn verb_id(menu:HMENU,context:&IContextMenu,verb:&str)->Option<u32>{
 }
 fn items(entry:&Entry,frequent:bool,copy:Option<&(String,String)>,admin:bool)->Vec<Item>{
     let label=match entry.target{Target::Service(_)=>"Open Windows Services",Target::AppCommand{..}=>"Run command",Target::PowerToy{..}=>"Open tool",Target::Launch{..}=>"Open settings",_=>"Open"};
-    let mut items=vec![Item::new(OPEN,label,'\u{e8a7}')];
-    if matches!(entry.target,Target::App(_)){items.push(Item::new(ADMIN,"Open as administrator",'\u{e83d}').disabled(!admin));}
+    let mut items=vec![Item::new(OPEN,label,'\u{e8a7}').primary()];
+    if matches!(entry.target,Target::App(_)){items.push(Item::new(ADMIN,"Run as administrator",'\u{e83d}').disabled(!admin));}
     if let Target::Service(service)=&entry.target{if service.can_start(){items.push(Item::new(START_SERVICE,"Start service",'\u{e768}'));}if service.can_stop(){items.push(Item::new(STOP_SERVICE,"Stop service",'\u{e71a}'));}}
     if let Some((label,_))=copy{items.push(Item::separator());items.push(Item::new(COPY,label,'\u{e8c8}'));}
-    if matches!(entry.target,Target::App(_)){items.push(Item::new(ICON_FILE,"Copy icon file (.ico)",'\u{e8a5}'));items.push(Item::new(ICON_IMAGE,"Copy icon image",'\u{e91b}'));}
+    if matches!(entry.target,Target::App(_)){items.push(Item::new(ICON_FILE,"Copy icon file",'\u{e8a5}'));items.push(Item::new(ICON_IMAGE,"Copy icon image",'\u{e91b}'));}
     if matches!(entry.target,Target::Web{..}){items.push(Item::new(BROWSER,"Open in default browser",'\u{e8a7}'));}
-    if frequent{items.push(Item::separator());items.push(Item::new(FORGET,"Remove from frequent results",'\u{e74d}'));}items
+    if frequent{items.push(Item::separator());items.push(Item::new(FORGET,"Remove from frequent",'\u{e74d}'));}items
 }
 pub fn show(owner:HWND,entry:&Entry,point:POINT,frequent:bool)->Action{unsafe{
     let hidden=CreatePopupMenu().ok();let context=hidden.and_then(|menu|build_shell(owner,&entry.target,menu).ok());let admin=hidden.zip(context.as_ref()).and_then(|(m,c)|verb_id(m,c,"runas"));

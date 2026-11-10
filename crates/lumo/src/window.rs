@@ -23,6 +23,56 @@ pub const ISLAND_CLASS: PCWSTR = w!("Lumo.Island");
 pub const HELPER_CLASS: PCWSTR = w!("Lumo.Helper");
 pub const VISUAL_CLASS: PCWSTR = w!("Lumo.Visual");
 
+/// Rounded layered windows have transparent outer corners. A tiny intersection
+/// of edge strips is unreachable there, so use a visible 28-DIP corner target.
+/// Windows owns the actual diagonal sizing loop and cursor; no polling needed.
+pub(crate) fn mini_resize_hit(p: POINT, r: RECT, scale: f32) -> Option<u32> {
+    let edge = (7.0 * scale).round() as i32;
+    let corner = (28.0 * scale).round() as i32;
+    let left = p.x < r.left + corner;
+    let right = p.x >= r.right - corner;
+    let top = p.y < r.top + corner;
+    let bottom = p.y >= r.bottom - corner;
+    match (left,right,top,bottom) {
+        (true,_,true,_) => Some(HTTOPLEFT),
+        (_,true,true,_) => Some(HTTOPRIGHT),
+        (true,_,_,true) => Some(HTBOTTOMLEFT),
+        (_,true,_,true) => Some(HTBOTTOMRIGHT),
+        _ if p.x < r.left + edge => Some(HTLEFT),
+        _ if p.x >= r.right - edge => Some(HTRIGHT),
+        _ if p.y < r.top + edge => Some(HTTOP),
+        _ if p.y >= r.bottom - edge => Some(HTBOTTOM),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn check_mini_resize_corners(hwnd:HWND,scale:f32,mut hit:impl FnMut(LPARAM)->Option<windows::Win32::Foundation::LRESULT>) {
+    let mut r=RECT::default();unsafe{GetWindowRect(hwnd,&mut r).unwrap();}
+    let a=(18.0*scale).round()as i32;
+    for (x,y,want) in [(r.left+a,r.top+a,HTTOPLEFT),(r.right-a,r.top+a,HTTOPRIGHT),(r.left+a,r.bottom-a,HTBOTTOMLEFT),(r.right-a,r.bottom-a,HTBOTTOMRIGHT)] {
+        let lp=LPARAM(((x as u16 as u32)|((y as u16 as u32)<<16))as isize);
+        assert_eq!(hit(lp).unwrap().0,want as isize,"visible corner at {scale}x");
+    }
+}
+
+#[cfg(test)]
+mod mini_resize_tests {
+    use super::*;
+    #[test]
+    fn rounded_visible_corners_resize_diagonally_at_all_scales() {
+        for scale in [1.0,1.25,1.5,2.0] {
+            let w=(560.0*scale)as i32;let h=(680.0*scale)as i32;
+            let r=RECT{left:0,top:0,right:w,bottom:h};let a=(18.0*scale)as i32;
+            for (x,y,hit) in [(a,a,HTTOPLEFT),(w-a,a,HTTOPRIGHT),(a,h-a,HTBOTTOMLEFT),(w-a,h-a,HTBOTTOMRIGHT),(2,h/2,HTLEFT),(w-2,h/2,HTRIGHT),(w/2,2,HTTOP),(w/2,h-2,HTBOTTOM)] {
+                assert_eq!(mini_resize_hit(POINT{x,y},r,scale),Some(hit));
+            }
+            assert_eq!(mini_resize_hit(POINT{x:w/2,y:h/2},r,scale),None);
+            assert_eq!(mini_resize_hit(POINT{x:w-(40.0*scale)as i32,y:(36.0*scale)as i32},r,scale),None,"toolbar buttons stay clickable");
+        }
+    }
+}
+
 pub type WndProc = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> windows::Win32::Foundation::LRESULT;
 
 /// The visual window takes no input and has next to nothing to handle.

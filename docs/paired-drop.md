@@ -1,3 +1,7 @@
+> Historical implementation notes. Internet pairing was removed from the Windows app.
+> Phone Drop now serves only a local-network page while its panel is open.
+> Current instructions are in [README](../README.md#features).
+
 # Paired phone drop
 
 Pair a phone with Lumo once, by scanning a QR code on the Shelf. After

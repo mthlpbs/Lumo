@@ -12,9 +12,11 @@ To stop lookups, right-click the island or the tray icon and turn off **Synced l
 
 **Apple Music lyrics, only if you turn them on.** If you add your Apple Music token (right-click the island, then **Apple Music lyrics › Use token from clipboard**), Lumo also asks Apple Music for lyrics the way Apple's web player does. It checks the token, searches Apple Music's catalog for the playing song's artist and title, and downloads that song's lyrics. These requests go to Apple (`music.apple.com` and `amp-api.music.apple.com`) and carry your token; the token goes nowhere else. To stop, choose **Remove token** in the same menu.
 
-**Phone drop, only while its panel is open.** When you open Phone drop on the Shelf, Lumo serves a small web page on your local network so your phone can send files to the Shelf and save Shelf files. Only a device on the same network with that session's secret link, which only the QR code carries, can open it. Files go straight between your phone and your PC: nothing passes through the internet or through us. Lumo reads nothing from an upload until you click **Accept**. The page stops working when you click **Done**, or after 10 minutes without a phone.
+**Phone drop, only while its panel is open.** When you open Phone drop on the Shelf, Lumo serves a small web page on your local network so your phone can send files to the Shelf and save Shelf files. Only a device on the same network with that session's secret link, available through the QR code or **Copy link**, can open it. Files go straight between your phone and your PC: nothing passes through the internet or through us. Lumo reads nothing from an upload until you click **Accept**. The page stops working when you click **Done**, or after 10 minutes without a phone.
 
-**Paired phones, only after you pair one.** **Pair a phone** (Shelf › Phone) shows a QR code with a pairing secret made on your PC. The phone that scans it keeps the secret, and so does your PC, sealed so only your Windows account can read it. From then on, while Lumo runs, it keeps one request open at the upstream meeting server, `drop.oyenza.com`, so the phone can find the PC from any network. The server sees your PC's and phone's IP addresses, when they are online, and an address for the pair that is derived from the secret; it never sees the secret itself, a device name, a file name or a file. Every message through it is signed with the secret, so it can't pretend to be your phone or your PC. Files then go straight between phone and PC, encrypted by WebRTC with keys made on the two devices. When both networks block a direct link, they pass through a relay run by Cloudflare that forwards the encrypted bytes and can't read them. To find its own internet address, Lumo also asks a public STUN server (Cloudflare's or Google's) when a phone connects. **Remove** a phone in **Paired phones** and the pair stops working on both sides; with no paired phones, nothing is sent at all.
+**Local address and received files.** Phone Drop uses the PC's LAN IP in a temporary secret link. **Copy link** writes that link to the clipboard only when clicked. New accepted files save directly in Windows Downloads, or the folder chosen in **Settings > General > Phone Drop**. Folder changes apply to new sessions. Previously received files stay in place. Internet pairing has been removed, and saved legacy pair secrets are neither loaded nor used to connect.
+
+**Focus completion lighting.** The optional spotlight draws a soft glow spreading from the island across the upper display when a focus session ends, or when you click **Preview** in Settings > Focus. Its window passes mouse input through and does not take keyboard focus. The effect captures no desktop contents, reads no input and sends no network requests. Its bitmap and window are released when the effect ends, is disabled, or Windows locks, turns off the display or enters battery saver. Automatic completion lighting is off by default.
 
 **Add-ons are built in.** Script reader and Clipboard history require no downloads. Switching either off stops that feature. Prayer times, Health, Money, and Japanese readings are not included.
 
@@ -26,10 +28,44 @@ Nothing else is sent anywhere. Music, volume, Bluetooth battery levels, the date
 
 **The Glass theme reads the screen behind the island, only while it's on.** To bend what's under the island, Lumo copies the part of your screen behind its window (the island and the space it opens into) whenever something there changes. It doesn't copy while the island is hidden, while a full-screen app is in front, or while the PC is locked. The copy stays in your PC's memory and on its graphics card, and each new copy replaces the last. It is never saved, never shown anywhere else and never sent anywhere. While Glass is on, Windows leaves Lumo out of screenshots, screen recordings and screen sharing. Switch to Classic or Oyen to stop both.
 
+**AI companion, only when enabled.** AI uses your configured provider and API
+key. Sending a message sends its conversation context and any selected
+attachments to that provider. Clipboard images and copied image, PDF or text files are
+read only when you paste or choose the paste action. Attachment thumbnails
+are decoded locally; AI does not monitor the clipboard or capture your screen.
+Dropped files are read locally only after you release them onto the open AI
+workspace or its mini window. They are sent to the provider only with Send.
+Opening the workspace, resizing it, switching between island
+and mini window, and using prompt starters do not send a conversation. Existing
+model discovery can contact your configured provider when its model list is
+needed. Provider terms and usage charges apply.
+
+**AI resume and local history.** Keep open and Resume chat are off by default.
+Resume retains the current conversation, unsent draft, pending attachments and
+reading position in memory during this app session; turning it on does not
+save those drafts or attachments to disk. With Resume off, reopening starts a
+fresh chat; closing also clears unsent text and pending attachment/image buffers.
+Saved conversations remain available in local history. Moving to
+the mini window or back always preserves the current state. Saved normal chats
+use the existing Windows-account encryption; temporary chats stay out of saved
+history. Searching history matches local titles and does not contact a provider.
+The gesture, pin, resume and mini-window size preferences are saved in Lumo's
+settings. Mini-window animations and timers stop while locked, display-off or
+battery saver is on; the window is restored without taking focus afterward.
+
 ## What stays on your PC
 
+**Outside-click dismissal.** While an unpinned Search or AI workspace is open,
+Lumo temporarily observes mouse-button presses so it can close even if Windows
+did not activate its window. The callback identifies the clicked window, ignores
+clicks inside Lumo and native menus, and posts a local dismissal message. It does
+not record positions, clicks, window titles, typed text or browsing activity.
+It is removed when the workspace closes, Keep open is on, an attachment picker
+or result menu is active, the screen locks or the display turns off. There is no
+polling, background input log or network request.
+
 **Local Search.** Windows app names and opaque launch identifiers, plus a
-bounded set of native app icons, are cached in memory. Search covers registered
+bounded set of native app/tool icons, are cached in memory. Search covers registered
 apps, Windows Settings and optional local integrations; general file/folder
 search and custom search locations are removed.
 Query text is not logged or saved. Resume page can retain the current query
@@ -95,10 +131,13 @@ Search is closed, except when you explicitly edit a detached mini browser.
 | Your Apple Music token, if you added one, sealed so only your Windows account on this PC can read it | `%LOCALAPPDATA%\Lumo\` |
 | Clipboard history, only while that add-on is on (it's off unless you switch it on) | Memory only, never written to disk. Text that password managers mark as private is skipped. |
 | The Glass theme's copy of the screen behind the island, only while Glass is on | Memory only (the PC's and its graphics card's), replaced by each new copy, never written to disk |
-| Paired phones (their pairing secrets and names), sealed so only your Windows account on this PC can read them | `%LOCALAPPDATA%\Lumo\` |
-| Files you accepted from your phone with Phone drop, and files your paired phones sent | `Downloads\Lumo\`, kept when you uninstall |
+| Legacy paired-phone secrets and names, inactive and sealed for your Windows account | `%LOCALAPPDATA%\Lumo\` |
+| Accepted Phone Drop files | Windows Downloads directly, or your chosen folder, kept when you uninstall |
+| Previously received files | Their existing locations, including `Downloads\Lumo\`, kept when you uninstall |
 
 Uninstalling removes the app, its cache, its log, the add-ons' files, the Apple Music token, the paired phones. If you installed from the Microsoft Store, Windows also removes the files the app created. Data from an earlier copy installed from GitHub stays in `%APPDATA%\Lumo\` until you delete it.
+
+**Retired AI usage add-on.** Lumo no longer reads provider quotas, connects account profiles or schedules usage refreshes. On upgrade it restores any Claude status-line handler installed by the retired add-on, without replacing a handler you edited afterward. This cleanup reads only the old configuration and its handler backup; it performs no provider request.
 
 ## Microsoft Store
 

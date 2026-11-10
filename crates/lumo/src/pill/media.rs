@@ -1,7 +1,7 @@
 //! Music, collapsed (`Activity::Media`): the album art on the left, the
 //! line being sung in the middle ([`super::lyric`]) or, when there is
 //! none, the song ("Title · artist"), the equalizer in the album's colour
-//! on the right, and a glow of that colour along the bottom edge (ref3).
+//! on the right, on a plain black capsule.
 //! The pill is as wide as its text (spec 6.5): the song (up to the width
 //! the spec gives a title, 6.4), or the current lyric line. It grows and
 //! shrinks with the words through the island's existing size spring.
@@ -31,8 +31,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Every collapsed pill is this tall, a capsule (spec 6.1).
 const H: f32 = 32.0;
-/// A song sung with its readings is two rows tall, the line over its
-/// reading in Latin letters (`super::lyric::reads`), in every theme.
+/// Classic can show a reading under its lyric. Pill stays a single row.
 pub(crate) const H_READS: f32 = 46.0;
 /// The pill is its text plus this much: the art and the equalizer with
 /// their gaps, the same on both sides so the text centres (spec 6.5).
@@ -68,12 +67,7 @@ const BAR_HIGH: f32 = 14.0;
 /// Where the bars hold (of their range) while music plays on battery
 /// saver: they stand still there rather than spend a frame a refresh.
 const BARS_STILL: [f32; BARS] = [0.45, 0.85, 0.3, 0.65];
-/// The glow: the bottom 15 DIPs, its alpha rising to 0.55 as t² (spec 6.5,
-/// 6.9), in at most 30 rows (a row a pixel up to 200 %).
-const GLOW_BAND: f32 = 15.0;
-const GLOW_ALPHA: f32 = 0.55;
-const GLOW_ROWS: usize = 30;
-/// Play and pause ease over this long: the glow, the bars, the dimming.
+/// Play and pause ease over this long for the bars, art and text.
 const PLAY_FADE: f64 = 0.2;
 /// Paused, the art and the text are this opaque (the text in every
 /// theme's singing pill).
@@ -104,8 +98,7 @@ pub fn geom(st: &AppState) -> Option<Geom> {
     Some(Geom::new(fit_w(), h, h / 2.0))
 }
 
-/// How tall the music pill is: two rows while the song sings with its
-/// readings, else one.
+/// Pill music stays 32 DIPs tall. Classic supports a second reading row.
 pub(crate) fn height(st: &AppState) -> f32 {
     if super::lyric::reads(st) {
         H_READS
@@ -125,8 +118,6 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, body: Rect) -> bool {
     let cy = body.center().y;
     let accent = st.media_accent();
 
-    // The glow lies under everything else.
-    glow(ui, body, accent, level);
     let art = Rect::new(body.x + ART_INSET, cy - ART / 2.0, ART, ART);
     draw_art(ui, st, art, lerp(PAUSED_ART, 1.0, level));
     // The bars keep moving while they sink at a pause; on battery saver they stand.
@@ -354,41 +345,6 @@ fn bounce(i: usize, t: f64) -> f32 {
     (0.5 + 0.3 * (a * t + p).sin() + 0.2 * (b * t + q).sin()).clamp(0.0, 1.0) as f32
 }
 
-/// The album's colour rising along the bottom edge (ref3): its alpha grows
-/// as t² down the band to the peak at the edge (spec 6.9), one row of
-/// device pixels at a time, each row as wide as the capsule is there. Plain
-/// fills rather than a gradient brush: Wine's Direct2D takes a gradient's
-/// see-through stops as premultiplied and paints them nearly solid (the
-/// self-test showed a white band), and rows need no mask layer to keep
-/// inside the round ends.
-fn glow(ui: &mut Ui, body: Rect, color: Color, level: f32) {
-    let a = GLOW_ALPHA * level;
-    if a <= 0.004 {
-        return;
-    }
-    let s = ui.c.scale().max(0.1);
-    // Rows of whole pixels from the bottom edge up (more than one pixel
-    // each above 200 %, so the band stays at GLOW_ROWS fills).
-    let px = ((GLOW_BAND * s / GLOW_ROWS as f32).ceil()).max(1.0);
-    let rows = ((GLOW_BAND * s / px).round() as usize).clamp(1, GLOW_ROWS);
-    let row = px / s;
-    let bottom = (body.bottom() * s).round() / s;
-    let (r, cy) = (body.h / 2.0, body.center().y);
-    for i in 0..rows {
-        let (y1, y0) = (bottom - i as f32 * row, bottom - (i + 1) as f32 * row);
-        // The capsule's width at the row's edge farther from the middle, so
-        // the row stays inside the round ends.
-        let dy = (y0 - cy).abs().max((y1 - cy).abs());
-        let t = 1.0 - (i as f32 + 0.5) / rows as f32;
-        let alpha = a * t * t;
-        if dy > r || alpha < 0.002 {
-            continue;
-        }
-        let dx = r - (r * r - dy * dy).max(0.0).sqrt();
-        ui.c.fill_rect(Rect::new(body.x + dx, y0, body.w - 2.0 * dx, row), color.mul_alpha(alpha));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +372,54 @@ mod tests {
             track_key: MediaSession::make_track_key(title, "Artist", ""),
         });
         st
+    }
+
+    #[test]
+    #[ignore = "native compact-music fixture; no player or personal files"]
+    fn pill_tracks_keep_one_height_and_a_black_bottom_edge() {
+        use crate::gfx::Gfx;
+        use crate::state::{LyricsState, LyricsStatus};
+        use crate::ui::{Input, Ui};
+        use lumo_core::settings::Theme;
+        use windows::{core::w, Win32::{Foundation::RECT, System::LibraryLoader::GetModuleHandleW, UI::WindowsAndMessaging::*}};
+        let hwnd = unsafe { CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE, w!("STATIC"), w!("Lumo music fixture"), WS_POPUP, 0, 0, 1, 1, None, None, GetModuleHandleW(None).unwrap(), None).unwrap() };
+        let mut gfx = Gfx::static_window(96.0, hwnd).unwrap();
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            gfx.set_dpi(scale * 96.0);
+            for (case, color) in [Color::hex(0xFF2060), Color::hex(0x20FF80), Color::hex(0x4080FF), Color::hex(0xFF8020), Color::hex(0xC040FF)].into_iter().enumerate() {
+                let mut st = playing(&format!("Paper Boats {case}"));
+                st.settings.theme = Theme::Pill; st.power.saver = true; st.now = 100.0;
+                let media = st.media.as_mut().unwrap();
+                media.art_color = Some(color);
+                media.timeline = Timeline::new(if case == 2 { 0.0 } else { 12.0 }, 200.0, st.now, case != 3);
+                if case > 0 {
+                    st.lyrics = LyricsState { track_key: media.track_key.clone(), status: if case == 1 { LyricsStatus::Loading } else { LyricsStatus::Found }, lyrics: Some(lumo_core::lrc::parse_lrc("[00:10.00]紙の舟よ\n[00:14.00]Paper boats\n")), ..Default::default() };
+                    st.lyrics.ruby = vec![vec![lumo_core::romanize::Ruby { text: "紙の舟よ".into(), roman: "kami no fune yo".into() }], Vec::new()];
+                }
+                let geometry = crate::activities::geom(&crate::activities::Mode::Activity(crate::activities::Activity::Media), &st);
+                assert_eq!(geometry.h, 32.0, "case {case} at {scale}x");
+                let body = Rect::new(10.0, 10.0, geometry.w, geometry.h);
+                let width = ((body.right() + 10.0) * scale).ceil() as i32;
+                let height = ((body.bottom() + 10.0) * scale).ceil() as i32;
+                let bounds = RECT { left: 0, top: 0, right: width, bottom: height };
+                gfx.set_surface(width, height).unwrap(); gfx.request_capture(bounds);
+                let mut canvas = gfx.begin(bounds).unwrap();
+                canvas.fill_rrect(body, geometry.r, Color::black(1.0));
+                let mut input = Input::default(); let mut hits = vec![];
+                draw(&mut Ui::new(&mut canvas, &mut input, &mut hits, st.now), &mut st, body);
+                drop(canvas); gfx.end().unwrap(); let pixels = gfx.take_capture();
+                let y = ((body.bottom() - 1.0) * scale) as usize;
+                for x in ((body.center().x - 20.0) * scale) as usize..((body.center().x + 20.0) * scale) as usize {
+                    let at = (y * width as usize + x) * 4;
+                    assert_eq!(&pixels[at..at + 4], &[0, 0, 0, 255], "no album-color glow in case {case} at {scale}x");
+                }
+                if let Some(root) = std::env::var_os("LUMO_MUSIC_QA") {
+                    let root = std::path::PathBuf::from(root); std::fs::create_dir_all(&root).unwrap();
+                    crate::png::save_rgba(root.join(format!("compact-music-{scale}-{case}.png")), width as u32, height as u32, &crate::png::pbgra_to_rgba(&pixels)).unwrap();
+                }
+            }
+        }
+        drop(gfx); unsafe { DestroyWindow(hwnd).unwrap(); }
     }
 
     #[test]

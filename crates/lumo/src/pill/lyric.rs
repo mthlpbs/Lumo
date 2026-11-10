@@ -23,7 +23,7 @@
 //! sing along under the line, as on the Music page: the line as it is
 //! written, for everyone who reads the script, and under it, smaller and a
 //! little dimmer, how it sounds in Latin letters, so anyone can sing it
-//! (`romanize::reading`). A song with readings makes the pill two rows tall
+//! (`romanize::reading`). In Classic, a song with readings makes the pill two rows tall
 //! for the whole song ([`reads`]), so it doesn't grow and shrink line by
 //! line; a line that needs none (English in a Japanese song) sits in the
 //! middle on its own. Readings run longer than their lines, so the pill
@@ -119,7 +119,12 @@ pub fn sings(st: &AppState) -> bool {
 /// rows): it sings, readings are on, and some line has one. For the whole
 /// song, as [`sings`] is.
 pub fn reads(st: &AppState) -> bool {
-    sings(st) && st.settings.lyrics_pronunciation && st.lyrics.ruby.iter().any(|p| p.iter().any(|r| !r.roman.is_empty()))
+    readings_enabled(st) && sings(st) && st.lyrics.ruby.iter().any(|p| p.iter().any(|r| !r.roman.is_empty()))
+}
+
+/// Pill's compact music stays one row tall. Classic can use a second row.
+fn readings_enabled(st: &AppState) -> bool {
+    st.settings.lyrics_pronunciation && !super::on(st.settings.theme)
 }
 
 /// The lyrics the pill follows for the song playing now (see [`sings`]).
@@ -306,13 +311,13 @@ fn line_text(st: &AppState, i: usize) -> Option<&str> {
 
 /// Line `i`'s reading in Latin letters, when readings are on and it has one.
 fn reading_at(st: &AppState, i: usize) -> Option<String> {
-    let pieces = st.lyrics.ruby.get(i).filter(|_| st.settings.lyrics_pronunciation)?;
+    let pieces = st.lyrics.ruby.get(i).filter(|_| readings_enabled(st))?;
     romanize::reading(pieces)
 }
 
 fn reading_sig(st: &AppState, i: usize) -> usize {
     match st.lyrics.ruby.get(i) {
-        Some(pieces) if st.settings.lyrics_pronunciation => pieces.iter().map(|p| p.roman.len() + 1).sum(),
+        Some(pieces) if readings_enabled(st) => pieces.iter().map(|p| p.roman.len() + 1).sum(),
         _ => 0,
     }
 }
@@ -455,6 +460,8 @@ fn rows(area: Rect, reading: bool) -> (Rect, Option<Rect>) {
 
 /// A line centred in `area`, with its reading under it when it has one.
 fn words(c: &mut Canvas, text: &str, reading: Option<&str>, area: Rect) {
+    // A line fading out after switching themes can still carry a reading.
+    let reading = reading.filter(|_| area.h >= super::media::H_READS);
     let (line, under) = rows(area, reading.is_some());
     c.text(text, line, &style().center().color(palette::TEXT));
     if let (Some(reading), Some(under)) = (reading, under) {
@@ -827,6 +834,12 @@ mod tests {
         // The English line needs none: it sits in the middle on its own.
         assert_eq!(reading_at(&st, 1), None);
         assert_eq!(reading_at(&st, 2).as_deref(), Some("hikari wo mitsukeru"));
+        let classic_sig = reading_sig(&st, 0);
+        st.settings.theme = lumo_core::settings::Theme::Pill;
+        assert!(!reads(&st));assert!(reading_at(&st, 0).is_none());
+        assert_ne!(reading_sig(&st, 0), classic_sig, "switching themes invalidates the cached reading");
+        st.settings.theme = lumo_core::settings::Theme::Classic;
+        assert_eq!(reading_at(&st, 0).as_deref(), Some("kami no fune yo"));
         // Readings switched off: one row, the lines as they are written.
         st.settings.lyrics_pronunciation = false;
         assert!(!reads(&st));

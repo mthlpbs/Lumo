@@ -1,68 +1,34 @@
-//! The open Music page in the Pill theme, laid out like the card in ref1:
-//! the album art on the left, the player's name in small grey capitals, the
-//! title and the artist beside it, the equalizer at the top right in the
-//! album's colour, one progress row (elapsed, the bar, time left), and the
-//! controls centred under it as bare glyphs.
-//!
-//! ```text
-//! ┌──────┐  SPOTIFY                    ▮▮▮▮ │  earlier line
-//! │ art  │  Title                           │  CURRENT LINE
-//! │  72  │  Artist                          │  next line
-//! └──────┘                                  │  later line
-//!  1:04  ━━━━━━━━━━━━━━──────────────  −2:17 │
-//!             ⏪       ❚❚       ⏩           │
-//! ```
-//!
-//! What the player does is Classic's, exactly: the same seek path
-//! (`ui.progress_bar`, `MediaCmd::Prepare` when a drag starts and `Seek` on
-//! release, the timeline moved at once by `pages::media::push_media`, which
-//! is also where Apple Music's own slider and back button come in), the
-//! same commands, widget ids and disabled states, the art's paused shrink,
-//! and the same frames: none at rest, ambient ones while music plays, full
-//! rate only while something catches up.
-//!
-//! The synced lyrics are Classic's own column (`pages::media::draw_lyrics`
-//! with its scroll state, readings and credit), on the right as in Classic.
-//! There the card keeps Classic's height and the sung line its size with a
-//! line either side; below the player the card would have to grow by half
-//! again to show more than one line.
+//! Shared expanded Music player for Classic and Pill: artwork and metadata,
+//! a progress row, large transport glyphs and optional inline lyrics.
+//! Reuses the existing timeline, seek path and on-demand animation state.
 
 use crate::commands::MediaCmd;
 use crate::gfx::{Image, TextStyle, Weight};
 use crate::icons::Icon;
-use crate::pages::media::{self as classic, Anim, Frame, LyricsCtx};
+use crate::pages::media::{self as classic, Anim, Frame};
 use crate::state::AppState;
 use crate::ui::{wid, Ui, WidgetId};
 use lumo_core::datetime::fmt_duration;
 use lumo_core::geom::{lerp, palette, Color, Point, Rect};
-use lumo_core::nowplaying::lyrics_lead_s;
 use lumo_core::svgpath::Seg;
 
 // ---------------------------------------------------------------- layout (spec 6.7)
 
 /// Content height with a media session: the play button's target ends here.
 /// Classic's height, so the card is as tall as Classic's island.
-const H_SESSION: f32 = 148.0;
+const H_SESSION: f32 = classic::H_SESSION;
 /// Content height of the empty card: one row, the size of the art.
-const H_EMPTY: f32 = 72.0;
+const H_EMPTY: f32 = 104.0;
 
-const ART: f32 = 72.0;
-/// 0.2 × the art, as on ref1's card (and Classic's art radius).
-const ART_RADIUS: f32 = 14.0;
+const ART: f32 = 104.0;
+/// Soft artwork corners, shared by both theme renderers.
+const ART_RADIUS: f32 = 21.0;
 /// The note on a cover-less tile.
 const TILE_ICON: f32 = 28.0;
-const GAP_ART: f32 = 14.0;
-/// The player keeps at least Classic's art, gap and middle column beside the
-/// lyrics, so the lyrics column is as wide as Classic's at every width.
-const MIN_BLOCK_W: f32 = 296.0;
-
-// Text rows, placed by where their capitals start (what ref1 and the spec
-// measure): the player's name, the title, the artist.
-const SOURCE_CAP: f32 = 8.0;
-/// Extra space between the player name's capitals.
-const TRACKING: f32 = 0.5;
-const TITLE_CAP: f32 = 24.0;
-const ARTIST_CAP: f32 = 49.0;
+const GAP_ART: f32 = 16.0;
+// Text rows align by their capitals; the third row holds the LRC toggle.
+const TITLE_CAP: f32 = 18.0;
+const ARTIST_CAP: f32 = 52.0;
 // The empty card's two rows, centred on the tile.
 const EMPTY_TITLE_CAP: f32 = 19.0;
 const EMPTY_HINT_CAP: f32 = 44.0;
@@ -77,14 +43,14 @@ const FONT_CAP: f32 = 0.700;
 const EQ_BARS: usize = 4;
 const EQ_BAR_W: f32 = 4.0;
 const EQ_GAP: f32 = 2.0;
-const EQ_CY: f32 = 14.0;
+const EQ_CY: f32 = 20.0;
 const EQ_LOW: f32 = 4.0;
 const EQ_HIGH: f32 = 13.0;
 /// Space kept between the text column and the equalizer.
 const GAP_EQ: f32 = 12.0;
 
 // The progress row: elapsed, the bar, time left.
-const ROW_CY: f32 = 90.0;
+const ROW_CY: f32 = 134.0;
 /// Each time's slot: fits "−4:09"; an hour-long track widens both.
 const TIME_SLOT: f32 = 34.0;
 const TIME_GAP: f32 = 14.0;
@@ -92,23 +58,22 @@ const TIME_GAP: f32 = 14.0;
 const BAR_H: f32 = 5.0;
 
 // The controls: bare glyphs on Classic's targets.
-const CONTROLS_CY: f32 = 126.0;
-const CONTROL_PITCH: f32 = 69.0;
-const PLAY_HIT: f32 = 44.0;
-const SIDE_HIT: f32 = 38.0;
-const PAUSE_BAR_W: f32 = 7.0;
-const PAUSE_BAR_H: f32 = 24.0;
-const PAUSE_GAP: f32 = 5.0;
+const CONTROLS_CY: f32 = 182.0;
+const PLAY_HIT: f32 = 56.0;
+const SIDE_HIT: f32 = 48.0;
+const PAUSE_BAR_W: f32 = 8.0;
+const PAUSE_BAR_H: f32 = 36.0;
+const PAUSE_GAP: f32 = 7.0;
 const PAUSE_R: f32 = 1.5;
-const PLAY_W: f32 = 20.0;
-const PLAY_H: f32 = 24.0;
+const PLAY_W: f32 = 28.0;
+const PLAY_H: f32 = 36.0;
 /// A play triangle centred by its box looks left of centre (its weight is
 /// in its base): this nudge puts it where the eye expects.
 const PLAY_NUDGE: f32 = 1.5;
 const PLAY_ROUND: f32 = 2.5;
 /// Back / forward: two touching triangles.
-const SKIP_W: f32 = 22.0;
-const SKIP_H: f32 = 15.0;
+const SKIP_W: f32 = 32.0;
+const SKIP_H: f32 = 24.0;
 const SKIP_ROUND: f32 = 1.5;
 /// The disc under a control while the pointer is on it / presses it.
 const HOVER_INK: f32 = 0.10;
@@ -116,9 +81,23 @@ const PRESS_INK: f32 = 0.16;
 
 // ---------------------------------------------------------------- page
 
+/// Stable columns while lyrics load; the mini window owns lyrics during a
+/// handoff. Non-music media keeps the full-width player.
+pub(crate) fn lyrics_rect(st: &AppState, area: Rect) -> Option<Rect> {
+    if !st.settings.lyrics || !st.settings.music_lyrics || st.lyrics_popup_open
+        || !st.media.as_ref().is_some_and(|m|m.music_source.is_some()) { return None; }
+    let width=(area.w*classic::LYRICS_SHARE).min(area.w-238.0-classic::GAP_LYRICS);
+    (width>=classic::MIN_LYRICS_W).then(||Rect::new(area.right()-width,area.y,width,H_SESSION))
+}
+
+/// Also used by native wheel routing so lyrics can retain text scrolling.
+pub(crate) fn player_rect(st: &AppState, area: Rect) -> Rect {
+    Rect::new(area.x,area.y,lyrics_rect(st,area).map_or(area.w,|r|r.x-area.x-classic::GAP_LYRICS),H_SESSION)
+}
+
 /// The page's content height, or `None` for Classic's.
 pub fn height(st: &AppState) -> Option<f32> {
-    if !super::on(st.settings.theme) {
+    if !super::on(st.settings.theme) && st.media.is_none() {
         return None;
     }
     Some(if st.media.is_some() { classic::session_height(st) } else { H_EMPTY })
@@ -126,7 +105,7 @@ pub fn height(st: &AppState) -> Option<f32> {
 
 /// Draw the page in `area`. `false` = the Classic page draws.
 pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) -> bool {
-    if !super::on(st.settings.theme) {
+    if !super::on(st.settings.theme) && st.media.is_none() {
         return false;
     }
     // Classic's animation state (art spring, lyrics scroll, lyric clock): one
@@ -143,52 +122,26 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) -> bool {
     true
 }
 
-/// Where the player and the lyrics go in a content area `w` wide.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Columns {
-    /// The player's width (art, text, equalizer, progress row, controls).
-    block_w: f32,
-    /// Classic's lyrics column: its width, `None` when it doesn't show.
-    lyrics_w: Option<f32>,
-}
-
-fn columns(w: f32, lyrics_on: bool, scale: f32) -> Columns {
-    let lyr_w = (w * classic::LYRICS_SHARE).min(w - classic::GAP_LYRICS - MIN_BLOCK_W).round();
-    if lyrics_on && lyr_w >= classic::MIN_LYRICS_W {
-        Columns { block_w: classic::snap(w - lyr_w - classic::GAP_LYRICS, scale), lyrics_w: Some(lyr_w) }
-    } else {
-        Columns { block_w: w, lyrics_w: None }
-    }
-}
-
 fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &Frame) {
     let now = st.now;
     let accent = eq_color(st.media_accent());
-    let lyrics_on = st.settings.lyrics && !st.lyrics_popup_open;
-    let pronounce = st.settings.lyrics_pronunciation;
-    let offset_s = f64::from(st.settings.lyrics_offset_ms) / 1000.0;
     let Some(m) = st.media.as_ref() else { return };
-    let lyrics_on = lyrics_on && m.music_source.is_some();
     if a.track.observe(m, now, fr.opening || st.power.saver) { a.clock.reset(); }
 
     let scale = ui.c.scale().max(0.5);
     let snap = |v: f32| classic::snap(v, scale);
-    let (x0, content_y) = (snap(area.x), snap(area.y));
+    let x0 = snap(area.x);
     let y0 = snap(area.y + classic::player_offset(st));
-    let cols = columns(area.w, lyrics_on, scale);
-    let block = Rect::new(x0, y0, cols.block_w, H_SESSION);
-    let popup_available = st.lyrics_popup_open || crate::lyrics_window::available(st);
-    let eq_right = block.right() - if st.settings.lyrics_popup_button && m.music_source.is_some() && cols.lyrics_w.is_none() { 40.0 } else { 0.0 };
+    let lyrics=lyrics_rect(st,area);
+    let block = player_rect(st,Rect::new(x0,y0,area.w,area.h));
+    let compact=lyrics.is_some();
+    let art_size=if compact{84.0}else{ART};
+    let eq_right = block.right();
 
     let playing = m.is_playing();
     let tl = m.timeline;
     let pos = tl.position_at(now);
     let has_dur = tl.has_duration();
-    // Where the lyrics are, as in Classic: the player's position plus its
-    // known lag and the user's own shift, on a clock that rides out jumpy
-    // reports.
-    let lead = lyrics_lead_s(&m.app_id) + offset_s;
-    let lyric_pos = a.clock.tick_with_seek(now, pos + lead, playing && has_dur, tl.rate, st.media_pending_seek);
     let mut acts: Vec<MediaCmd> = Vec::new();
     let mut anim = a.track.moving();
 
@@ -202,34 +155,25 @@ fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &F
     classic::follow(&mut a.art_scale, &mut a.art_vel, art_target, classic::ART_OMEGA, dt);
     let art_settled = classic::settle(&mut a.art_scale, &mut a.art_vel, art_target, 0.0005, 0.005);
     anim |= !art_settled;
-    a.track.paint_art(ui, now, Rect::new(x0, y0, ART, ART), |ui, art, r| draw_art(ui, art, r, a.art_scale, art_settled.then_some(scale)));
+    a.track.paint_art(ui, now, Rect::new(x0, y0, art_size, art_size), |ui, art, r| draw_art(ui, art, r, a.art_scale, art_settled.then_some(scale)));
 
-    // The player's name, the title and the artist, in a column that stops
+    // Title, artist and LRC button, in a column that stops
     // short of the equalizer.
-    let tx = snap(x0 + ART + GAP_ART);
+    let tx = snap(x0 + art_size + GAP_ART);
     let tw = (eq_right - eq_width() - GAP_EQ - tx).max(0.0);
-    let source = source_label(&m.app_name);
-    let source_st = TextStyle::caption().weight(Weight::Semibold).color(palette::TEXT_FAINT);
-    let source_w = (ui.c.measure(&source, &source_st, 1000.0).0
-        + TRACKING * source.chars().count().saturating_sub(1) as f32).min((tw - if m.music_source.is_some() { 40.0 } else { 0.0 }).max(0.0));
-    let source_row = row(tx, source_w, y0 + SOURCE_CAP, source_st.size);
-    tracked(ui, &source, source_row, &source_st);
-    let lrc_x = tx + source_w + if source.is_empty() { 0.0 } else { 8.0 };
-    let lrc = Rect::new(lrc_x, source_row.center().y - 12.0, 24.0, 24.0);
-    let toggle_lrc = m.music_source.is_some() && classic::lrc_toggle(ui, st.settings.island_lyrics, !st.lyrics_popup_open, lrc);
-    let pop_r = Rect::new(area.right()-28.0, content_y-4.0, 28.0, 28.0);
-    let toggle_popup = popup_available && classic::popup_button(ui, pop_r, st.lyrics_popup_open);
-    let title_st = TextStyle::value();
-    let artist_st = TextStyle::headline().weight(Weight::Regular).color(palette::TEXT_DIM);
+    let lrc = Rect::new(tx,y0+if compact{68.0}else{80.0},44.0,24.0);
+    let toggle_lrc=m.music_source.is_some()&&classic::lrc_toggle(ui,st.settings.island_lyrics,!st.lyrics_popup_open,lrc);
+    let title_st=TextStyle::new(if compact{20.0}else{24.0}).weight(Weight::Semibold);
+    let artist_st=TextStyle::new(if compact{14.0}else{18.0}).color(palette::TEXT_DIM);
     a.track.paint_words(ui, now, |ui, title, artist, dx| {
-        ui.c.text(title, row(tx + dx, tw, y0 + TITLE_CAP, title_st.size), &title_st);
-        ui.c.text(artist, row(tx + dx, tw, y0 + ARTIST_CAP, artist_st.size), &artist_st);
+        ui.c.text(title, row(tx + dx, tw, y0 + if compact{12.0}else{TITLE_CAP}, title_st.size), &title_st);
+        ui.c.text(artist, row(tx + dx, tw, y0 + if compact{40.0}else{ARTIST_CAP}, artist_st.size), &artist_st);
     });
 
     // The progress row. The slots fit this track's longest time, so the bar
     // holds still while the times count.
     let row_cy = y0 + ROW_CY;
-    let times = TextStyle::footnote().weight(Weight::Medium).tabular().color(palette::TEXT_DIM);
+    let times = TextStyle::new(12.0).weight(Weight::Medium).tabular().color(palette::TEXT_DIM);
     let slot = if has_dur {
         let longest = format!("\u{2212}{}", fmt_duration(tl.duration_s));
         TIME_SLOT.max(ui.c.measure(&longest, &times, 400.0).0.ceil())
@@ -238,6 +182,7 @@ fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &F
     };
     let bar_x = snap(block.x + slot + TIME_GAP);
     let bar = Rect::new(bar_x, snap(row_cy - BAR_H / 2.0), (snap(block.right() - slot - TIME_GAP) - bar_x).max(0.0), BAR_H);
+    let mut preview=None;
     if has_dur {
         let scrub = ui.progress_bar(wid("media_seek"), bar, tl.progress_at(now), palette::TEXT, m.can_seek);
         if scrub.began {
@@ -247,6 +192,7 @@ fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &F
         if let Some(f) = scrub.released {
             acts.push(MediaCmd::Seek(f as f64 * tl.duration_s));
         }
+        preview=scrub.held.or(scrub.released).map(|f|f as f64*tl.duration_s);
         // While dragging, the times follow the pointer; the player only
         // seeks on release.
         let pos = scrub.held.or(scrub.released).map_or(pos, |f| f as f64 * tl.duration_s);
@@ -261,30 +207,21 @@ fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &F
 
     // The controls, centred under the player.
     let (cx, cy) = (block.x + block.w / 2.0, y0 + CONTROLS_CY);
-    if control(ui, wid("media_prev"), Point::new(cx - CONTROL_PITCH, cy), SIDE_HIT, Glyph::Back, m.can_prev) {
+    let pitch = (block.w * 0.26).clamp(60.0,152.0);
+    if control(ui, wid("media_prev"), Point::new(cx - pitch, cy), SIDE_HIT, Glyph::Back, m.can_prev) {
         acts.push(MediaCmd::Prev);
     }
     let play = if playing { Glyph::Pause } else { Glyph::Play };
     if control(ui, wid("media_play"), Point::new(cx, cy), PLAY_HIT, play, m.can_play_pause) {
         acts.push(MediaCmd::PlayPause);
     }
-    if control(ui, wid("media_next"), Point::new(cx + CONTROL_PITCH, cy), SIDE_HIT, Glyph::Forward, m.can_next) {
+    if control(ui, wid("media_next"), Point::new(cx + pitch, cy), SIDE_HIT, Glyph::Forward, m.can_next) {
         acts.push(MediaCmd::Next);
-    }
-
-    let mut synced_shown = false;
-    if let Some(lyr_w) = cols.lyrics_w {
-        let top = classic::lyrics_toolbar_height(st);
-        let col = Rect::new(snap(x0 + area.w - lyr_w), content_y+top, lyr_w, classic::session_height(st)-top);
-        let ctx = LyricsCtx { now, pos: lyric_pos, live: playing && has_dur, can_seek: m.can_seek, scale, track_key: &m.track_key, pronounce };
-        let out = classic::draw_lyrics(ui, &st.lyrics, &mut st.ui, col, a, fr, &ctx, &mut acts);
-        anim |= out.animating;
-        synced_shown = out.synced;
     }
 
     // The equalizer dances only on the frames the page gets anyway while
     // music plays (below).
-    let drifting = playing && (has_dur || synced_shown);
+    let drifting = playing && has_dur;
     let eq = match (playing, drifting) {
         (true, true) => EqState::Dancing,
         (true, false) => EqState::Still,
@@ -292,9 +229,16 @@ fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &F
     };
     equalizer(ui, eq_right, y0 + EQ_CY, accent, eq, now);
 
-    // Classic's frames: full rate only while something catches up (a lyric
-    // scroll, the art's spring, the credit fading); the steady drift of the
-    // bar and the lyrics while music plays needs only ambient ones.
+    if let Some(col)=lyrics {
+        let lead=lumo_core::nowplaying::lyrics_lead_s(&m.app_id)+f64::from(st.settings.lyrics_offset_ms)/1000.0;
+        let seek=preview.map(|p|lumo_core::timeline::PendingSeek::new(p,now)).or(st.media_pending_seek);
+        let pos=a.clock.tick_with_seek(now,preview.unwrap_or(pos)+lead,playing&&has_dur,tl.rate,seek);
+        let ctx=classic::LyricsCtx{now,pos,seek,live:playing&&has_dur&&!st.power.saver,can_seek:m.can_seek,scale,track_key:&m.track_key,pronounce:st.settings.lyrics_pronunciation};
+        anim|=classic::draw_lyrics(ui,&st.lyrics,&mut st.ui,col,a,fr,&ctx,&mut acts).animating;
+    }
+
+    // Full-rate frames only during finite artwork/track transitions; the
+    // visible progress bar and equalizer reuse the existing ambient frames.
     if anim {
         ui.request_anim();
     } else if drifting {
@@ -307,46 +251,9 @@ fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &F
     if toggle_lrc {
         classic::toggle_island_lyrics(st);
     }
-    if toggle_popup { st.cmd(if st.lyrics_popup_open { crate::commands::Command::CloseLyricsWindow } else { crate::commands::Command::OpenLyricsWindow }); }
-    if st.media.as_ref().is_some_and(|m| m.music_source.is_some()) { classic::lyrics_toggle_tip(ui, st, lrc, area); }
-    if popup_available { classic::button_tip(ui, pop_r, if st.lyrics_popup_open { "Return to island" } else { "Open lyrics" }); }
     // As Classic's page: Settings switches readings on and reloads the song.
 }
 
-/// The player's name in capitals, independent of playback state.
-fn source_label(app_name: &str) -> String {
-    app_name.trim().to_uppercase()
-}
-
-/// Small capitals with a little air between the letters ([`TRACKING`], as
-/// on ref1's label), one letter at a time since the text styles carry no
-/// letter spacing. Only Latin letters are set apart (other scripts join,
-/// shape or run right to left); those, and a name too long for the column,
-/// are drawn as ordinary text, ellipsized.
-fn tracked(ui: &mut Ui, s: &str, r: Rect, st: &TextStyle) {
-    if s.is_empty() || !s.chars().all(|c| (' '..='\u{24f}').contains(&c)) {
-        ui.c.text(s, r, st);
-        return;
-    }
-    let mut letters = Vec::with_capacity(s.len());
-    let mut x = 0.0f32;
-    for (i, c) in s.char_indices() {
-        let letter = &s[i..i + c.len_utf8()];
-        let w = ui.c.measure(letter, st, 1000.0).0;
-        letters.push((letter, x, w));
-        x += w + TRACKING;
-    }
-    if x - TRACKING > r.w {
-        ui.c.text(s, r, st);
-        return;
-    }
-    for (letter, dx, w) in letters {
-        ui.c.text(letter, Rect::new(r.x + dx, r.y, w + 2.0, r.h), st);
-    }
-}
-
-/// Nothing playing: the card keeps the player's first row, a blank tile with
-/// the note and what to do, and nothing that would pretend to control.
 fn draw_empty(ui: &mut Ui, area: Rect) {
     let scale = ui.c.scale().max(0.5);
     let (x0, y0) = (classic::snap(area.x, scale), classic::snap(area.y, scale));
@@ -359,7 +266,6 @@ fn draw_empty(ui: &mut Ui, area: Rect) {
     ui.c.text("Play music in Spotify, a browser or any media app", row(tx, tw, y0 + EMPTY_HINT_CAP, hint.size), &hint);
 }
 
-/// A one-line, vertically centred text box whose capitals start at `cap_top`.
 fn row(x: f32, w: f32, cap_top: f32, size: f32) -> Rect {
     Rect::new(x, cap_top - (FONT_ASCENT - FONT_CAP) * size, w, FONT_LINE * size)
 }
@@ -556,33 +462,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_lyrics_column_is_classics_at_every_width() {
-        for width in [480.0f32, 620.0, 760.0, 900.0] {
-            let w = width - 2.0 * crate::pages::PAD;
-            let cols = columns(w, true, 1.0);
-            // Classic: (w × share).min(w − art 104 − gap 16 − gap 20 − middle 176).
-            let classic_w = (w * classic::LYRICS_SHARE).min(w - 316.0).round();
-            assert_eq!(cols.lyrics_w, Some(classic_w), "at {width}");
-            assert!(cols.block_w >= MIN_BLOCK_W - 0.5, "player {} at {width}", cols.block_w);
-            assert!((cols.block_w + classic::GAP_LYRICS + classic_w - w).abs() <= 0.5);
-        }
-        // Lyrics off: the player takes the whole card.
-        assert_eq!(columns(584.0, false, 1.0), Columns { block_w: 584.0, lyrics_w: None });
-    }
-
-    #[test]
     fn rows_start_their_capitals_where_asked() {
         let r = row(0.0, 100.0, 24.0, 18.0);
         // The line box is centred in the row, so the capitals start ascent − cap below its top.
         assert!((r.y + (FONT_ASCENT - FONT_CAP) * 18.0 - 24.0).abs() < 1e-4);
         assert!((r.h - FONT_LINE * 18.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn the_player_name_reads_in_capitals() {
-        assert_eq!(source_label("Spotify"), "SPOTIFY");
-        assert_eq!(source_label(" Apple Music "), "APPLE MUSIC");
-        assert_eq!(source_label(""), "");
     }
 
     #[test]

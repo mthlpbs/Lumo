@@ -92,7 +92,7 @@ pub enum AppEvent {
     /// Album art finished decoding for a track.
     MediaArt { track_key: String, art: Option<Image> },
     Lyrics { track_key: String, request_id: u64, result: LyricsResult },
-    MusicPathChosen { kind: crate::commands::MusicPick, result: Result<Option<std::path::PathBuf>, String> },
+    FolderChosen { kind: crate::commands::FolderPick, result: Result<Option<std::path::PathBuf>, String> },
     /// The outcome of checking or using the user's Apple Music token.
     AppleMusic(AppleMusicStatus),
     /// Master volume changed (0..=1).
@@ -116,9 +116,9 @@ pub enum AppEvent {
     /// to the thin band along the edge.
     TopWindows(Vec<[i32; 4]>),
     /// Files dropped on the island.
-    ShelfAdd(Vec<String>),
+    FilesDropped { owner: SendHwnd, paths: Vec<String> },
     /// Files are being dragged over the island (true) or left (false).
-    DragHover(bool),
+    DragHover { owner: SendHwnd, on: bool },
     ShelfThumb { path: String, image: Option<Image> },
     /// The System page's latest reading and the minute behind it
     /// (`services::sysmon`, each second while the page is open).
@@ -129,8 +129,6 @@ pub enum AppEvent {
     ClipboardText(String),
     /// Phone drop's server: a phone opened the page, asked, sent, gave up.
     Phone(lumo_core::phonedrop::Event),
-    /// Paired phones: pairing done, the list changed, files from a phone.
-    Paired(lumo_core::pairdrop::MeetEvent),
     /// Where an add-on's files stand (`services::addons`).
     Addon { id: &'static str, status: lumo_core::addons::Status },
     /// What the update file said (`services::update`).

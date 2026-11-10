@@ -40,7 +40,7 @@ pub fn clear() {
     CACHE.with(|c| c.borrow_mut().clear());
 }
 fn styled(size: f32) -> TextStyle {
-    TextStyle::new(size).top().wrap().line_spacing(1.4)
+    TextStyle::new(size).top().wrap().line_spacing(1.5).color(Color::white(0.86))
 }
 fn cell(
     ui: &mut Ui,
@@ -54,7 +54,7 @@ fn cell(
     let h =
         ui.c.measure_rich(content, &style, w)
             .1
-            .max(style.size * 1.4);
+            .max(style.size * 1.5);
     paint.push(Paint::Text {
         content: content.clone(),
         r: Rect::new(x, y, w, h),
@@ -73,8 +73,8 @@ fn build(ui: &mut Ui, doc: &markdown::Document, width: f32, size: f32) -> Layout
                     y += 5.0;
                 }
                 let style = styled(match level {
-                    1 => size + 7.0,
-                    2 => size + 4.0,
+                    1 => size + 5.0,
+                    2 => size + 3.0,
                     3 => size + 2.0,
                     _ => size + 0.5,
                 })
@@ -97,18 +97,18 @@ fn build(ui: &mut Ui, doc: &markdown::Document, width: f32, size: f32) -> Layout
                     &markdown::inline(marker),
                     x,
                     y,
-                    24.0,
+                    14.0,
                     st.color(palette::TEXT_DIM),
                 );
                 y += cell(
                     ui,
                     &mut paint,
                     content,
-                    x + 25.0,
+                    x + 18.0,
                     y,
-                    (width - x - 25.0).max(30.0),
+                    (width - x - 18.0).max(30.0),
                     st,
-                ) + 5.0;
+                ) + 4.0;
             }
             Block::Quote(t) => {
                 let h =

@@ -4,6 +4,23 @@ use crate::pomodoro::PomodoroConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum ClockFont { #[default] System, Rounded, Mono, Serif }
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum ClockColor { #[default] White, WindowsAccent, Blue, Mint, Rose, Gold }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusLightColor { #[default] WindowsAccent, Blue, Mint, Rose, Gold, Violet }
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum ClosedView { #[default] Time, Performance, Network }
+impl ClosedView {
+    pub fn step(self,forward:bool)->Self{let all=[Self::Time,Self::Performance,Self::Network];let i=all.iter().position(|x|*x==self).unwrap();all[(i+if forward{1}else{2})%3]}
+    pub fn monitors(self)->bool{matches!(self,Self::Performance|Self::Network)}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdleStyle {
@@ -67,6 +84,10 @@ pub struct Settings {
     pub theme: Theme,
     pub idle_style: IdleStyle,
     pub use_24h: bool,
+    pub clock_font: ClockFont,
+    pub clock_color: ClockColor,
+    pub closed_scroll: bool,
+    pub mouse_wheel_shortcuts: bool,
     /// Click is the default; hover expansion is explicitly enabled in Settings.
     pub open_on_hover: bool,
     /// Delay before hover expands the island.
@@ -91,6 +112,10 @@ pub struct Settings {
     pub monitor: MonitorChoice,
     pub show_media_activity: bool,
     pub lyrics: bool,
+    /// Show the inline lyrics column in expanded Music.
+    pub music_lyrics: bool,
+    /// Wheel over the expanded player: up is previous, down is next.
+    pub music_scroll_tracks: bool,
     /// Only the closed island; the Music page still shows lyrics.
     pub island_lyrics: bool,
     /// Show the pop-out lyrics button when the current song has lyrics.
@@ -115,13 +140,18 @@ pub struct Settings {
     pub hud_bluetooth: bool,
     pub clipboard_history: bool,
     pub sounds: bool,
+    /// Empty saves incoming Phone Drop files directly in Windows Downloads.
+    pub phone_download_directory: String,
+    /// A finite, on-demand spotlight when a focus session finishes.
+    pub focus_spotlight: bool,
+    pub focus_spotlight_color: FocusLightColor,
     /// Page shown first when expanding ("media", "focus", "shelf", "tasks", "clipboard").
     pub start_page: String,
     /// Remember the last page instead of `start_page`.
     pub remember_page: bool,
     pub pomodoro: PomodoroConfig,
-    /// Keep the System page's charts going while it's closed (a light reading
-    /// of the kernel counters once a second), so they're full when it opens.
+    /// Retired background sampling preference. Old profiles load it as false;
+    /// readers now run only for a visible System, compact or game view.
     pub system_history: bool,
     /// Add-ons switched on, by id (`lumo_core::addons`). Ids this version
     /// doesn't know are kept, so a newer Lumo's choices survive a save.
@@ -154,6 +184,10 @@ impl Default for Settings {
             theme: Theme::Classic,
             idle_style: IdleStyle::Clock,
             use_24h: true,
+            clock_font: ClockFont::default(),
+            clock_color: ClockColor::default(),
+            closed_scroll: true,
+            mouse_wheel_shortcuts: true,
             open_on_hover: false,
             hover_delay_ms: 220,
             collapse_delay_ms: 0,
@@ -165,6 +199,8 @@ impl Default for Settings {
             monitor: MonitorChoice::Primary,
             show_media_activity: true,
             lyrics: true,
+            music_lyrics: true,
+            music_scroll_tracks: true,
             island_lyrics: true,
             lyrics_popup_button: true,
             lyrics_popup_width: 430.0,
@@ -180,10 +216,13 @@ impl Default for Settings {
             hud_bluetooth: true,
             clipboard_history: false,
             sounds: true,
+            phone_download_directory: String::new(),
+            focus_spotlight: false,
+            focus_spotlight_color: FocusLightColor::default(),
             start_page: "media".into(),
             remember_page: true,
             pomodoro: PomodoroConfig::default(),
-            system_history: true,
+            system_history: false,
             addons: BTreeMap::new(),
             game_stats: false,
             game_peek: false,
@@ -255,13 +294,17 @@ impl Settings {
 
     /// Clamp values a user may have hand-edited into nonsense.
     pub fn sanitized(mut self) -> Self {
+        // Retired background sampling: readers sleep whenever no visible view needs them.
+        self.system_history=false;
         self.search.sanitize();
+        self.ai.mini_width=self.ai.mini_width.clamp(360,1920);
+        self.ai.mini_height=self.ai.mini_height.clamp(360,1600);
         // Retired calendar pages open Music when restoring older preferences.
-        if matches!(self.start_page.trim().to_ascii_lowercase().as_str(), "today" | "calendar" | "calendars") {
+        if matches!(self.start_page.trim().to_ascii_lowercase().as_str(), "today" | "calendar" | "calendars" | "ai") {
             self.start_page = "media".into();
         }
         // Retired add-ons must never restart from an older settings file.
-        self.addons.retain(|id, _| !matches!(id.as_str(), "sholat" | "ja" | "health" | "money" | "oyenza"));
+        self.addons.retain(|id, _| !matches!(id.as_str(), "sholat" | "ja" | "health" | "money" | "oyenza" | "ai-usage"));
         // The former master switch now controls the closed island only.
         self.island_lyrics &= self.lyrics;
         self.lyrics = true;
@@ -323,6 +366,27 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_profiles_enable_mouse_shortcuts_and_opt_out_is_saved() {
+        let mut s:Settings=serde_json::from_str("{}").unwrap();assert!(s.mouse_wheel_shortcuts);
+        s.mouse_wheel_shortcuts=false;
+        let restored:Settings=serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();assert!(!restored.mouse_wheel_shortcuts);
+    }
+    #[test]fn compact_cycle_has_only_time_performance_and_network_and_old_usage_is_dropped(){
+        assert_eq!(ClosedView::Time.step(true),ClosedView::Performance);assert_eq!(ClosedView::Performance.step(true),ClosedView::Network);assert_eq!(ClosedView::Network.step(true),ClosedView::Time);assert_eq!(ClosedView::Time.step(false),ClosedView::Network);
+        let s:Settings=serde_json::from_str(r#"{"system_history":true,"addons":{"ai-usage":true},"ai_usage":{"accounts":[]}}"#).unwrap();let s=s.sanitized();assert!(!s.system_history&&!s.addon_on("ai-usage"));assert!(!serde_json::to_string(&s).unwrap().contains("ai_usage"));assert!(crate::addons::Addon::find("ai-usage").is_none());
+    }
+    #[test]
+    fn music_controls_default_on_for_existing_profiles_and_save_independently() {
+        let old:Settings=serde_json::from_str("{}").unwrap();
+        assert!(old.music_lyrics&&old.music_scroll_tracks);
+        for (lyrics,scroll) in [(false,false),(false,true),(true,false),(true,true)] {
+            let s=Settings{music_lyrics:lyrics,music_scroll_tracks:scroll,..old.clone()};
+            let saved:Settings=serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+            assert_eq!((saved.music_lyrics,saved.music_scroll_tracks),(lyrics,scroll));
+            assert!(saved.lyrics&&saved.island_lyrics,"Music preferences are independent of lyric source and closed island");
+        }
+    }
     #[test]
     fn lyrics_window_preferences_survive_saving_and_reject_invalid_sizes() {
         let mut settings = Settings { lyrics_popup_button: false, lyrics_popup_width: 720.0, lyrics_popup_height: 540.0, ..Settings::default() };
@@ -453,6 +517,12 @@ mod tests {
         let s = Settings { expanded_width: 5000.0, hover_delay_ms: 99999, ..Default::default() }.sanitized();
         assert_eq!(s.expanded_width, 900.0);
         assert_eq!(s.hover_delay_ms, 2000);
+    }
+
+    #[test]
+    fn ai_window_bounds_and_retired_start_page_migrate() {
+        let mut settings=Settings::default();settings.start_page="ai".into();settings.ai.mini_width=0;settings.ai.mini_height=u16::MAX;
+        let settings=settings.sanitized();assert_eq!(settings.start_page,"media");assert_eq!((settings.ai.mini_width,settings.ai.mini_height),(360,1600));
     }
 
     #[test]

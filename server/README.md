@@ -1,3 +1,5 @@
+> Historical server tooling. The Windows app now uses local-only Phone Drop and does not connect to this service.
+
 # Paired phone drop: meeting server and phone page
 
 The meeting server and the phone page for Lumo's paired phone drop. The

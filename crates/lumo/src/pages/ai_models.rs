@@ -29,6 +29,20 @@ fn matches_filters(m: &Model, mask: u8) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn unavailable_rows_hide_only_for_hackclub_and_toggle_rebuilds_the_list() {
+        let mut st=AppState::new(Default::default(),Default::default());
+        let mut old=Model::manual("old");old.unavailable=Some("Deprecated".into());
+        st.ai.models=vec![old,Model::manual("good")];
+        rows(&mut st);assert_eq!(st.ai.model_rows.len(),2);
+        st.settings.ai.completion_url="https://ai.hackclub.com/proxy/v1/chat/completions".into();
+        rows(&mut st);assert_eq!(st.ai.model_rows.len(),1);
+        st.settings.ai.hide_unavailable_models=false;
+        rows(&mut st);assert_eq!(st.ai.model_rows.len(),2);
+        st.settings.ai.hide_unavailable_models=true;
+        st.ai.unavailable_models.insert((crate::ai::catalog_key(&st),"good".into()));st.ai.catalog_revision+=1;
+        rows(&mut st);assert!(st.ai.model_rows.is_empty());
+    }
+    #[test]
     fn capability_filters_combine_with_search_and_keep_selections() {
         let mut st = AppState::new(Default::default(), Default::default());
         st.ai.models = lumo_core::ai::parse_models(&serde_json::json!({"data":[
@@ -72,7 +86,7 @@ fn text(ui: &mut Ui, s: &str, r: Rect, size: f32, col: Color) {
     ui.c.text(s, r, &TextStyle::new(size).color(col));
 }
 fn surface(ui: &mut Ui, r: Rect) {
-    ui.c.fill_rrect(r, 14.0, Color::rgba(0.12, 0.12, 0.13, 1.0));
+    ui.c.fill_rrect(r, 14.0, Color::rgba(0.09, 0.09, 0.10, 1.0));
     ui.c.stroke_rrect(r, 14.0, Color::white(0.15), 1.0);
 }
 fn close(ui: &mut Ui, r: Rect) -> bool {
@@ -86,6 +100,7 @@ fn close(ui: &mut Ui, r: Rect) -> bool {
     .clicked
 }
 fn selected(ui: &mut Ui, st: &mut AppState, id: String, settings: bool) {
+    if st.ai.model_unavailable(&st.settings.ai, &id).is_some() { return; }
     let adjustable = st
         .ai
         .models
@@ -315,18 +330,23 @@ fn rows(st: &mut AppState) {
         st.ai.catalog_revision,
         st.ai.models.len(),
         st.ai.search.to_lowercase(),
-        st.ai.model_filters,
+        st.ai.model_filters | if st.settings.ai.hackclub() && st.settings.ai.hide_unavailable_models {16} else {0},
     );
     if st.ai.model_rows_key.as_ref() == Some(&key) {
         return;
     }
     let q = &key.2;
+    let scope = crate::ai::catalog_key(st);
     let mut indices: Vec<_> = st
         .ai
         .models
         .iter()
         .enumerate()
         .filter(|(_, m)| {
+            if key.3 & 16 != 0 && (m.unavailable.is_some()
+                || st.ai.unavailable_models.contains(&(scope.clone(), m.id.clone()))) {
+                return false;
+            }
             if !matches_filters(m, key.3) {
                 return false;
             }
@@ -349,23 +369,12 @@ fn rows(st: &mut AppState) {
         })
         .map(|(i, _)| i)
         .collect();
-    indices.sort_by(|a, b| {
-        let (a, b) = (&st.ai.models[*a], &st.ai.models[*b]);
-        (a.provider_name(), a.kind, a.cost_group(), &a.name).cmp(&(
-            b.provider_name(),
-            b.kind,
-            b.cost_group(),
-            &b.name,
-        ))
+    indices.sort_by_cached_key(|i| {
+        let m = &st.ai.models[*i];
+        (m.display_name().to_lowercase(), m.id.clone())
     });
     let mut result = vec![];
-    let mut last = String::new();
     for i in indices {
-        let m = &st.ai.models[i];
-        if m.provider_name() != last {
-            last = m.provider_name().into();
-            result.push(ModelRow::Provider(last.clone()));
-        }
         result.push(ModelRow::Model(i));
     }
     st.ai.model_rows = result;
@@ -382,10 +391,32 @@ pub fn popup_rect(st: &AppState, r: Rect) -> Rect {
 }
 
 pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
-    let r = popup_rect(st, r);
+    rows(st);
+    let bounds = r;
+    let mut r = popup_rect(st, r);
+    if !settings && !st.ai.reasoning_menu && st.ai.model_detail.is_none() {
+        // Anchor short catalogs above the composer rather than leaving a tall,
+        // mostly empty menu. Longer catalogs keep the bounded scrolling view.
+        // Freeze the parent geometry while filtering. Reducing a long catalog
+        // must not move the child popup (and checkbox) under the pointer.
+        let count=if st.ai.model_filters_open && st.ai.model_filter_rows>0 {st.ai.model_filter_rows}else{st.ai.model_rows.len().max(2)};
+        let height = (88.0 + count as f32 * 40.0).min(r.h);
+        r.y = r.bottom() - height;
+        r.h = height;
+    }
+    let filter_panel = filter_bounds(bounds, r);
+    if st.ai.model_filters_open && (ui.input.keys.contains(&crate::ui::KeyInput::Escape)
+        || (ui.input.just_pressed && ui.input.press_pos.or(ui.input.mouse).is_some_and(|p|!filter_panel.contains(p)))) {
+        st.ai.model_filters_open=false;
+        ui.input.keys.retain(|k|*k!=crate::ui::KeyInput::Escape);
+        ui.input.clicked=None;ui.input.released=None;ui.input.just_pressed=false;ui.input.down=false;ui.input.pressed_id=None;
+        ui.input.focused=Some(wid("ai.model-search"));ui.request_repaint();
+    }
     if ui.input.just_pressed && ui.input.mouse.is_some_and(|p| !r.contains(p)) {
         st.ai.close_models();
-        ui.blur();
+        ui.input.focused=if settings{None}else{Some(wid("ai.prompt"))};
+        ui.input.caret=st.ai.draft.chars().count();
+        if !settings{st.cmd(Command::FocusText);}
         ui.input.pressed_id = None;
         ui.input.clicked = None;
         ui.input.down = false;
@@ -404,7 +435,7 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
     }
     text(
         ui,
-        "Select model",
+        "Choose a model",
         Rect::new(r.x + 14.0, r.y + 6.0, r.w - 148.0, 28.0),
         13.0,
         palette::TEXT,
@@ -422,7 +453,7 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
         },
     );
     ui.c.icon(
-        Icon::Sliders,
+        Icon::Filter,
         filter_r.inset(8.0, 7.0),
         if filtered || st.ai.model_filters_open {
             BLUE
@@ -441,8 +472,9 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
     }
     if filter.clicked {
         st.ai.model_filters_open = !st.ai.model_filters_open;
+        if st.ai.model_filters_open {st.ai.model_filter_rows=st.ai.model_rows.len().max(2);}
         st.ai.hover_model = None;
-        ui.blur();
+        ui.input.focused=None;
         ui.request_repaint();
     }
     if close(ui, r) {
@@ -456,10 +488,9 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
         ui.request_repaint();
         return;
     }
-    if st.ai.model_filters_open {
-        filters(ui, st, r);
-        return;
-    }
+    // Keep the catalog visible behind a separate modal filter popover.
+    let filter_input = st.ai.model_filters_open.then(|| std::mem::take(ui.input));
+    let catalog_hits = ui.hits.len();
     let search = Rect::new(r.x + 9.0, r.y + 37.0, r.w - 54.0, 30.0);
     let response = ui.text_input(
         wid("ai.model-search"),
@@ -512,7 +543,6 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
     let mut choose = None;
     let mut info = None;
     let mut preview = None;
-    let mut hovered = false;
     let fixed = ui.hits.len();
     ui.c.clip(view);
     if st.ai.model_rows.is_empty() {
@@ -541,24 +571,16 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
             continue;
         }
         match row {
-            ModelRow::Provider(provider) => {
-                ui.c.line(
-                    Point::new(rr.x + 8.0, rr.y + 2.0),
-                    Point::new(rr.right() - 8.0, rr.y + 2.0),
-                    Color::white(0.07),
-                    1.0,
-                );
-                text(ui, provider, rr.inset(8.0, 0.0), 11.0, palette::TEXT_DIM);
-            }
             ModelRow::Model(i) => {
                 let m = &st.ai.models[*i];
-                let response = ui.button(wid_n("ai.model", *i as u64), rr);
+                let unavailable = st.ai.model_unavailable(&st.settings.ai, &m.id);
+                let response = unavailable.is_none().then(|| ui.button(wid_n("ai.model", *i as u64), rr));
                 let active = if settings || st.ai.selected.is_empty() {
                     &st.settings.ai.default_model
                 } else {
                     &st.ai.selected
                 };
-                if response.hovered || active == &m.id {
+                if unavailable.is_none() && (response.as_ref().is_some_and(|r| r.hovered) || active == &m.id) {
                     ui.c.fill_rrect(
                         rr,
                         8.0,
@@ -572,8 +594,8 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
                 let name = Rect::new(
                     rr.x + 8.0,
                     rr.y,
-                    rr.w - if active == &m.id { 130.0 } else { 54.0 },
-                    if m.kind == Kind::Language { rr.h } else { 19.0 },
+                    rr.w - if active == &m.id { 78.0 } else { 54.0 },
+                    if m.kind == Kind::Language && unavailable.is_none() { rr.h } else { 19.0 },
                 );
                 let marker_w = if m.free == Some(true) { 12.0 } else { 0.0 }
                     + if m.reasoning.adjustable() { 16.0 } else { 0.0 };
@@ -581,12 +603,12 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
                     ui,
                     m.display_name(),
                     Rect::new(name.x, name.y, name.w - marker_w, name.h),
-                    12.0,
-                    if active == &m.id { BLUE } else { palette::TEXT },
+                    13.0,
+                    if unavailable.is_some() { palette::TEXT_FAINT } else if active == &m.id { BLUE } else { palette::TEXT },
                 );
                 if marker_w > 0.0 {
                     let width =
-                        ui.c.measure(m.display_name(), &TextStyle::new(12.0), 10000.0)
+                        ui.c.measure(m.display_name(), &TextStyle::new(13.0), 10000.0)
                             .0;
                     let mut marker_x = name.x + width.min((name.w - marker_w).max(0.0));
                     if m.free == Some(true) {
@@ -601,10 +623,10 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
                         );
                     }
                 }
-                if m.kind != Kind::Language {
+                if m.kind != Kind::Language || unavailable.is_some() {
                     text(
                         ui,
-                        if m.kind == Kind::Image {
+                        if unavailable.is_some() { "Unavailable · see details" } else if m.kind == Kind::Image {
                             "Image generation"
                         } else {
                             "Embeddings"
@@ -614,18 +636,11 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
                         palette::TEXT_FAINT,
                     );
                 }
-                if active == &m.id {
+                if active == &m.id && unavailable.is_none() {
                     ui.c.fill_rrect(Rect::new(rr.x, rr.y + 5.0, 3.0, rr.h - 10.0), 1.5, BLUE);
                     ui.c.icon(
                         Icon::Check,
-                        Rect::new(rr.right() - 99.0, rr.center().y - 6.0, 13.0, 13.0),
-                        BLUE,
-                    );
-                    text(
-                        ui,
-                        "Selected",
-                        Rect::new(rr.right() - 82.0, rr.y, 52.0, rr.h),
-                        10.0,
+                        Rect::new(rr.right() - 48.0, rr.center().y - 6.0, 13.0, 13.0),
                         BLUE,
                     );
                 }
@@ -633,6 +648,7 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
                 let irsp = ui.button(wid_n("ai.model-info", *i as u64), ir);
                 if irsp.hovered {
                     ui.c.fill_rrect(ir, 9.0, Color::white(0.12));
+                    preview=Some((*i,rr));
                 }
                 ui.c.stroke_circle(ir.center(), 6.0, Color::white(0.4), 1.0);
                 ui.c.text(
@@ -643,23 +659,10 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
                 if irsp.clicked && !st.ai.model_filters_open {
                     info = Some(m.id.clone());
                 }
-                if response.clicked && !st.ai.model_filters_open {
+                if response.is_some_and(|r| r.clicked) && !st.ai.model_filters_open {
                     choose = Some(m.id.clone());
                 }
-                if response.hovered && !irsp.hovered && !st.ai.model_filters_open {
-                    hovered = true;
-                    if st.ai.hover_model.as_ref().is_none_or(|(id, _)| id != &m.id) {
-                        st.ai.hover_model = Some((m.id.clone(), ui.now));
-                    }
-                    if st
-                        .ai
-                        .hover_model
-                        .as_ref()
-                        .is_some_and(|(_, t)| ui.now - t >= 1.0)
-                    {
-                        preview = Some((*i, rr));
-                    }
-                }
+
             }
         }
     }
@@ -672,9 +675,7 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
         total,
         &mut st.ai.model_scroll,
     );
-    if !hovered {
-        st.ai.hover_model = None;
-    }
+    st.ai.hover_model = None;
     if let Some(id) = choose {
         selected(ui, st, id, settings);
     }
@@ -684,21 +685,41 @@ pub fn picker(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
         st.ai.model_detail_scroll = 0.0;
         st.ai.hover_model = None;
     }
-    if let Some((i, rr)) = preview {
-        preview_card(ui, &st.ai.models[i], r, rr);
+    let hint=if ui.hovered(filter_r){Some(("Filter models",filter_r))}
+        else if ui.hovered(Rect::new(r.right()-37.0,r.y+7.0,30.0,28.0)){Some(("Close model selection",Rect::new(r.right()-37.0,r.y+7.0,30.0,28.0)))}
+        else if ui.hovered(Rect::new(r.right()-38.0,r.y+37.0,29.0,30.0)){Some(("Refresh model list",Rect::new(r.right()-38.0,r.y+37.0,29.0,30.0)))}else{None};
+    if let Some(input)=filter_input {
+        ui.hits.truncate(catalog_hits);
+        *ui.input=input;
+        ui.c.fill_rrect(r,14.0,Color::black(0.32));
+        filters(ui,st,filter_panel);
+    } else if st.ai.model_detail.is_none() {
+        if let Some((i,row))=preview {
+            let mut model=st.ai.models[i].clone();model.unavailable=st.ai.model_unavailable(&st.settings.ai,&model.id);
+            preview_card(ui,&model,bounds,row);
+        }
+        else if let Some((label,button))=hint{super::ai::tooltip(ui,label,Rect::new(button.right()-180.0,button.y-34.0,180.0,30.0));}
     }
+
+}
+fn filter_bounds(bounds:Rect, parent:Rect)->Rect {
+    let w=(bounds.w-16.0).min(312.0);
+    let h=(bounds.h-12.0).min(300.0).max(132.0).min(bounds.h);
+    Rect::new(parent.right()-w-8.0,(parent.y+40.0).min(bounds.bottom()-h),w,h)
 }
 fn filters(ui: &mut Ui, st: &mut AppState, r: Rect) {
-    let panel = Rect::new(r.x + 12.0, r.y + 43.0, r.w - 24.0, r.h - 55.0);
+    ui.button(wid("ai.model-filter-surface"),r);
+    surface(ui,r);
+    let panel = r.inset(12.0,10.0);
     text(
         ui,
-        "Match all selected filters",
+        "Filter models",
         Rect::new(panel.x + 4.0, panel.y, panel.w, 24.0),
         12.0,
         palette::TEXT_DIM,
     );
     let bottom = panel.bottom() - 34.0;
-    let row_h = ((bottom - panel.y - 30.0) / 4.0).min(56.0).max(30.0);
+    let row_h = ((bottom - panel.y - 30.0) / 4.0).min(56.0).max(16.0);
     for (i, (mask, label, hint, icon)) in [
         (
             FREE,
@@ -792,7 +813,7 @@ fn filters(ui: &mut Ui, st: &mut AppState, r: Rect) {
         .pill_button(
             wid("ai.model-filter-clear"),
             Rect::new(panel.x, bottom, 90.0, 30.0),
-            "Reset filters",
+            "Reset",
             None,
             Color::white(0.06),
             palette::TEXT_DIM,
@@ -952,105 +973,41 @@ fn price(m: &Model) -> String {
         fmt(m.output_price)
     )
 }
+/// Small visual summary: advertised capabilities, never guessed benchmark or
+/// account quota values. Provider identity stays in explicit details only.
+fn support_tiles(ui:&mut Ui,m:&Model,r:Rect) {
+    let items=[(Icon::Image,"Images",m.inputs.iter().any(|s|s=="image")),
+        (Icon::File,"Files",m.inputs.iter().any(|s|s=="file")),
+        (Icon::Star,"Reasoning",m.reasoning.mandatory||m.reasoning.adjustable()||m.capabilities.iter().any(|s|s=="reasoning")),
+        (Icon::Sparkles,"Create images",m.kind==Kind::Image)];
+    let gap=6.0;let w=(r.w-gap)/2.0;let h=(r.h-gap)/2.0;
+    for (i,(icon,label,on)) in items.into_iter().enumerate() {
+        let tile=Rect::new(r.x+(i%2)as f32*(w+gap),r.y+(i/2)as f32*(h+gap),w,h);
+        ui.c.fill_rrect(tile,8.0,if on{BLUE.mul_alpha(0.10)}else{Color::white(0.035)});
+        let col=if on{BLUE}else{palette::TEXT_FAINT};
+        ui.c.icon(icon,Rect::new(tile.x+9.0,tile.center().y-7.0,14.0,14.0),col);
+        text(ui,label,Rect::new(tile.x+30.0,tile.y,tile.w-49.0,tile.h),11.0,if on{palette::TEXT}else{palette::TEXT_DIM});
+        ui.c.icon(if on{Icon::Check}else{Icon::Minus},Rect::new(tile.right()-19.0,tile.center().y-5.0,10.0,10.0),col);
+    }
+}
 fn preview_card(ui: &mut Ui, m: &Model, r: Rect, row: Rect) {
-    let above = row.y - r.y - 6.0;
-    let below = r.bottom() - row.bottom() - 6.0;
-    let available = above.max(below);
-    if available < 76.0 {
-        return;
-    }
-    let h = available.min(226.0);
-    let w = (r.w - 16.0).min(370.0);
-    let card = Rect::new(
-        r.right() - w - 8.0,
-        if above > below {
-            row.y - h - 5.0
-        } else {
-            row.bottom() + 5.0
-        },
-        w,
-        h,
-    );
-    // A tooltip never covers the row being inspected and never overflows the
-    // popover. The info button opens the complete scrollable details sheet.
-    ui.hits.retain(|hit| {
-        hit.rect.right() <= card.x
-            || hit.rect.x >= card.right()
-            || hit.rect.bottom() <= card.y
-            || hit.rect.y >= card.bottom()
-    });
-    surface(ui, card);
-    ui.c.clip(card.inset(10.0, 6.0));
-    ui.c.text(
-        m.display_name(),
-        Rect::new(card.x + 12.0, card.y + 8.0, card.w - 24.0, 23.0),
-        &TextStyle::new(13.0).weight(Weight::Semibold),
-    );
-    text(
-        ui,
-        &format!(
-            "{} · {} · {}",
-            m.provider_name(),
-            m.kind.name(),
-            m.cost_group()
-        ),
-        Rect::new(card.x + 12.0, card.y + 32.0, card.w - 24.0, 19.0),
-        11.0,
-        palette::TEXT_DIM,
-    );
-    let mut y = card.y + 57.0;
-    if h >= 140.0 {
-        text(
-            ui,
-            &m.description,
-            Rect::new(card.x + 12.0, y, card.w - 24.0, 20.0),
-            11.0,
-            palette::TEXT_DIM,
-        );
-        y += 26.0;
-    }
-    for (label, value) in [
-        ("Accepts", modalities(&m.inputs)),
-        ("Context", context(m)),
-        (
-            "Effort",
-            if m.reasoning.adjustable() {
-                format!("{} levels available", m.reasoning.levels.len())
-            } else if m.reasoning.mandatory || m.capabilities.iter().any(|s| s == "reasoning") {
-                "Model-managed".into()
-            } else {
-                "Not advertised".into()
-            },
-        ),
-        ("Cost", price(m)),
-    ] {
-        if y + 23.0 > card.bottom() - 10.0 {
-            break;
-        }
-        text(
-            ui,
-            label,
-            Rect::new(card.x + 12.0, y, 55.0, 21.0),
-            10.0,
-            palette::TEXT_FAINT,
-        );
-        text(
-            ui,
-            &value,
-            Rect::new(card.x + 70.0, y, card.w - 82.0, 21.0),
-            11.0,
-            palette::TEXT,
-        );
-        y += 25.0;
-    }
-    if y + 22.0 < card.bottom() - 8.0 {
-        text(
-            ui,
-            "ⓘ Click the info button for full details",
-            Rect::new(card.x + 12.0, y, card.w - 24.0, 20.0),
-            10.0,
-            palette::TEXT_DIM,
-        );
+    let above=row.y-r.y-6.0;let below=r.bottom()-row.bottom()-6.0;
+    let available=above.max(below);if available<80.0{return;}
+    let h=available.min(224.0);let w=(r.w-16.0).min(344.0);
+    let card=Rect::new(r.right()-w-8.0,if above>below{row.y-h-5.0}else{row.bottom()+5.0},w,h);
+    // Do not consume unrelated row hits: the transient, pointer-passive preview
+    // never becomes a hover target and cannot steal the info button's click.
+    ui.hits.retain(|hit|hit.id==wid("ai.model-surface")||hit.rect.right()<=card.x||hit.rect.x>=card.right()||hit.rect.bottom()<=card.y||hit.rect.y>=card.bottom());
+    surface(ui,card);ui.c.clip(card.inset(10.0,6.0));
+    if h>=170.0 {
+        text(ui,m.display_name(),Rect::new(card.x+12.0,card.y+8.0,card.w-24.0,24.0),14.0,palette::TEXT);
+        text(ui,&format!("{} · {}",m.kind.name(),if m.unavailable.is_some(){"Unavailable"}else{m.cost_group()}),Rect::new(card.x+12.0,card.y+33.0,card.w-24.0,19.0),11.0,if m.unavailable.is_some(){palette::ORANGE}else{palette::TEXT_DIM});
+        support_tiles(ui,m,Rect::new(card.x+12.0,card.y+61.0,card.w-24.0,68.0));
+        text(ui,&format!("Context  {}",context(m)),Rect::new(card.x+12.0,card.y+139.0,card.w-24.0,20.0),12.0,palette::TEXT);
+        if h>=205.0{text(ui,&m.unavailable.clone().unwrap_or_else(||price(m)),Rect::new(card.x+12.0,card.y+165.0,card.w-24.0,20.0),11.0,palette::TEXT_DIM);text(ui,"✓ Advertised support   − Not advertised",Rect::new(card.x+12.0,card.bottom()-28.0,card.w-24.0,18.0),10.0,palette::TEXT_FAINT);}
+    }else{
+        support_tiles(ui,m,Rect::new(card.x+10.0,card.y+8.0,card.w-20.0,(h-34.0).min(72.0)));
+        text(ui,&format!("{} · {}",context(m),m.cost_group()),Rect::new(card.x+12.0,card.bottom()-25.0,card.w-24.0,19.0),11.0,palette::TEXT_DIM);
     }
     ui.c.unclip();
 }
@@ -1101,48 +1058,36 @@ fn details(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
         (footer.y - r.y - 49.0).max(24.0),
     );
     let mut y = view.y - st.ai.model_detail_scroll;
-    let x = view.x;
-    let w = view.w - 8.0;
-    let start = y;
+    let x=view.x+4.0;let w=view.w-16.0;let start=y;
     ui.c.clip(view);
-    let title = TextStyle::new(16.0).weight(Weight::Semibold).top().wrap();
-    let th = ui.c.measure(m.display_name(), &title, w).1.max(22.0);
-    ui.c.text(m.display_name(), Rect::new(x, y, w, th), &title);
-    y += th + 7.0;
-    text(
-        ui,
-        &format!(
-            "{} · {} · {}",
-            m.provider_name(),
-            m.kind.name(),
-            m.cost_group()
-        ),
-        Rect::new(x, y, w, 21.0),
-        11.0,
-        palette::TEXT_DIM,
-    );
-    y += 31.0;
-    for (heading, value) in [
-        ("Inputs", modalities(&m.inputs)),
-        ("Outputs", modalities(&m.outputs)),
-        ("Model capabilities", capabilities(&m)),
-        ("Reasoning / effort", reasoning(&m)),
-        ("Context window", context(&m)),
-        ("Price", price(&m)),
-        ("About this model", m.description.clone()),
-    ] {
-        text(
-            ui,
-            heading,
-            Rect::new(x, y, w, 20.0),
-            11.0,
-            palette::TEXT_FAINT,
-        );
-        y += 23.0;
-        let style = TextStyle::new(12.0).top().wrap().line_spacing(1.35);
-        let h = ui.c.measure(&value, &style, w).1.max(18.0);
-        ui.c.text(&value, Rect::new(x, y, w, h), &style);
-        y += h + 17.0;
+    let title=TextStyle::new(18.0).weight(Weight::Semibold).top().wrap();
+    let th=ui.c.measure(m.display_name(),&title,w).1.max(25.0);
+    ui.c.text(m.display_name(),Rect::new(x,y,w,th),&title);y+=th+6.0;
+    text(ui,&format!("{} · {}",m.kind.name(),m.cost_group()),Rect::new(x,y,w,21.0),12.0,palette::TEXT_DIM);y+=33.0;
+    if let Some(reason)=st.ai.model_unavailable(&st.settings.ai,&m.id) {
+        let style=TextStyle::new(12.0).top().wrap().color(palette::ORANGE);
+        let h=ui.c.measure(&reason,&style,w-44.0).1.max(20.0)+20.0;
+        ui.c.fill_rrect(Rect::new(x,y,w,h),10.0,palette::ORANGE.mul_alpha(0.10));
+        ui.c.icon(Icon::Minus,Rect::new(x+12.0,y+12.0,14.0,14.0),palette::ORANGE);
+        ui.c.text(&reason,Rect::new(x+34.0,y+10.0,w-44.0,h-20.0),&style);y+=h+18.0;
+    }
+    text(ui,"Works with",Rect::new(x,y,w,22.0),13.0,palette::TEXT);y+=29.0;
+    support_tiles(ui,&m,Rect::new(x,y,w,84.0));y+=92.0;
+    text(ui,"✓ Advertised support   − Not advertised",Rect::new(x,y,w,19.0),10.0,palette::TEXT_FAINT);y+=33.0;
+    // A pair of large, scannable values precedes the longer explanation.
+    let col=(w-10.0)/2.0;
+    for (index,label,value) in [(0,"Context window",context(&m)),(1,"Reasoning",if m.reasoning.adjustable(){"Adjustable".into()}else if m.reasoning.mandatory{"Automatic".into()}else{"Not advertised".into()})] {
+        let tile=Rect::new(x+index as f32*(col+10.0),y,col,65.0);
+        ui.c.fill_rrect(tile,10.0,Color::white(0.045));
+        text(ui,label,Rect::new(tile.x+12.0,tile.y+7.0,tile.w-24.0,19.0),11.0,palette::TEXT_DIM);
+        text(ui,&value,Rect::new(tile.x+12.0,tile.y+29.0,tile.w-24.0,26.0),14.0,palette::TEXT);
+    }
+    y+=83.0;
+    for (heading,value) in [("Price per million tokens",price(&m)),("Produces",modalities(&m.outputs)),("Options",capabilities(&m)),("Effort levels",reasoning(&m)),("About",m.description.clone()),("Provider",m.provider_name().into()),("Model ID",m.id.clone())] {
+        text(ui,heading,Rect::new(x,y,w,20.0),11.0,palette::TEXT_DIM);y+=24.0;
+        let style=TextStyle::new(13.0).top().wrap().line_spacing(1.4);
+        let h=ui.c.measure(&value,&style,w).1.max(19.0);
+        ui.c.text(&value,Rect::new(x,y,w,h),&style);y+=h+23.0;
     }
     ui.c.unclip();
     let total = y - start;
@@ -1159,7 +1104,10 @@ fn details(ui: &mut Ui, st: &mut AppState, r: Rect, settings: bool) {
         total,
         &mut st.ai.model_detail_scroll,
     );
-    if ui
+    if st.ai.model_unavailable(&st.settings.ai, &m.id).is_some() {
+        ui.c.fill_rrect(footer, 15.0, Color::white(0.04));
+        text(ui, "Unavailable · choose another model", footer, 12.0, palette::TEXT_FAINT);
+    } else if ui
         .pill_button(
             wid("ai.model-detail-select"),
             footer,

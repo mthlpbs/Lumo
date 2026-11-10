@@ -243,15 +243,8 @@ impl LyricsWindow {
                     let mut p = POINT { x: lp.0 as i16 as i32, y: (lp.0 >> 16) as i16 as i32 };
                     let _ = ScreenToClient(self.hwnd, &mut p);
                     let mut r = RECT::default(); let _ = GetClientRect(self.hwnd, &mut r);
-                    let edge = (7.0 * self.gfx.scale()).round() as i32;
-                    let grip = (24.0 * self.gfx.scale()).round() as i32;
-                    if p.x > r.right-grip && p.y > r.bottom-grip { return Some(LRESULT(HTBOTTOMRIGHT as isize)); }
-                    let (left, right, top, bottom) = (p.x < edge, p.x >= r.right - edge, p.y < edge, p.y >= r.bottom - edge);
-                    let hit = match (left, right, top, bottom) {
-                        (true, _, true, _) => HTTOPLEFT, (_, true, true, _) => HTTOPRIGHT,
-                        (true, _, _, true) => HTBOTTOMLEFT, (_, true, _, true) => HTBOTTOMRIGHT,
-                        (true, _, _, _) => HTLEFT, (_, true, _, _) => HTRIGHT,
-                        (_, _, true, _) => HTTOP, (_, _, _, true) => HTBOTTOM,
+                    if let Some(hit) = crate::window::mini_resize_hit(p,r,self.gfx.scale()) { return Some(LRESULT(hit as isize)); }
+                    let hit = match () {
                         _ if p.y < (44.0 * self.gfx.scale()) as i32 && p.x < r.right - (54.0 * self.gfx.scale()) as i32 => HTCAPTION,
                         _ => HTCLIENT,
                     };
@@ -570,6 +563,13 @@ pub(crate) fn sample_state() -> AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]#[ignore="requires a Windows desktop; offline mini-player corner resize"]
+    fn mini_corners_resize_diagonally_without_changing_playback() {
+        let mut st=sample_state();let mut w=LyricsWindow::new(unsafe{GetDesktopWindow()},&st).unwrap();
+        for scale in [1.0,1.25,1.5,2.0] {w.gfx.set_dpi(scale*96.0);let hwnd=w.hwnd;crate::window::check_mini_resize_corners(hwnd,scale,|lp|w.message(&mut st,WM_NCHITTEST,WPARAM(0),lp));}
+        for (width,height) in [(420,460),(680,740)] {unsafe{SetWindowPos(w.hwnd,None,0,0,width,height,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE).unwrap();}w.message(&mut st,WM_SIZE,WPARAM(0),LPARAM(0));}
+        assert!(st.cmds.is_empty());
+    }
 
     #[test]
     fn popup_eligibility_tracks_music_lyrics_and_the_saved_switch() {

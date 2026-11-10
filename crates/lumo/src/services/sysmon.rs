@@ -28,14 +28,11 @@
 //!   the NVIDIA driver's library), as `lumo_core::power` adds them up. Both
 //!   readers open with the page and close with it.
 //!
-//! The thread keeps the charts' minute while the page is closed (Settings ›
-//! keep System history): one light reading a second of the processor times,
-//! memory status, disk and network counters and the GPU's engines, touching
-//! no window and no drive. Open, each second also walks the process list and
-//! reads the sensors, drives, battery and the driver's GPU readings. Under
-//! Show over games, while a game is in front, the light reading adds the
-//! driver's GPU readings (the temperature) and goes to the island too. A
-//! source that fails is left out of the reading and logged once.
+//! Visible compact views get one light kernel reading a second, without
+//! app enumeration or temperature/power sensors. The System page adds full
+//! details while open; Show over games adds its existing driver sensors.
+//! Returning to Time drops the sampler and waits on the control channel,
+//! without periodic wakeups. A failed source is left out and logged once.
 
 use crate::events::{AppEvent, EventSink};
 use lumo_core::power::PowerReading;
@@ -91,7 +88,7 @@ use windows::Win32::System::Threading::{
 use windows::Win32::System::WindowsProgramming::QueryThreadCycleTime;
 use windows::Win32::System::IO::DeviceIoControl;
 
-/// One reading a second, open or not.
+/// One reading per second while a visible view needs it; sleep otherwise.
 const PERIOD: Duration = Duration::from_secs(1);
 /// After the page opens, the first full reading needs a second process list to compare with; this soon.
 const FIRST: Duration = Duration::from_millis(350);
@@ -132,6 +129,11 @@ pub struct SysMon {
 }
 
 enum Msg {
+    #[cfg(test)]
+    Inspect(Sender<(u64,bool,bool)>),
+    /// Only the compact metrics are visible: light readings, no app walk,
+    /// power/temperature sensors or page-only counters.
+    Compact(bool),
     /// The page opened (true) or closed.
     Open(bool),
     /// Keep the history while the page is closed.
@@ -144,6 +146,9 @@ enum Msg {
 }
 
 impl SysMon {
+    #[cfg(test)]
+    pub(crate) fn test_state(&self)->(u64,bool,bool){let(tx,rx)=mpsc::channel();self.tx.send(Msg::Inspect(tx)).unwrap();rx.recv_timeout(Duration::from_secs(8)).unwrap()}
+    pub fn compact(&self,on:bool){let _=self.tx.send(Msg::Compact(on));}
     pub fn start(sink: EventSink, background: bool, rest: Rest) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::Builder::new().name("lumo-sysmon".into()).spawn(move || worker(sink, rx, background, rest))?;
@@ -177,8 +182,13 @@ impl Drop for SysMon {
     }
 }
 
+fn compact_reads(open:bool,game:bool,compact:bool,background:bool,rest:Rest)->bool{
+    reads(open,game,background,rest)||(compact&&!rest.away&&!rest.saver)
+}
 fn worker(sink: EventSink, rx: Receiver<Msg>, mut background: bool, mut rest: Rest) {
+    #[cfg(test)]let mut samples=0u64;
     let mut open = false;
+    let mut compact=false;
     let mut game = false;
     let mut sampler: Option<Sampler> = reads(open, game, background, rest).then(Sampler::new);
     let mut monitor = Monitor::default();
@@ -199,8 +209,9 @@ fn worker(sink: EventSink, rx: Receiver<Msg>, mut background: bool, mut rest: Re
         let Some(first) = first else {
             // A reading: light while closed, full while open.
             if let Some(s) = sampler.as_mut() {
+                #[cfg(test)]{samples+=1;}
                 monitor.push(s.sample(open, game));
-                if open || game {
+                if open || game || compact {
                     sink.send(AppEvent::System(Box::new(monitor.clone())));
                 }
             }
@@ -213,9 +224,12 @@ fn worker(sink: EventSink, rx: Receiver<Msg>, mut background: bool, mut rest: Re
         };
         // Everything queued counts, the latest of each kind winning (and Quit
         // above all): flipping tabs queues several, and each would cost a sampler.
-        let (mut quit, mut want_open, mut want_bg, mut want_game, mut want_rest) = (false, None, None, None, None);
+        let (mut quit, mut want_open, mut want_bg, mut want_game, mut want_rest,mut want_compact) = (false, None, None, None, None,None);
+        #[cfg(test)]let mut inspectors=vec![];
         for m in std::iter::once(first).chain(std::iter::from_fn(|| rx.try_recv().ok())) {
             match m {
+                #[cfg(test)]Msg::Inspect(tx)=>inspectors.push(tx),
+                Msg::Compact(on)=>want_compact=Some(on),
                 Msg::Quit => quit = true,
                 Msg::Open(on) => want_open = Some(on),
                 Msg::Background(on) => want_bg = Some(on),
@@ -235,6 +249,7 @@ fn worker(sink: EventSink, rx: Receiver<Msg>, mut background: bool, mut rest: Re
         if let Some(g) = want_game {
             game = g;
         }
+        if let Some(c)=want_compact{compact=c;}
         if let Some(r) = want_rest {
             if r != rest && (background || open || game) {
                 crate::pinfo!("system readings: {}", if r.away { "resting while nobody is at the PC" } else if r.saver { "kept minute resting on battery saver" } else { "reading again" });
@@ -243,9 +258,10 @@ fn worker(sink: EventSink, rx: Receiver<Msg>, mut background: bool, mut rest: Re
         }
         // Not reading: no thread wake-ups at all until a message comes, and
         // the kept minute goes so a gap never shows as part of it.
-        if !reads(open, game, background, rest) {
+        if !compact_reads(open,game,compact,background,rest) {
             sampler = None;
             monitor.clear();
+            #[cfg(test)]for tx in inspectors{let _=tx.send((samples,false,open));}
             continue;
         }
         let fresh = sampler.is_none();
@@ -254,6 +270,7 @@ fn worker(sink: EventSink, rx: Receiver<Msg>, mut background: bool, mut rest: Re
             monitor.clear();
             due = Instant::now() + FIRST;
         }
+        if want_compact==Some(true){due=due.min(Instant::now()+FIRST);}
         // A game just came to the front: the kept reading at once, a fresh
         // one shortly, then each second.
         if want_game == Some(true) && !open {
@@ -274,6 +291,7 @@ fn worker(sink: EventSink, rx: Receiver<Msg>, mut background: bool, mut rest: Re
                 due = Instant::now() + FIRST;
             }
         }
+        #[cfg(test)]for tx in inspectors{let _=tx.send((samples,sampler.is_some(),open));}
     }
 }
 

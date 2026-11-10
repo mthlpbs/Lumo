@@ -1,6 +1,7 @@
 # Search
 
-Swipe left or right over the closed island to expand it into Search. Swipe
+With a mouse wheel, scroll down over the closed island for Search or up for AI
+when enabled. With a touchpad, scroll right for Search or left for AI. Swipe
 again anywhere over Search, including the embedded web page, to collapse it.
 Esc also closes it. The launcher and embedded browser have no close button.
 Clicking outside closes Search unless its **Keep open** pin is on, including
@@ -9,6 +10,10 @@ menu. Clicking inside the embedded webpage keeps Search open. The ordinary
 island pin does not override Search's own Keep open preference.
 Regular open island pages and
 Settings retain their normal horizontal navigation.
+
+Hover over browser controls to see their actions and current state. Hints stay
+inside the browser chrome so the webpage cannot cover them. Hovering does not
+navigate, change focus or toggle a preference.
 
 Search contains registered desktop and Microsoft Store apps, Windows Settings
 destinations, and optional local service, PowerToys and VS Code command
@@ -46,8 +51,8 @@ the loaded history; old file-search preferences are ignored.
 
 Right-click a result for a dark, rounded native Windows menu, with keyboard
 navigation, accessible item names and commands specific to the result. Apps
-offer **Open**, **Open as administrator** where Windows supports it, **Copy
-path**, **Copy icon file (.ico)** and **Copy icon image**. Store apps without a
+offer **Open**, **Run as administrator** where Windows supports it, **Copy
+path**, **Copy icon file** and **Copy icon image**. Store apps without a
 file path offer Copy app link instead. Administrator activation uses Windows'
 own Shell verb and UAC prompt. Windows Settings results offer Open and Copy
 settings link. Service menus offer only supported Start/Stop actions. VS Code
@@ -56,7 +61,7 @@ Copy link and Open in default browser. A frequent result can be removed individu
 **Settings > Search > Clear frequent results** clears all saved counts.
 Shift+F10 or the keyboard Menu key opens the selected result's menu.
 
-![Native application result menu](brand/readme/lumo/native-context-menu-0b599d71a06b.png)
+![Native application result menu](brand/readme/lumo/native-context-menu-e5493623e2f2.png)
 
 ## Services, PowerToys and VS Code commands
 
@@ -267,3 +272,88 @@ Locking Windows or turning off the display closes Search. Battery saver pauses
 discovery, icon work and the embedded browser. No new work runs while the
 island is closed. The optional browser bindings are built for size and the
 shared Runtime is never started for local search.
+
+The mini browser resizes diagonally from all four rounded corners as well as
+horizontally or vertically from its edges. Corner targets scale with Windows
+DPI and reach the visible part of the rounded frame.
+
+
+## Mouse and touchpad input
+
+**Settings > General > Mouse wheel shortcuts** is on by default. With the
+pointer over the closed island, mouse wheel down opens Search and wheel up
+opens AI (if enabled in Add-ons). Over an open Search/AI header, another deliberate wheel gesture closes to Time
+first. A subsequent gesture on the closed island opens the requested workspace. Over the ordinary expanded header, up/down selects
+previous/next sections. Scroll inside search results, chat, model popovers,
+websites and other content as usual. Music's optional track-scroll behavior
+remains on its player content.
+
+**Shift + mouse wheel** cycles the closed clock/activity, performance and
+network views, if compact scrolling is enabled. Touchpad vertical scrolling
+continues to cycle those views. Touchpad horizontal gestures retain right for
+Search, left for AI and a fresh gesture to close the open workspace. Their
+existing per-feature settings remain independent of mouse-wheel shortcuts.
+
+Lumo identifies input sources on demand through Windows. A scoped touchpad-aware
+registration distinguishes precision-touchpad packets from mouse packets; it
+lasts only while the pointer is over the island and is released on leave, lock
+or display-off. Windows still converts touchpad gestures into the existing wheel
+messages. Input-source identification has no polling, raw-input subscription, hook or
+background worker; outside-click dismissal uses the separate scoped observer
+described below. Input handling continues in battery saver; it does not add
+any repeating work.
+
+Older Windows versions may not expose the optional identification API. If the
+source cannot be identified safely, Lumo keeps the previous scrolling behavior
+rather than guessing from wheel distance. A legacy driver that reports a touchpad
+as a mouse cannot be reliably distinguished; turn off **Mouse wheel shortcuts**
+if it misidentifies your device. Touchpad and tilting-wheel horizontal gestures,
+the Ctrl-hover AI shortcut and Settings' Open Search button remain available.
+
+Implementation references: [Windows input message source](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcurrentinputmessagesource),
+[scoped touchpad capability and default wheel conversion](https://learn.microsoft.com/en-us/windows/win32/input-precisiontouchpad/registertouchpadcapable).
+
+![Mouse wheel shortcuts in General settings](brand/readme/lumo/settings-mouse-wheel-c515847a7701.png)
+
+
+Outside clicks dismiss an unpinned Search/AI workspace even when Windows kept
+the background app active during wheel opening. Inside clicks, WebView children,
+attachment pickers, result menus and Keep open retain their expected behavior.
+A scoped mouse-button observer exists only while dismissal is needed; closing,
+pinning, lock or display-off releases it. It records no input history and adds
+no idle polling. See [privacy](../PRIVACY.md).
+
+Horizontal touchpad input now accepts a deliberate reversal after a short
+200-ms action guard, or renewed sustained movement after 650 ms, without needing
+to lift and reapply fingers. Distance thresholds suppress small inertial tails;
+no queued action runs after input stops. A deliberate close returns to Time
+before a later gesture can open the other workspace.
+
+VS Code command rows use a small blue source mark instead of a full-size app
+icon or repeated provider name in each command title. Commands still require a
+live Code window. PowerToys results load native icons from their installed tool
+executables, checking current WinUI3Apps and older layouts. A purpose-specific
+vector fallback appears if artwork is unavailable; Color Picker uses a pipette.
+Icons use the existing six-item worker batches and bounded 64-icon memory cache.
+Refresh search sources clears failed/stale icon entries so they can be retried.
+No tool is launched to read its icon. Layout references come from
+[PowerToys' signed binary inventory](https://github.com/microsoft/PowerToys/blob/main/.pipelines/ESRPSigning_core.json).
+
+The result context menu remains a native Win32 menu with keyboard support,
+accessible names and Windows dismissal. It now uses compact 34-DIP action rows,
+quieter group dividers, rounded corners, grayscale text and a distinct primary
+Open action. Unsupported administrator actions remain disabled. Copy path/link,
+icon-file/image copying and removing frequent results preserve their behavior.
+
+![Small VS Code source mark and PowerToys pipette fallback (offline examples)](brand/readme/lumo/search-tool-icons-47eaaa65fa19.png)
+
+## Scrolling results
+
+Search scrolls in pixels, preserving small touchpad deltas and easing mouse-wheel
+movement. Scrolling leaves keyboard selection in place. Arrow keys and Page Up /
+Page Down reveal the selected result. Only visible result portions receive clicks.
+The short scroll animation stops when settled and snaps in battery saver.
+
+Empty Search fields hide the text caret. Typing shows the focused caret with
+Windows' normal blink timing, and clearing the text hides it and stops blink
+redraws. Keyboard focus stays ready for input.

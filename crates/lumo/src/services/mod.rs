@@ -4,6 +4,8 @@
 pub mod addons;
 pub mod ai;
 pub mod ai_shortcut;
+pub mod wheel_input;
+pub mod workspace_dismiss;
 pub mod applemusic;
 pub mod applemusic_ui;
 pub mod audio;
@@ -18,7 +20,6 @@ pub mod media;
 pub mod music_files;
 pub mod search;
 pub mod search_integrations;
-pub mod pairdrop;
 pub mod phonedrop;
 pub mod power;
 pub mod psu;
@@ -28,6 +29,7 @@ pub mod secret;
 pub mod sound;
 pub mod sysmon;
 pub mod update;
+pub mod usage_cleanup;
 
 use crate::commands::MediaCmd;
 use crate::events::EventSink;
@@ -43,7 +45,6 @@ pub struct Services {
     _bluetooth: Option<bluetooth::BluetoothService>,
     fullscreen: Option<fullscreen::FullscreenWatcher>,
     clip: Option<clipboard::ClipboardHistory>,
-    pairdrop: Option<pairdrop::PairDropService>,
     addons: Option<addons::AddonService>,
 }
 
@@ -68,8 +69,7 @@ impl Services {
         let bluetooth = started("bluetooth", bluetooth::BluetoothService::start(sink.clone()));
         let fullscreen = started("fullscreen", fullscreen::FullscreenWatcher::start(helper, sink.clone()));
         let clip = started("clipboard history", clipboard::ClipboardHistory::start(sink.clone(), settings.clipboard_history));
-        // Asks nothing until a phone is paired.
-        let pairdrop = started("pair drop", pairdrop::PairDropService::start(sink.clone()));
+        // Phone Drop is local-only. Legacy pairing secrets are never loaded.
         // Built-in add-ons need no worker. Updates use a short-lived worker
         // when requested, so there is no updater thread or HTTP client at rest.
         let addons = if lumo_core::addons::ALL.iter().any(|a| a.downloads() && settings.addon_on(a.id)) {
@@ -78,7 +78,7 @@ impl Services {
         } else {
             None
         };
-        Self { media, lyrics, _audio: audio, _bluetooth: bluetooth, fullscreen, clip, pairdrop, addons }
+        Self { media, lyrics, _audio: audio, _bluetooth: bluetooth, fullscreen, clip, addons }
     }
 
     pub fn stop(self, _helper: HWND) {
@@ -147,37 +147,6 @@ impl Services {
 
     pub fn cancel_lyrics(&self) {
         if let Some(l) = &self.lyrics { l.cancel(); }
-    }
-
-    /// Show a pairing QR code: the link, or a sentence for the panel.
-    pub fn pair_begin(&self) -> Result<String, String> {
-        match &self.pairdrop {
-            Some(p) => p.begin_pairing(),
-            None => Err("Pairing couldn't start on this PC.".into()),
-        }
-    }
-
-    pub fn pair_cancel(&self) {
-        if let Some(p) = &self.pairdrop {
-            p.cancel_pairing();
-        }
-    }
-
-    pub fn pair_remove(&self, room: &str) {
-        if let Some(p) = &self.pairdrop {
-            p.remove(room);
-        }
-    }
-
-    /// The Shelf's files, which connected paired phones may save.
-    pub fn pair_shelf(&self, paths: Vec<std::path::PathBuf>) {
-        if let Some(p) = &self.pairdrop {
-            p.set_shelf(paths);
-        }
-    }
-
-    pub fn pairs(&self) -> Vec<lumo_core::pairdrop::Pair> {
-        self.pairdrop.as_ref().map(|p| p.pairs()).unwrap_or_default()
     }
 
     /// The Apple Music token on disk was saved or removed.

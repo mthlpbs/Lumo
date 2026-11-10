@@ -109,7 +109,13 @@ pub fn search_icons(items:Vec<(String,lumo_core::search::Target)>,cancel:&std::s
     items.into_iter().take(6).take_while(|_|!cancel.load(std::sync::atomic::Ordering::Relaxed)).map(|(id,target)|{
         let image=unsafe{(||->WinResult<Image>{
             use windows::{core::PCWSTR,Win32::{Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES,UI::{Controls::{IImageList,ILD_TRANSPARENT},Shell::{SHGetFileInfoW,SHGetImageList,SHFILEINFOW,SHGFI_PIDL,SHGFI_SYSICONINDEX,SHIL_EXTRALARGE,SHCreateItemFromIDList},WindowsAndMessaging::{DestroyIcon,HICON}}}};
-            let pidl:*const windows::Win32::UI::Shell::Common::ITEMIDLIST=match &target {lumo_core::search::Target::App(app)=>app.id_list().as_ptr().cast(),_=>return Err(E_INVALIDARG.into())};
+            let path_item:Option<windows::Win32::UI::Shell::IShellItem>=match &target {
+                lumo_core::search::Target::Launch{path,..}=>Some(windows::Win32::UI::Shell::SHCreateItemFromParsingName(&HSTRING::from(path),None)?),_=>None,
+            };
+            let allocated=if let Some(item)=&path_item {Some(windows::Win32::UI::Shell::SHGetIDListFromObject(item)?)}else{None};
+            struct OwnedPidl(Option<*mut windows::Win32::UI::Shell::Common::ITEMIDLIST>);impl Drop for OwnedPidl{fn drop(&mut self){if let Some(p)=self.0{unsafe{windows::Win32::System::Com::CoTaskMemFree(Some(p.cast()));}}}}
+            let allocated=OwnedPidl(allocated);
+            let pidl:*const windows::Win32::UI::Shell::Common::ITEMIDLIST=match &target {lumo_core::search::Target::App(app)=>app.id_list().as_ptr().cast(),_=>allocated.0.ok_or(E_INVALIDARG)?.cast_const()};
             let mut info=SHFILEINFOW::default();
             let got=SHGetFileInfoW(PCWSTR(pidl.cast()),FILE_FLAGS_AND_ATTRIBUTES(0),Some(&mut info),std::mem::size_of::<SHFILEINFOW>() as u32,SHGFI_PIDL|SHGFI_SYSICONINDEX);
             let source=if got!=0 {
@@ -792,6 +798,12 @@ mod tests {
         assert_eq!(&ico[..6],&[0,0,1,0,1,0]);assert_eq!(u32::from_le_bytes(ico[18..22].try_into().unwrap()),22);assert_eq!(&ico[22..],png);
         let dib=dibv5(2,2,&rgba);assert_eq!(dib.len(),124+rgba.len());assert_eq!(&dib[124..128],&[0,0,255,128]);assert_eq!(i32::from_le_bytes(dib[8..12].try_into().unwrap()),-2);
         let files=drop_file(std::path::Path::new("C:/Icons/App.ico"));assert_eq!(&files[..4],&20u32.to_le_bytes());assert_eq!(&files[files.len()-4..],&[0,0,0,0]);
+    }
+    #[test]#[ignore="reads only an icon from a local fixture executable"]
+    fn search_tool_launch_targets_load_transparent_icons_without_execution() {
+        let result=search_icons(vec![("fixture-tool".into(),lumo_core::search::Target::Launch{path:std::env::current_exe().unwrap().to_string_lossy().into_owned(),arguments:String::new()})],&std::sync::atomic::AtomicBool::new(false));
+        let image=result[0].1.as_ref().expect("launch target icon");assert_eq!((image.width,image.height),(48,48));
+        assert!(image.pixels.chunks_exact(4).any(|p|p[3]>0));
     }
     #[test]#[ignore="extracts an icon from the test executable; never changes the clipboard"]
     fn native_application_icon_exports_as_a_real_ico(){unsafe{

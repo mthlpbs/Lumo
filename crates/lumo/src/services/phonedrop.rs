@@ -31,9 +31,8 @@ pub struct PhoneDrop {
 impl PhoneDrop {
     /// Start serving and return the link for the QR code. `Err` holds a
     /// sentence for the island.
-    pub fn start(sink: EventSink, offer: Vec<PathBuf>) -> Result<(PhoneDrop, String), String> {
+    pub fn start(sink: EventSink, offer: Vec<PathBuf>, inbox: PathBuf) -> Result<(PhoneDrop, String), String> {
         let ip = lan_ipv4().ok_or_else(|| "This PC isn't on a Wi-Fi or wired network.".to_string())?;
-        let inbox = crate::paths::phone_inbox_dir();
         std::fs::create_dir_all(&inbox).map_err(|e| format!("Couldn't make the folder {} ({e}).", inbox.display()))?;
         let secret = random_token().ok_or_else(|| "Windows couldn't make a secret link.".to_string())?;
         let sink = Mutex::new(sink);
@@ -192,31 +191,6 @@ fn adapter_ipv4s() -> Vec<(u32, bool, Ipv4Addr)> {
     Vec::new()
 }
 
-/// Every address a phone might reach this PC on, best first (the same
-/// ranking as [`lan_ipv4`]): the direct link of a paired phone offers each
-/// one. Up to three, no loopback, link-local or CGNAT/Tailscale addresses.
-pub(crate) fn lan_addresses() -> Vec<IpAddr> {
-    let mut ranked: Vec<(i32, Ipv4Addr)> = adapter_ipv4s().into_iter().map(|(t, g, ip)| (rank(t, g, ip), ip)).filter(|(s, _)| *s > 0).collect();
-    ranked.sort_by_key(|a| std::cmp::Reverse(a.0));
-    let mut out: Vec<IpAddr> = Vec::new();
-    for (_, ip) in ranked {
-        let o = ip.octets();
-        if (o[0] == 100 && (64..128).contains(&o[1])) || out.contains(&IpAddr::V4(ip)) {
-            continue;
-        }
-        out.push(IpAddr::V4(ip));
-        if out.len() == 3 {
-            break;
-        }
-    }
-    if out.is_empty() {
-        if let Some(ip) = route_ipv4() {
-            out.push(IpAddr::V4(ip));
-        }
-    }
-    out
-}
-
 /// The local address of a route to the internet (no packet is sent).
 pub(crate) fn route_ipv4() -> Option<Ipv4Addr> {
     let s = UdpSocket::bind("0.0.0.0:0").ok()?;
@@ -230,7 +204,6 @@ pub(crate) fn route_ipv4() -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn prefers_the_home_wifi() {
         let wifi = rank(IF_TYPE_WIFI, true, Ipv4Addr::new(192, 168, 1, 20));

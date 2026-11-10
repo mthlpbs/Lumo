@@ -5,7 +5,7 @@
 //! OLE calls the drop target from the message loop, and [`drag_out`] runs the
 //! modal `DoDragDrop` loop from a deferred command.
 
-use crate::events::{AppEvent, EventSink};
+use crate::events::{AppEvent, EventSink, SendHwnd};
 use lumo_core::shelf::MAX_SHELF_ITEMS;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -72,8 +72,15 @@ impl DropTarget {
 
     fn set_hover(&self, on: bool) {
         if self.hovering.replace(on) != on {
-            self.sink.send(AppEvent::DragHover(on));
+            self.sink.send(AppEvent::DragHover { owner: SendHwnd::new(self.hwnd), on });
         }
+    }
+}
+impl Drop for DropTarget {
+    fn drop(&mut self) {
+        // RevokeDragDrop can destroy a mini host before DragLeave arrives.
+        // End only this host's hover so the island cannot remain held open.
+        self.set_hover(false);
     }
 }
 
@@ -157,7 +164,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
         } else {
             // ShelfAdd also ends the hover state on the app side.
             self.hovering.set(false);
-            self.sink.send(AppEvent::ShelfAdd(paths));
+            self.sink.send(AppEvent::FilesDropped { owner: SendHwnd::new(self.hwnd), paths });
         }
         Ok(())
     }
@@ -193,6 +200,12 @@ unsafe fn dropped_paths(data: &IDataObject) -> Result<Vec<String>> {
 
 /// Make the island a drop target for files.
 pub fn register(hwnd: HWND, sink: EventSink) -> windows::core::Result<()> {
+    register_target(hwnd,sink)?;
+    ISLAND.store(hwnd.0 as isize, Ordering::Relaxed);
+    Ok(())
+}
+/// Additional attachment hosts must not replace the main island's drag source.
+pub fn register_target(hwnd: HWND, sink: EventSink) -> windows::core::Result<()> {
     let helper: Option<IDropTargetHelper> = match unsafe { CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) } {
         Ok(h) => Some(h),
         Err(e) => {
@@ -203,7 +216,6 @@ pub fn register(hwnd: HWND, sink: EventSink) -> windows::core::Result<()> {
     let target: IDropTarget = DropTarget { hwnd, sink, helper, accept: Cell::new(false), hovering: Cell::new(false) }.into();
     // OLE keeps its own reference until RevokeDragDrop.
     unsafe { RegisterDragDrop(hwnd, &target)? };
-    ISLAND.store(hwnd.0 as isize, Ordering::Relaxed);
     Ok(())
 }
 

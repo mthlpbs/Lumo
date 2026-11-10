@@ -1,32 +1,14 @@
-//! Music page, the flagship screen: album art, track info, a seekable
-//! progress bar, transport controls and time-synced lyrics.
-//!
-//! ```text
-//! ┌──────────┐  Title                        │  earlier line
-//! │          │  Artist                       │  previous line
-//! │   art    │  • Player                     │  CURRENT LINE
-//! │ 104×104  │  ━━━━━━━━━━━━━━━━━──────────  │  next line
-//! └──────────┘  1:23                 −2:10   │  later line
-//!                  ⏮      ( ▶ )      ⏭       │
-//! ```
-//!
-//! The app lays pages out at the island's final size (and masks them with
-//! the island's outline while it springs open), so nothing reflows here.
-//! The art's top edge and the title's cap height share the content top.
-//! All units are DIPs; static geometry is snapped to device pixels.
-//!
-//! Animation state that has no home in `PageUiState` (velocities, the last
-//! frame time, a text-measurement cache) lives in a UI-thread `thread_local`.
+//! Expanded Music shares its player layout with `pill::music`; both themes
+//! use the same timeline, controls, lyric clock and bounded animation state.
+//! This module owns synced/plain lyric rendering and media command dispatch.
 
 use crate::commands::{Command, MediaCmd};
 use crate::gfx::{ts, Image, TextStyle, Weight};
 use crate::icons::Icon;
 use crate::state::{AppState, LyricsState, LyricsStatus, MediaSession, PageUiState};
-use crate::ui::{wid, wid_n, Ui, WidgetId};
-use lumo_core::datetime::fmt_duration;
+use crate::ui::{wid, wid_n, Ui};
 use lumo_core::geom::{lerp, palette, Color, Point, Rect};
 use lumo_core::lrc::Lyrics;
-use lumo_core::nowplaying::lyrics_lead_s;
 use lumo_core::romanize::Ruby;
 use lumo_core::timeline::LyricClock;
 use std::cell::Cell;
@@ -35,41 +17,15 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------- layout
 
 /// Content height with a media session (the play button's bottom + air).
-const H_SESSION: f32 = 148.0;
+pub(crate) const H_SESSION: f32 = 210.0;
 /// Content height of the "Nothing playing" state.
 const H_EMPTY: f32 = 124.0;
 
-const ART: f32 = 104.0;
-const ART_RADIUS: f32 = 14.0;
-/// The art's first ink is the content top, like every page.
-const ART_TOP: f32 = 0.0;
 /// Art shrinks a little while paused (animated).
 pub(crate) const ART_PAUSED_SCALE: f32 = 0.94;
-const GAP_ART: f32 = 16.0;
 pub(crate) const GAP_LYRICS: f32 = 20.0;
 pub(crate) const LYRICS_SHARE: f32 = 0.42;
-const MIN_MID_W: f32 = 176.0;
 pub(crate) const MIN_LYRICS_W: f32 = 110.0;
-
-// Middle column rows (offsets from the content top). The title's text box
-// starts above the top so its cap height (not its line box) meets the art's
-// top edge; the header leaves room for that. Title, artist and player sit on
-// a ~20 DIP rhythm; the bar + times group has about the same air (~14 DIPs
-// of ink gap) above it and above the controls.
-const TITLE_Y: f32 = -6.0;
-const TITLE_H: f32 = 22.0;
-const ARTIST_Y: f32 = 16.0;
-const SOURCE_Y: f32 = 37.0;
-const SOURCE_H: f32 = 18.0;
-const BAR_Y: f32 = 66.0;
-const BAR_H: f32 = 4.0;
-const TIMES_Y: f32 = 75.0;
-const TIMES_H: f32 = 14.0;
-const CONTROLS_CY: f32 = 122.0;
-
-const PLAY_D: f32 = 44.0;
-const SIDE_BTN: f32 = 38.0;
-const CONTROL_ICON: f32 = 20.0;
 
 // ---------------------------------------------------------------- lyrics
 
@@ -138,6 +94,7 @@ pub(crate) struct Anim {
     scroll_vel: f32,
     /// Steady playback clock for synced lyrics (eases over jumpy reports).
     pub(crate) clock: LyricClock,
+    last_seek: Option<lumo_core::timeline::PendingSeek>,
     /// Identity of the lyrics shown last frame (track, synced, shape).
     sig: Option<Sig>,
     /// Column width and DPI scale the measurements below were made at.
@@ -415,19 +372,13 @@ pub fn height(st: &AppState) -> f32 {
 }
 
 pub(crate) fn session_height(st: &AppState) -> f32 {
-    // The pop-out toolbar needs its own space; do not take it out of the
-    // existing multi-line lyric viewport.
+    // Mini-player controls live in the header; the whole viewport is music.
     H_SESSION + lyrics_toolbar_height(st)
 }
 
-pub(crate) fn lyrics_toolbar_height(st: &AppState) -> f32 {
-    // Reserve the toolbar while loading/missing, so a lookup never changes
-    // the page's height or moves the artwork and transport controls.
-    if st.settings.lyrics && st.settings.lyrics_popup_button && !st.lyrics_popup_open
-        && st.media.as_ref().is_some_and(|m|m.music_source.is_some()) {28.0} else {0.0}
-}
+pub(crate) fn lyrics_toolbar_height(_st: &AppState) -> f32 { 0.0 }
 
-/// Centre the player in the extra room reserved for the lyrics toolbar.
+/// Kept for the shared lyric viewport; header controls need no content offset.
 pub(crate) fn player_offset(st: &AppState) -> f32 {
     (session_height(st) - H_SESSION) * 0.5
 }
@@ -437,186 +388,28 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) {
         return;
     }
     let mut a = take_anim();
-    let fr = a.frame(st.now, ui.c.alpha());
-    if st.media.is_some() {
-        draw_session(ui, st, area, &mut a, &fr);
-    } else {
-        a.track = TrackFade::default();
-        let r = Rect::new(area.x, area.y, area.w, H_EMPTY);
-        super::empty_state(ui, r, Icon::Music, "Nothing playing", "Play music in Spotify, a browser or any media app");
-    }
+    a.track = TrackFade::default();
+    let r = Rect::new(area.x, area.y, area.w, H_EMPTY);
+    super::empty_state(ui, r, Icon::Music, "Nothing playing", "Play music in Spotify, a browser or any media app");
     put_anim(a);
-}
-
-fn draw_session(ui: &mut Ui, st: &mut AppState, area: Rect, a: &mut Anim, fr: &Frame) {
-    let now = st.now;
-    let accent = st.media_accent();
-    let lyrics_enabled = st.settings.lyrics && !st.lyrics_popup_open;
-    let popup_available = st.lyrics_popup_open || crate::lyrics_window::available(st);
-    let Some(m) = st.media.as_ref() else { return };
-    let lyrics_enabled = lyrics_enabled && m.music_source.is_some();
-    if a.track.observe(m, now, fr.opening || st.power.saver) { a.clock.reset(); }
-
-    let scale = ui.c.scale().max(0.5);
-    let w = area.w;
-    let x0 = snap(area.x, scale);
-    let content_y = snap(area.y, scale);
-    let y0 = snap(area.y + player_offset(st), scale);
-
-    // Columns.
-    let lyr_w = (w * LYRICS_SHARE).min(w - ART - GAP_ART - GAP_LYRICS - MIN_MID_W).round();
-    let show_lyrics = lyrics_enabled && lyr_w >= MIN_LYRICS_W;
-    let mid_x = snap(x0 + ART + GAP_ART, scale);
-    let mid_right = if show_lyrics { x0 + w - lyr_w - GAP_LYRICS } else { x0 + w };
-    let mid = Rect::new(mid_x, y0, snap(mid_right - mid_x, scale).max(0.0), H_SESSION);
-    let col = Rect::new(snap(x0 + w - lyr_w, scale), content_y, lyr_w, session_height(st));
-
-    let playing = m.is_playing();
-    let tl = m.timeline;
-    let pos = tl.position_at(now);
-    // Where the lyrics are: the player's position, plus its known lag and the
-    // user's own shift, on a clock that rides out jumpy reports.
-    let lead = lyrics_lead_s(&m.app_id) + f64::from(st.settings.lyrics_offset_ms) / 1000.0;
-    let lyric_pos = a.clock.tick_with_seek(now, pos + lead, playing && tl.has_duration(), tl.rate, st.media_pending_seek);
-    let has_dur = tl.has_duration();
-    let mut acts: Vec<MediaCmd> = Vec::new();
-    let mut anim = a.track.moving();
-
-    // Album art (gently shrinks while paused).
-    let art_target = if playing { 1.0 } else { ART_PAUSED_SCALE };
-    if a.art_scale <= 0.0 || fr.opening || st.power.saver {
-        a.art_scale = art_target;
-        a.art_vel = 0.0;
-    }
-    let dt = step_dt(fr.dt, a.art_vel, a.art_scale, art_target);
-    follow(&mut a.art_scale, &mut a.art_vel, art_target, ART_OMEGA, dt);
-    let art_settled = settle(&mut a.art_scale, &mut a.art_vel, art_target, 0.0005, 0.005);
-    anim |= !art_settled;
-    let art_px = if art_settled { Some(scale) } else { None };
-    a.track.paint_art(ui, now, Rect::new(x0, y0 + ART_TOP, ART, ART), |ui, art, r| draw_art(ui, art, r, a.art_scale, art_px));
-
-    // Title, artist, player.
-    let words_w = (mid.w - if st.settings.lyrics_popup_button && m.music_source.is_some() && !show_lyrics { 38.0 } else { 0.0 }).max(0.0);
-    a.track.paint_words(ui, now, |ui, title, artist, dx| {
-        ui.c.text(title, Rect::new(mid.x + dx, y0 + TITLE_Y, words_w, TITLE_H), &TextStyle::headline());
-        if !artist.is_empty() { ui.c.text(artist, Rect::new(mid.x + dx, y0 + ARTIST_Y, words_w, 18.0), &TextStyle::body().color(palette::TEXT_DIM)); }
-    });
-    let app = m.app_name.trim();
-    let label = app;
-    let lrc_space = if m.music_source.is_some() { 40.0 } else { 0.0 };
-    let label_w = ui.c.measure(label, &TextStyle::footnote(), mid.w).0.min((mid.w - lrc_space).max(0.0));
-    draw_source(ui, mid.x, y0 + SOURCE_Y, label_w, label);
-    let lrc_x = mid.x + label_w + if label.is_empty() { 0.0 } else { 8.0 };
-    let lrc_r = Rect::new(lrc_x, y0 + SOURCE_Y - 3.0, 24.0, 24.0);
-    let toggle_lrc = m.music_source.is_some() && lrc_toggle(ui, st.settings.island_lyrics, !st.lyrics_popup_open, lrc_r);
-    let pop_r = Rect::new(area.right() - 28.0, content_y - 4.0, 28.0, 28.0);
-    let toggle_popup = popup_available && popup_button(ui, pop_r, st.lyrics_popup_open);
-
-    // Progress + times.
-    let bar = Rect::new(mid.x, snap(y0 + BAR_Y, scale), mid.w, BAR_H);
-    if has_dur {
-        let seekable = m.can_seek;
-        let hover = seekable && ui.hovered(Rect::new(bar.x, bar.y - 6.0, bar.w, bar.h + 12.0));
-        let scrub = ui.progress_bar(wid("media_seek"), bar, tl.progress_at(now), accent, seekable);
-        if scrub.began {
-            // A drag starts: the player can get ready for the seek meanwhile.
-            acts.push(MediaCmd::Prepare);
-        }
-        if let Some(f) = scrub.released {
-            acts.push(MediaCmd::Seek(f as f64 * tl.duration_s));
-        }
-        // While dragging, the knob and times follow the pointer; the player
-        // only seeks on release.
-        let scrub_pos = scrub.held.or(scrub.released);
-        let (progress, pos) = match scrub_pos {
-            Some(f) => (f, f as f64 * tl.duration_s),
-            None => (tl.progress_at(now), pos),
-        };
-        if hover || scrub_pos.is_some() {
-            let c = Point::new(bar.x + bar.w * progress, bar.y + bar.h / 2.0);
-            ui.c.fill_circle(c, 6.0, palette::TEXT);
-        }
-        let ts = TextStyle::footnote().tabular().color(palette::TEXT_DIM);
-        let half = mid.w / 2.0;
-        let remaining = (tl.duration_s.floor() - pos.floor()).max(0.0);
-        ui.c.text(&fmt_duration(pos), Rect::new(mid.x, y0 + TIMES_Y, half, TIMES_H), &ts);
-        ui.c.text(&format!("\u{2212}{}", fmt_duration(remaining)), Rect::new(mid.x + half, y0 + TIMES_Y, half, TIMES_H), &ts.right());
-    } else {
-        // Unknown length (streams, some browsers): a quiet, inert track.
-        ui.c.fill_rrect(bar, BAR_H / 2.0, palette::TRACK.mul_alpha(0.6));
-    }
-
-    // Transport controls.
-    let cx = mid.x + mid.w / 2.0;
-    let cy = y0 + CONTROLS_CY;
-    let spacing = (mid.w / 2.0 - 46.0).clamp(42.0, 60.0);
-    if side_button(ui, wid("media_prev"), Point::new(cx - spacing, cy), Icon::Prev, m.can_prev) {
-        acts.push(MediaCmd::Prev);
-    }
-    if play_button(ui, Point::new(cx, cy), playing, m.can_play_pause) {
-        acts.push(MediaCmd::PlayPause);
-    }
-    if side_button(ui, wid("media_next"), Point::new(cx + spacing, cy), Icon::Next, m.can_next) {
-        acts.push(MediaCmd::Next);
-    }
-
-    // Lyrics.
-    let mut synced_shown = false;
-    if show_lyrics {
-        let pronounce = st.settings.lyrics_pronunciation;
-        let ctx = LyricsCtx { now, pos: lyric_pos, live: playing && has_dur, can_seek: m.can_seek, scale, track_key: &m.track_key, pronounce };
-        let top=lyrics_toolbar_height(st);
-        let col = Rect::new(col.x,col.y+top,col.w,col.h-top);
-        let out = draw_lyrics(ui, &st.lyrics, &mut st.ui, col, a, fr, &ctx, &mut acts);
-        anim |= out.animating;
-        synced_shown = out.synced;
-    }
-
-    // Real transitions (a lyric scroll catching up, a press) get full-rate
-    // frames; the steady drift of the progress bar and lyrics while music
-    // plays only needs ambient ~30 fps.
-    if anim {
-        ui.request_anim();
-    } else if playing && (has_dur || synced_shown) {
-        ui.request_live();
-    }
-
-    for c in acts {
-        push_media(st, c);
-    }
-    if toggle_lrc {
-        toggle_island_lyrics(st);
-    }
-    if toggle_popup { st.cmd(if st.lyrics_popup_open { Command::CloseLyricsWindow } else { Command::OpenLyricsWindow }); }
-    if st.media.as_ref().is_some_and(|m| m.music_source.is_some()) { lyrics_toggle_tip(ui, st, lrc_r, area); }
-    if popup_available { button_tip(ui, pop_r, if st.lyrics_popup_open { "Exit mini player" } else { "Open mini player" }); }
-    // The same switch as Settings: download the readings, then read again.
 }
 
 /// The same saved preference as Settings / the tray, available in Music.
 pub(crate) fn lrc_toggle(ui: &mut Ui, on: bool, enabled: bool, r: Rect) -> bool {
     let response = if enabled { ui.button(wid("media.lrc-toggle"), r.inset(-2.0, -2.0)) } else { Default::default() };
-    let ink = Color::white(if !enabled { 0.24 } else if response.hovered { 0.95 } else if on { 0.82 } else { 0.48 });
-    ui.c.icon(Icon::Lyrics, Rect::new(r.x+3.0,r.y+3.0,18.0,18.0), ink);
-    if !on { ui.c.line(Point::new(r.x+4.0,r.y+4.0),Point::new(r.x+21.0,r.y+21.0),ink,1.4); }
+    let ink=Color::white(if !enabled{0.24}else if on{0.95}else{0.55});
+    ui.c.fill_rrect(r,7.0,Color::white(if on{0.12}else{0.045}));
+    ui.c.stroke_rrect(r.inset(0.5,0.5),7.0,ink.mul_alpha(0.25),1.0);
+    ui.c.text("LRC",r,&TextStyle::new(10.0).weight(Weight::Semibold).center().color(ink));
     response.clicked
 }
 
-pub(crate) fn popup_button(ui: &mut Ui, r: Rect, open: bool) -> bool {
-    let response = ui.button(wid("media.lyrics-popup"), r);
+pub(crate) fn popup_button(ui: &mut Ui, r: Rect, open: bool, enabled:bool) -> bool {
+    let response = if enabled {ui.button(wid("media.lyrics-popup"), r)}else{Default::default()};
     let alpha = if response.pressed { 0.24 } else if response.hovered { 0.18 } else { 0.11 };
     ui.c.fill_circle(r.center(), r.w.min(r.h)/2.0, Color::white(alpha));
-    ui.c.icon(if open { Icon::ExitMiniPlayer } else { Icon::MiniPlayer }, r.inset(5.0,5.0), Color::white(if response.hovered { 0.95 } else { 0.72 }));
+    ui.c.icon(if open { Icon::ExitMiniPlayer } else { Icon::MiniPlayer }, r.inset(5.0,5.0), Color::white(if !enabled {0.28}else if response.hovered { 0.95 } else { 0.72 }));
     response.clicked
-}
-
-pub(crate) fn button_tip(ui: &mut Ui, r: Rect, label: &str) {
-    if !ui.hovered(r.inset(-2.0, -2.0)) { return; }
-    let style = TextStyle::footnote().center();
-    let width = ui.c.measure(label, &style, 300.0).0 + 18.0;
-    let tip = Rect::new(r.right()-width, r.y - 27.0, width, 22.0);
-    ui.c.fill_rrect(tip, 7.0, Color::hex(0x303030));
-    ui.c.text(label, tip, &style);
 }
 
 fn lyrics_tip_lines(st:&AppState)->(&'static str,&str) {
@@ -681,75 +474,10 @@ pub(crate) fn push_media(st: &mut AppState, c: MediaCmd) {
     st.media_cmd(c);
 }
 
-/// Cover art (or a placeholder tile) scaled about its centre by `scale`;
-/// snapped to device pixels when `px_scale` is given (i.e. at rest).
-fn draw_art(ui: &mut Ui, art: Option<&Image>, r: Rect, scale: f32, px_scale: Option<f32>) {
-    let mut rr = Rect::from_center(r.center(), r.w * scale, r.h * scale);
-    if let Some(s) = px_scale {
-        let (x0, y0) = (snap(rr.x, s), snap(rr.y, s));
-        rr = Rect::new(x0, y0, snap(rr.right(), s) - x0, snap(rr.bottom(), s) - y0);
-    }
-    let radius = ART_RADIUS * scale;
-    match art {
-        Some(img) => {
-            ui.c.image(img, rr, radius);
-            // Hairline so dark covers keep an edge on the black island.
-            ui.c.stroke_rrect(rr, radius, Color::white(0.08), 1.0);
-        }
-        None => {
-            ui.c.fill_rrect(rr, radius, palette::SURFACE);
-            let s = 40.0 * scale;
-            ui.c.icon(Icon::Music, Rect::from_center(rr.center(), s, s), palette::TEXT_FAINT);
-        }
-    }
-}
-
-/// The player's name as plain secondary text.
-fn draw_source(ui: &mut Ui, x: f32, y: f32, max_w: f32, label: &str) {
-    ui.c.text(label, Rect::new(x, y, max_w, SOURCE_H), &TextStyle::footnote().color(palette::TEXT_DIM));
-}
-
-/// Previous / next. Disabled buttons are drawn inert and take no input.
-fn side_button(ui: &mut Ui, id: WidgetId, c: Point, icon: Icon, enabled: bool) -> bool {
-    let r = Rect::from_center(c, SIDE_BTN, SIDE_BTN);
-    if enabled {
-        ui.icon_button(id, r, icon, palette::TEXT, CONTROL_ICON).clicked
-    } else {
-        ui.c.icon(icon, Rect::from_center(c, CONTROL_ICON, CONTROL_ICON), palette::DISABLED);
-        false
-    }
-}
-
-/// The big play/pause: a white disc with a black glyph (on a light look, its
-/// accent disc with a white glyph).
-fn play_button(ui: &mut Ui, c: Point, playing: bool, enabled: bool) -> bool {
-    let icon = if playing { Icon::Pause } else { Icon::Play };
-    let icon_r = Rect::from_center(c, CONTROL_ICON, CONTROL_ICON);
-    if !enabled {
-        ui.c.fill_circle(c, PLAY_D / 2.0, palette::SURFACE);
-        ui.c.icon(icon, icon_r, palette::DISABLED);
-        return false;
-    }
-    let resp = ui.button(wid("media_play"), Rect::from_center(c, PLAY_D, PLAY_D));
-    let (rest, hover, press, glyph) = match ui.c.look().accent {
-        Some(a) => (a, Color::lerp(a, Color::white(1.0), 0.08), Color::lerp(a, Color::black(1.0), 0.15), palette::ON_ACCENT),
-        None => (palette::TEXT, Color::white(1.0), Color::white(0.82), Color::black(1.0)),
-    };
-    let (radius, fill) = if resp.pressed {
-        (PLAY_D / 2.0 - 1.5, press)
-    } else if resp.hovered {
-        (PLAY_D / 2.0 + 1.0, hover)
-    } else {
-        (PLAY_D / 2.0, rest)
-    };
-    ui.c.fill_circle(c, radius, fill);
-    ui.c.icon(icon, icon_r, glyph);
-    resp.clicked
-}
-
 // ---------------------------------------------------------------- lyrics
 
 pub(crate) struct LyricsCtx<'a> {
+    pub(crate) seek: Option<lumo_core::timeline::PendingSeek>,
     pub(crate) now: f64,
     /// Playback position (seconds).
     pub(crate) pos: f64,
@@ -812,6 +540,8 @@ pub(crate) fn draw_lyrics(
         View::Synced(l) | View::Plain(l) => Some(l),
         View::Status { .. } => None,
     };
+    let seeking=ctx.seek.is_some()&&ctx.seek!=a.last_seek;
+    a.last_seek=ctx.seek;
     let fresh = !a.sig_matches(ctx.track_key, shown);
     if fresh {
         a.set_sig(ctx.track_key, shown);
@@ -839,7 +569,7 @@ pub(crate) fn draw_lyrics(
         }
         View::Synced(l) => {
             out.synced = true;
-            out.animating = draw_synced(ui, l, &lyr.ruby, pui, vp, a, fr, fresh, ctx, acts);
+            out.animating = draw_synced(ui, l, &lyr.ruby, pui, vp, a, fr, fresh||seeking, ctx, acts);
         }
         View::Plain(l) => {
             out.animating = draw_plain(ui, l, &lyr.ruby, pui, vp, a, fr, fresh, ctx);
@@ -1153,7 +883,7 @@ fn draw_synced(
         let is_line = row.r >= off;
         if ctx.can_seek && is_line && fade > 0.4 {
             let pill = Rect::new(vp.x - 8.0, y - 3.0, row.w + 16.0, row.h + 6.0);
-            let resp = ui.button(wid_n("media_lyric", row.r as u64), intersect(pill, wide));
+            let resp = ui.button(wid_n("media_lyric", row.r as u64), intersect(pill, vp));
             if resp.hovered {
                 let bg = if resp.pressed { 0.12 } else { 0.07 };
                 ui.c.fill_rrect(pill, 8.0, Color::white(bg * fade));
@@ -1303,7 +1033,7 @@ mod tests {
         let mut st=crate::lyrics_window::sample_state();
         let height=session_height(&st);let offset=player_offset(&st);
         for status in [LyricsStatus::Idle,LyricsStatus::Loading,LyricsStatus::NotFound,LyricsStatus::Instrumental,LyricsStatus::Error("Unavailable".into()),LyricsStatus::Found] {
-            st.lyrics.status=status;assert_eq!(session_height(&st),height);assert_eq!(player_offset(&st),offset);assert_eq!(lyrics_toolbar_height(&st),28.0);
+            st.lyrics.status=status;assert_eq!(session_height(&st),height);assert_eq!(player_offset(&st),offset);assert_eq!(lyrics_toolbar_height(&st),0.0);
         }
     }
 

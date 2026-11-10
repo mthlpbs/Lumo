@@ -103,7 +103,7 @@ fn clock_width(st: &AppState) -> f32 {
 /// Without a battery the time sits alone in the middle.
 fn draw_clock(ui: &mut Ui, st: &AppState, body: Rect) {
     let time = fmt_clock(&st.local, st.settings.use_24h);
-    let ts = TextStyle::headline().tabular().color(Color::white(1.0));
+    let ts = crate::closed::clock_style(st,15.0);
     let Some((percent, charging)) = battery_state(st) else {
         ui.c.text(&time, body, &ts.center());
         return;

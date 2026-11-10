@@ -3,87 +3,96 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <title>Lumo · Phone drop</title>
 <style>
 :root {
-  --bg: #ffffff; --panel: #f5f5f7; --panel-2: #ebebef; --ink: #171717; --muted: #6e6e73; --line: #e2e2e7;
-  --island: #000000; --on-island: #ffffff; --ok: #1e8a50; --ok-soft: #e7f5ec; --bad: #b42318; --bad-soft: #fdecea;
-  --wait: #7a5200; --wait-soft: #fff5db;
+  color-scheme: light dark;
+  --bg: #f3f6fc; --panel: #fff; --panel-2: #e8eef8; --ink: #192233; --muted: #5d6c83; --line: #d7dfed;
+  --island: #245bd6; --on-island: #fff; --ok: #186945; --ok-soft: #e4f4ec; --bad: #aa2828; --bad-soft: #fceaea;
+  --wait: #715100; --wait-soft: #fff2ce;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
-  margin: 0; background: var(--bg); color: var(--ink);
-  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
-  padding: 0 max(16px, env(safe-area-inset-right)) calc(28px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  margin: 0; background: var(--bg); color: var(--ink); overflow-wrap: anywhere;
+  font: 1rem/1.5 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  padding: max(1rem, env(safe-area-inset-top)) max(1.25rem, env(safe-area-inset-right)) calc(2rem + env(safe-area-inset-bottom)) max(1.25rem, env(safe-area-inset-left));
 }
-.island {
-  margin: 0 auto 22px; width: max-content; background: var(--island); color: var(--on-island);
-  border-radius: 0 0 24px 24px; padding: calc(10px + env(safe-area-inset-top)) 20px 12px;
-  display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 15px; letter-spacing: 0.01em;
-}
-.island svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.island .live { width: 8px; height: 8px; border-radius: 50%; background: #30d158; }
-main { max-width: 560px; margin: 0 auto; display: grid; gap: 16px; }
-h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.02em; margin: 0; }
-h2 { font-size: 17px; margin: 0; }
-p { margin: 0; }
-.sub { color: var(--muted); font-size: 14.5px; }
-.card { background: var(--panel); border-radius: 20px; padding: 18px; display: grid; gap: 12px; }
+.island { max-width: 34rem; margin: 0 auto 1.5rem; display: flex; align-items: center; gap: .5rem; font-size: .875rem; font-weight: 600; }
+.live { width: .5rem; height: .5rem; border-radius: 50%; background: var(--ok); }
+.local { margin-inline-start: auto; color: var(--muted); font-weight: 400; }
+main { max-width: 34rem; margin: 0 auto; display: grid; gap: 1.5rem; }
+header { text-align: center; padding-block: .5rem; }
+.device { width: 5.25rem; height: 5.25rem; margin: .5rem auto 1.5rem; display: grid; place-items: center; background: var(--panel); border-radius: 50%; box-shadow: 0 0 0 .6rem var(--panel-2), 0 0 0 .65rem var(--line); color: var(--island); }
+.device svg { width: 2.75rem; height: 2.75rem; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+h1 { font-size: 1.65rem; line-height: 1.25; letter-spacing: -.025em; margin: 0 0 .5rem; text-wrap: balance; }
+h2 { font-size: 1rem; font-weight: 650; margin: 0; }
+p { margin: 0; text-wrap: pretty; }
+.sub { color: var(--muted); font-size: .875rem; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 1.5rem; padding: 1.25rem; display: grid; gap: 1rem; }
+.receive { background: transparent; border: 0; padding: 0 .25rem; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.section-head span { color: var(--muted); font-size: .8rem; }
 .btn {
-  appearance: none; border: 0; border-radius: 14px; min-height: 50px; padding: 0 18px; font: inherit; font-weight: 600; font-size: 16px; line-height: 1;
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; text-decoration: none;
+  appearance: none; border: 0; border-radius: 1rem; min-height: 3rem; padding: .875rem 1rem; font: inherit; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center; gap: .625rem; cursor: pointer; text-decoration: none;
   -webkit-tap-highlight-color: transparent; width: 100%;
 }
-.btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.btn svg { width: 1.5rem; height: 1.5rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .btn.primary { background: var(--island); color: var(--on-island); }
 .btn.quiet { background: var(--panel-2); color: var(--ink); }
-.btn:disabled { opacity: 0.45; cursor: default; }
-.btn:focus-visible { outline: 3px solid #0a84ff; outline-offset: 2px; }
-.row { display: flex; gap: 10px; }
-.row .btn { flex: 1; }
-input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-li.file { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.btn:disabled { opacity: .45; cursor: default; }
+:where(button, a, input):focus-visible { outline: 3px solid var(--island); outline-offset: 3px; }
+.row { display: flex; gap: .75rem; }
+.row .btn { flex: 1; min-width: 0; }
+input[type=file] { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; }
+ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .25rem; }
+li.file { display: grid; grid-template-columns: 2.5rem minmax(0, 1fr) auto; gap: .75rem; align-items: center; padding-block: .625rem; border-top: 1px solid var(--line); }
 li.file:first-child { border-top: 0; }
-.kind { width: 36px; height: 36px; border-radius: 10px; background: var(--bg); display: grid; place-items: center; color: var(--muted); }
-.kind svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.kind { width: 2.5rem; height: 2.5rem; border-radius: .75rem; background: var(--panel-2); display: grid; place-items: center; color: var(--island); }
+.kind svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .name { min-width: 0; }
-.name b { display: block; font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.name span { color: var(--muted); font-size: 13px; }
-.save { background: var(--bg); color: var(--ink); border-radius: 999px; padding: 8px 14px; font-weight: 600; font-size: 14px; text-decoration: none; }
-.empty { color: var(--muted); font-size: 14.5px; padding: 4px 0; }
-.status { border-radius: 14px; padding: 12px 14px; font-size: 15px; display: flex; gap: 10px; align-items: flex-start; }
+.name b { display: block; font-weight: 600; font-size: .9375rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name span { color: var(--muted); font-size: .8125rem; }
+.save { background: var(--panel); color: var(--island); border: 1px solid var(--line); border-radius: 1rem; min-height: 3rem; padding: .75rem; font-weight: 600; font-size: .875rem; text-decoration: none; }
+.empty { color: var(--muted); font-size: .875rem; padding-block: .5rem; }
+.status { border-radius: .875rem; padding: .875rem; font-size: .875rem; display: flex; gap: .625rem; align-items: flex-start; }
 .status.wait { background: var(--wait-soft); color: var(--wait); }
 .status.ok { background: var(--ok-soft); color: var(--ok); }
 .status.bad { background: var(--bad-soft); color: var(--bad); }
-.spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; flex: none; margin-top: 3px; animation: spin 0.9s linear infinite; }
+.spin { width: 1rem; height: 1rem; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; flex: none; margin-top: .2rem; animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spin { animation: none; border-right-color: currentColor; opacity: 0.6; } }
-.bar { height: 8px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
-.bar i { display: block; height: 100%; width: 0%; background: var(--island); border-radius: 999px; transition: width 0.2s linear; }
-.total { display: flex; justify-content: space-between; color: var(--muted); font-size: 13.5px; font-variant-numeric: tabular-nums; }
-.foot { color: var(--muted); font-size: 13px; text-align: center; padding: 4px 8px 0; }
+.bar { appearance: none; border: 0 solid; display: block; width: 100%; height: .5rem; border-radius: 1rem; overflow: hidden; background: var(--panel-2); }
+.bar::-webkit-progress-bar { background: var(--panel-2); }
+.bar::-webkit-progress-value { background: var(--island); border-radius: 1rem; }
+.bar::-moz-progress-bar { background: var(--island); border-radius: 1rem; }
+.total { display: flex; justify-content: space-between; gap: .75rem; color: var(--muted); font-size: .8125rem; font-variant-numeric: tabular-nums; }
+.foot { color: var(--muted); font-size: .8125rem; text-align: center; padding-inline: .5rem; }
 [hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; border-right-color: currentColor; } }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171e; --panel: #20252f; --panel-2: #30394a; --ink: #edf2fc; --muted: #a6b4ca; --line: #3a465b; --island: #a7c7ff; --on-island: #152d59; --ok: #8ad9b1; --ok-soft: #183c2d; --bad: #ffb7b7; --bad-soft: #4c2429; --wait: #edd186; --wait-soft: #40361e; }
+}
 </style>
 </head>
 <body>
-<div class="island" aria-hidden="true"><span class="live"></span><span>Lumo</span></div>
+<div class="island"><span class="live" aria-hidden="true"></span><span>Lumo</span><span class="local">Local network</span></div>
 <main>
   <header>
+    <div class="device" aria-hidden="true"><svg viewBox="0 0 32 32"><rect x="3" y="4" width="26" height="18" rx="3"/><path d="M16 22v6M10 28h12M12 13l4-4 4 4M16 9v9"/></svg></div>
     <h1 id="title">Send to your PC</h1>
-    <p class="sub" id="where">Straight over your Wi-Fi. Nothing goes through the internet.</p>
+    <p class="sub" id="where">Share directly with a nearby PC on the same Wi-Fi.</p>
   </header>
 
   <section class="card" aria-labelledby="send-h">
-    <h2 id="send-h">Send to the Shelf</h2>
-    <label class="btn primary" for="pick" id="pick-label">
+    <div class="section-head"><h2 id="send-h">Send files</h2><span>Approval on PC</span></div>
+    <button class="btn primary" type="button" id="pick-label">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
       Choose photos or files
-    </label>
-    <input id="pick" type="file" multiple>
+    </button>
+    <input id="pick" name="files" type="file" multiple aria-label="Choose photos or files" tabindex="-1">
     <ul id="chosen" hidden></ul>
     <div class="total" id="chosen-total" hidden><span id="chosen-count"></span><span id="chosen-size"></span></div>
     <div class="row" id="send-row" hidden>
@@ -91,14 +100,14 @@ li.file:first-child { border-top: 0; }
       <button class="btn primary" id="send" type="button">Send</button>
     </div>
     <div id="progress" hidden>
-      <div class="bar"><i id="bar"></i></div>
+      <progress class="bar" id="bar" max="100" value="0" aria-label="Files sent"></progress>
       <div class="total" style="margin-top:8px"><span id="p-file"></span><span id="p-bytes"></span></div>
     </div>
     <div class="status" id="status" hidden role="status" aria-live="polite"><span class="spin" id="spin" hidden></span><span id="status-text"></span></div>
   </section>
 
-  <section class="card" aria-labelledby="shelf-h">
-    <h2 id="shelf-h">On the Shelf</h2>
+  <section class="card receive" aria-labelledby="shelf-h">
+    <h2 id="shelf-h">Save from this PC</h2>
     <ul id="offer"><li class="empty">Loading…</li></ul>
   </section>
 
@@ -260,7 +269,7 @@ li.file:first-child { border-top: 0; }
       x.open("PUT", base + "up/" + transfer + "/" + i);
       x.upload.onprogress = function (e) {
         var done = before + (e.lengthComputable ? e.loaded : 0);
-        $("bar").style.width = (total ? Math.min(100, done / total * 100) : 100) + "%";
+        $("bar").value = total ? Math.min(100, done / total * 100) : 100;
         $("p-bytes").textContent = fmt(done) + " of " + fmt(total);
       };
       x.onload = function () {
@@ -288,7 +297,7 @@ li.file:first-child { border-top: 0; }
         var total = files.reduce(function (s, f) { return s + f.size; }, 0);
         setStatus("", "");
         $("progress").hidden = false;
-        $("bar").style.width = "0%";
+        $("bar").value = 0;
         var before = 0;
         var chain = Promise.resolve();
         files.forEach(function (f, i) {
@@ -311,6 +320,7 @@ li.file:first-child { border-top: 0; }
       .catch(function (why) { fail(typeof why === "string" ? why : "network"); });
   }
 
+  $("pick-label").addEventListener("click", function () { $("pick").click(); });
   $("pick").addEventListener("change", function () {
     chosen = Array.prototype.slice.call($("pick").files || []);
     setStatus("", "");

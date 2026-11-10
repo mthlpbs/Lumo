@@ -27,9 +27,9 @@ pub enum Action {
     Delete(u64),
     DeleteAll,
     SaveHistory,
-    Attach(bool), // true: images; false: PDF documents
-    Snip,
-    ReadSnip,
+    Attach(bool), // true: images; false: PDF/text documents
+    AttachFiles(Vec<String>),
+    PasteAttachment,
     CopyImage(usize, usize),
     DownloadImage(usize, usize),
     ReuseImage(usize, usize),
@@ -49,7 +49,6 @@ pub struct ReadyReply {
     pub preview: String,
 }
 pub enum ModelRow {
-    Provider(String),
     Model(usize),
 }
 pub struct Catalog {
@@ -67,14 +66,17 @@ pub enum Event {
         chat: u64,
         result: Result<Message, String>,
         images: Vec<Image>,
+        unavailable: Option<(String, String)>, // catalog scope and requested ID
     },
     Previews(u64, Vec<(usize, usize, Image)>),
-    Attached(Result<Vec<Attachment>, String>),
+    Attached { result: Result<Vec<Attachment>, String>, previews: Vec<Option<Image>> },
     Saved(Result<(), String>),
     KeySaved(ProviderKey, bool, Result<(), String>),
     WorkerFailed(String),
 }
 pub struct State {
+    pub return_page: Option<crate::pages::PageKind>,
+    pub fresh_on_open: bool,
     pub island_height: f32,
     pub max_island_height: f32,
     pub canvas_height: f32,
@@ -90,7 +92,9 @@ pub struct State {
     pub temporary: bool,
     pub draft: String,
     pub pending: Vec<Attachment>,
+    pub pending_previews: Vec<Option<Image>>,
     pub models: Vec<Model>,
+    pub unavailable_models: std::collections::HashSet<(String, String)>,
     pub catalog_key: String,
     pub fetching: bool,
     pub catalog_saved_at: u64,
@@ -119,6 +123,7 @@ pub struct State {
     pub model_rows: Vec<ModelRow>,
     pub model_rows_key: Option<(u64, usize, String, u8)>,
     pub model_filters_open: bool,
+    pub model_filter_rows: usize,
     pub model_filters: u8,
     pub model_settings: bool,
     pub search: String,
@@ -127,19 +132,22 @@ pub struct State {
     pub hover_model: Option<(String, f64)>,
     pub attach_menu: bool,
     pub history: bool,
+    pub history_query: String,
+    pub history_scroll: f32,
     pub scroll: f32,
     pub max_scroll: f32,
     pub reply_at: f64,
     pub previews: std::collections::HashMap<(usize, usize), Image>,
-    pub snipping: bool,
     pub full_open: bool,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
-            island_height: 240.0,
-            max_island_height: 480.0,
-            canvas_height: 240.0,
+            return_page: None,
+            fresh_on_open: false,
+            island_height: 680.0,
+            max_island_height: 840.0,
+            canvas_height: 680.0,
             resize_from: 240.0,
             resize_dragged: false,
             scroll_to_reply: None,
@@ -152,7 +160,9 @@ impl Default for State {
             temporary: false,
             draft: String::new(),
             pending: vec![],
+            pending_previews: vec![],
             models: vec![],
+            unavailable_models: Default::default(),
             catalog_key: String::new(),
             fetching: false,
             catalog_saved_at: 0,
@@ -181,6 +191,7 @@ impl Default for State {
             model_rows: vec![],
             model_rows_key: None,
             model_filters_open: false,
+            model_filter_rows: 0,
             model_filters: 0,
             model_settings: false,
             search: String::new(),
@@ -189,18 +200,27 @@ impl Default for State {
             hover_model: None,
             attach_menu: false,
             history: false,
+            history_query: String::new(),
+            history_scroll: 0.0,
             scroll: 0.0,
             max_scroll: 0.0,
             reply_at: 0.0,
             previews: Default::default(),
-            snipping: false,
             full_open: false,
         }
     }
 }
 impl State {
+    /// Closing with Resume off releases unsent attachment/image buffers now;
+    /// keep the current chat identity until reopening so an explicit in-flight
+    /// request can still deliver its reply and notification normally.
+    pub fn close_workspace(&mut self,resume:bool){
+        self.close_popovers();self.fresh_on_open=!resume;
+        if !resume{self.draft.clear();self.pending.clear();self.pending_previews.clear();self.previews.clear();self.history_query.clear();self.history=false;self.scroll=0.0;self.max_scroll=0.0;}
+    }
     pub fn close_models(&mut self) {
         self.model_filters_open = false;
+        self.model_filter_rows = 0;
         self.model_menu = false;
         self.reasoning_menu = false;
         self.model_detail = None;
@@ -234,12 +254,33 @@ impl State {
             .cloned()
             .unwrap_or_else(|| Model::manual(id));
         model.reasoning.resolve(&model.id, config.provider);
+        if !id.is_empty() && lumo_core::ai::is_hackclub(config.models())
+            && self.catalog_key == config_catalog_key(config) && !self.models.is_empty()
+            && !self.models.iter().any(|m| &m.id == id) {
+            model.unavailable = Some("Not listed in the saved Hack Club AI catalog. Refresh the model list.".into());
+        }
+        if self.unavailable_models.contains(&(config_catalog_key(config), model.id.clone())) {
+            model.unavailable = Some("Unavailable for this endpoint. Refresh the model list to try again.".into());
+        }
         model
+    }
+    pub fn model_unavailable(&self, config: &lumo_core::ai::Config, id: &str) -> Option<String> {
+        if self.unavailable_models.contains(&(config_catalog_key(config), id.to_owned())) {
+            Some("Unavailable for this endpoint. Refresh the model list to try again.".into())
+        } else {
+            self.models.iter().find(|m| m.id == id).and_then(|m| m.unavailable.clone())
+        }
     }
     pub fn initialize(&mut self) {
         if !self.loaded && !self.loading {
             self.loading = true;
         }
+    }
+    /// Escape dismisses the most local surface before its parent workspace.
+    pub fn dismiss_popup(&mut self) {
+        if self.model_filters_open { self.model_filters_open=false; }
+        else if self.model_detail.is_some() { self.model_detail=None;self.model_detail_scroll=0.0; }
+        else { self.close_popovers(); }
     }
 }
 pub fn ensure(st: &mut AppState) {
@@ -256,6 +297,19 @@ pub fn ensure(st: &mut AppState) {
     {
         st.ai.auto_fetch_key = scope;
         st.cmd(Command::Ai(Action::EnsureModels));
+    }
+}
+
+/// The same shortcuts in the island and mini host. They only change local
+/// UI state; opening an empty model catalog keeps its existing on-demand path.
+pub fn workspace_key(st:&mut AppState,key:u32,ctrl:bool,shift:bool)->Option<crate::ui::WidgetId>{
+    use crate::ui::wid;
+    if !ctrl{return None;}
+    match key {
+        0x4e=>{st.cmd(Command::Ai(Action::New(shift)));Some(wid("ai.prompt"))},
+        0x48=>{st.ai.close_popovers();st.ai.history=!st.ai.history;Some(wid(if st.ai.history{"ai.history-filter"}else{"ai.prompt"}))},
+        0x4b=>{let open=!st.ai.model_menu;st.ai.close_popovers();st.ai.model_menu=open;st.ai.model_settings=false;st.ai.reveal_model=true;st.ai.model_scroll=0.0;if open&&st.ai.models.is_empty(){st.cmd(Command::Ai(Action::EnsureModels));}Some(wid(if open{"ai.model-search"}else{"ai.prompt"}))},
+        _=>None,
     }
 }
 pub fn apply(st: &mut AppState, event: Event, notify: bool) {
@@ -294,7 +348,23 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
             st.ai.fetching = false;
             match r {
                 Ok(catalog) => {
-                    st.ai.models = catalog.models;
+                    if !catalog.from_cache {
+                        st.ai.unavailable_models.retain(|(scope,_)| scope != &key);
+                    }
+                    let mut models = catalog.models;
+                    // Hack Club documents this endpoint as its complete live
+                    // list. Preserve saved selections as disabled rows when
+                    // a successful refresh confirms they have disappeared.
+                    if lumo_core::ai::is_hackclub(st.settings.ai.models()) && !catalog.from_cache {
+                        for id in [&st.ai.selected, &st.settings.ai.default_model] {
+                            if !id.is_empty() && !models.iter().any(|m| &m.id == id) {
+                                let mut m = Model::manual(id);
+                                m.unavailable = Some("Not listed in Hack Club AI's current catalog".into());
+                                models.push(m);
+                            }
+                        }
+                    }
+                    st.ai.models = models;
                     st.ai.catalog_saved_at = catalog.saved_at;
                     st.ai.catalog_from_cache = catalog.from_cache;
                     st.ai.catalog_revision = st.ai.catalog_revision.wrapping_add(1);
@@ -309,6 +379,7 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
             chat,
             result,
             images,
+            unavailable,
         } => {
             if request != st.ai.request || !st.ai.busy {
                 return;
@@ -316,6 +387,12 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
             st.ai.busy = false;
             st.ai.cancel = None;
             st.ai.generation_finished = st.now;
+            if let Some((scope,id)) = unavailable {
+                if st.ai.unavailable_models.len() < 5000 {
+                    st.ai.unavailable_models.insert((scope,id));
+                    st.ai.catalog_revision = st.ai.catalog_revision.wrapping_add(1);
+                }
+            }
             match result {
                 Ok(message) => {
                     let preview = lumo_core::ai::plain_text(&message.text)
@@ -362,9 +439,8 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
                 st.ai.previews = images.into_iter().map(|(m, a, i)| ((m, a), i)).collect();
             }
         }
-        Event::Attached(r) => {
+        Event::Attached { result: r, previews } => {
             st.ai.attaching = false;
-            st.ai.snipping = false;
             match r {
                 Ok(a) => {
                     let size: usize = st
@@ -378,6 +454,8 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
                         st.ai.error =
                             "Attach up to 4 files, with a combined size under 18 MB.".into();
                     } else {
+                        st.ai.pending_previews.resize_with(st.ai.pending.len(), || None);
+                        st.ai.pending_previews.extend(previews.into_iter().chain(std::iter::repeat(None)).take(a.len()));
                         st.ai.pending.extend(a);
                         st.ai.error.clear();
                     }
@@ -431,23 +509,26 @@ pub fn next_id() -> u64 {
         .saturating_add(SEQ.fetch_add(1, Ordering::Relaxed))
 }
 pub fn catalog_key(st: &AppState) -> String {
+    config_catalog_key(&st.settings.ai)
+}
+fn config_catalog_key(config: &lumo_core::ai::Config) -> String {
     format!(
         "{:?}|{}|{}",
-        st.settings.ai.provider,
-        st.settings.ai.completion(),
-        st.settings.ai.models()
+        config.provider,
+        config.completion(),
+        config.models()
     )
 }
-pub fn paste_image(
+pub fn paste_attachment(
     st: &mut AppState,
     prompt_focused: bool,
-    has_image: impl FnOnce() -> bool,
+    has_attachment: impl FnOnce() -> bool,
 ) -> bool {
-    if !prompt_focused || !has_image() {
+    if !prompt_focused || !has_attachment() {
         return false;
     }
     st.ai.close_popovers();
-    st.cmd(Command::Ai(Action::ReadSnip));
+    st.cmd(Command::Ai(Action::PasteAttachment));
     true
 }
 pub fn local(st: &mut AppState, a: &Action) -> bool {
@@ -466,10 +547,12 @@ pub fn local(st: &mut AppState, a: &Action) -> bool {
                 // Unsent work and the chosen model belong to the person.
                 let draft = std::mem::take(&mut st.ai.draft);
                 let pending = std::mem::take(&mut st.ai.pending);
+                let previews = std::mem::take(&mut st.ai.pending_previews);
                 let selected = std::mem::take(&mut st.ai.selected);
                 local(st, &Action::New(temporary));
                 st.ai.draft = draft;
                 st.ai.pending = pending;
+                st.ai.pending_previews = previews;
                 st.ai.selected = selected;
             }
         }
@@ -490,6 +573,7 @@ pub fn local(st: &mut AppState, a: &Action) -> bool {
             st.ai.temporary = *temp;
             st.ai.draft.clear();
             st.ai.pending.clear();
+            st.ai.pending_previews.clear();
             st.ai.previews.clear();
             st.ai.error.clear();
             st.ai.history = false;
@@ -556,6 +640,8 @@ pub fn local(st: &mut AppState, a: &Action) -> bool {
                 .cloned()
             {
                 if st.ai.pending.len() < 4 {
+                    st.ai.pending_previews.resize_with(st.ai.pending.len(), || None);
+                    st.ai.pending_previews.push(st.ai.previews.get(&(*mi, *ai)).cloned());
                     st.ai.pending.push(a);
                 }
                 st.ai.attach_menu = false;
@@ -591,6 +677,55 @@ pub fn clear_ready(st: &mut AppState) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn escape_unwinds_filter_then_details_then_picker() {
+        let mut s=State::default();s.model_menu=true;s.model_filters_open=true;
+        s.dismiss_popup();assert!(s.model_menu&&!s.model_filters_open);
+        s.model_detail=Some("model".into());s.dismiss_popup();assert!(s.model_menu&&s.model_detail.is_none());
+        s.dismiss_popup();assert!(!s.model_menu);
+    }
+    #[test]
+    fn model_refusal_stays_with_requested_endpoint_and_refresh_can_recover() {
+        let mut st=state();st.settings.ai.provider=lumo_core::ai::Provider::Compatible;
+        st.settings.ai.completion_url="https://example.org/chat".into();
+        let scope=catalog_key(&st);st.ai.selected="chosen-later".into();
+        st.ai.busy=true;st.ai.request=7;
+        apply(&mut st,Event::Reply{request:7,chat:17,result:Err("Model refused".into()),images:vec![],unavailable:Some((scope.clone(),"failed-model".into()))},false);
+        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_some());
+        assert!(st.ai.model(&st.settings.ai).unavailable.is_none());
+        st.settings.ai.completion_url="https://elsewhere.org/chat".into();
+        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_none());
+        st.settings.ai.completion_url="https://example.org/chat".into();
+        let catalog=|from_cache| Catalog{models:vec![Model::manual("failed-model")],saved_at:1,from_cache,warning:None};
+        apply(&mut st,Event::Models(scope.clone(),Ok(catalog(true))),false);
+        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_some());
+        apply(&mut st,Event::Models(scope.clone(),Err("Offline".into())),false);
+        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_some());
+        apply(&mut st,Event::Models(scope,Ok(catalog(false))),false);
+        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_none());
+    }
+    #[test]
+    fn hackclub_refresh_keeps_missing_selection_disabled_and_preserves_draft() {
+        let mut st=state();st.settings.ai.provider=lumo_core::ai::Provider::Compatible;
+        st.settings.ai.models_url="https://ai.hackclub.com/proxy/v1/models".into();
+        st.ai.selected="gone".into();st.ai.draft="Unsent draft".into();
+        let scope=catalog_key(&st);
+        apply(&mut st,Event::Models(scope,Ok(Catalog{models:vec![Model::manual("new")],saved_at:1,from_cache:false,warning:None})),false);
+        assert_eq!(st.ai.selected,"gone");assert_eq!(st.ai.draft,"Unsent draft");
+        assert!(st.ai.model(&st.settings.ai).unavailable.is_some());
+        assert!(st.ai.models.iter().any(|m|m.id=="gone"&&m.unavailable.is_some()));
+        st.ai.selected="missing-manual".into();
+        assert!(st.ai.model(&st.settings.ai).unavailable.is_some());
+        assert!(!st.cmds.iter().any(|c|matches!(c,Command::Ai(Action::Send))));
+    }
+    #[test]
+    fn workspace_shortcuts_focus_local_tools_without_sending() {
+        let mut st=state();st.cmds.clear();
+        assert!(workspace_key(&mut st,0x4e,false,false).is_none());assert!(st.cmds.is_empty());
+        assert_eq!(workspace_key(&mut st,0x48,true,false),Some(crate::ui::wid("ai.history-filter")));assert!(st.ai.history);
+        workspace_key(&mut st,0x4b,true,false);assert!(st.ai.model_menu&&!st.ai.reasoning_menu);workspace_key(&mut st,0x4b,true,false);assert!(!st.ai.model_menu);
+        workspace_key(&mut st,0x4e,true,true);assert!(st.cmds.contains(&Command::Ai(Action::New(true))));assert!(!st.cmds.iter().any(|c|matches!(c,Command::Ai(Action::Send|Action::Retry))));
+    }
     use super::*;
     #[test]
     fn disabled_ai_does_not_load_history_or_fetch_models() {
@@ -609,23 +744,23 @@ mod tests {
         let mut st = state();
         st.ai.draft = "Keep this draft".into();
         st.ai.model_menu = true;
-        assert!(!paste_image(&mut st, false, || panic!(
+        assert!(!paste_attachment(&mut st, false, || panic!(
             "search fields never inspect clipboard images"
         )));
-        assert!(!paste_image(&mut st, true, || false));
+        assert!(!paste_attachment(&mut st, true, || false));
         assert!(st.cmds.is_empty());
-        assert!(paste_image(&mut st, true, || true));
-        assert_eq!(st.cmds, [Command::Ai(Action::ReadSnip)]);
+        assert!(paste_attachment(&mut st, true, || true));
+        assert_eq!(st.cmds, [Command::Ai(Action::PasteAttachment)]);
         assert!(!st.ai.model_menu);
         assert_eq!(st.ai.draft, "Keep this draft");
         st.ai.attaching = true;
         apply(
             &mut st,
-            Event::Attached(Ok(vec![Attachment {
+            Event::Attached { result: Ok(vec![Attachment {
                 name: "Copied image.png".into(),
                 mime: "image/png".into(),
                 data: "YWJj".into(),
-            }])),
+            }]), previews: vec![None] },
             false,
         );
         assert!(!st.ai.attaching);
@@ -708,6 +843,7 @@ mod tests {
                     ..Default::default()
                 }),
                 images: vec![],
+                unavailable: None,
             },
             true,
         );
@@ -779,6 +915,7 @@ mod tests {
                 chat: 17,
                 result: Err("old".into()),
                 images: vec![],
+                unavailable: None,
             },
             true,
         );
@@ -804,6 +941,7 @@ mod tests {
                 chat: 17,
                 result: Ok(Message::default()),
                 images: vec![],
+                unavailable: None,
             },
             true,
         );
@@ -830,6 +968,7 @@ mod tests {
                 chat: 17,
                 result: Err("HTTP 503".into()),
                 images: vec![],
+                unavailable: None,
             },
             false,
         );
@@ -847,6 +986,7 @@ mod tests {
                 chat: 17,
                 result: Ok(Message::default()),
                 images: vec![],
+                unavailable: None,
             },
             false,
         );
@@ -862,6 +1002,7 @@ mod tests {
                     ..Default::default()
                 }),
                 images: vec![],
+                unavailable: None,
             },
             false,
         );
@@ -886,6 +1027,7 @@ mod tests {
                     ..Default::default()
                 }),
                 images: vec![],
+                unavailable: None,
             },
             true,
         );

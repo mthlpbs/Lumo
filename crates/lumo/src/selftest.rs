@@ -1233,14 +1233,15 @@ impl SelfTest {
                 // The first tab, or the gear (found by its widget id: its place
                 // depends on how wide the clock and date are).
                 let (what, at, want) = match SCENES[i] {
-                    Scene::GearClick => ("the gear", app.selftest_hit_center(wid(pages::GEAR_ID)), PageKind::Settings),
-                    _ => ("the first header tab", Some(first_tab_point(app.island_body())), PageKind::ALL[0]),
+                    Scene::GearClick => ("tray Settings", None, PageKind::Settings),
+                    _ => ("the first section tab", app.selftest_hit_center(crate::ui::wid_n("tab",0)), PageKind::ALL[0]),
                 };
                 match at {
                     Some(p) => {
                         crate::pinfo!("selftest: clicking {what} at ({:.0}, {:.0}) DIP on page '{}'", p.x, p.y, from.key());
                         app.selftest_click(p);
                     }
+                    None if SCENES[i]==Scene::GearClick => app.st.cmd(crate::commands::Command::OpenSettings),
                     None => crate::pwarn!("selftest: {what} isn't on page '{}'", from.key()),
                 }
                 self.phase = Phase::ClickWait { i, since: now, from, want };

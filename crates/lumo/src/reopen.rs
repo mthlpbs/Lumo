@@ -26,7 +26,7 @@ impl Context {
 
     pub fn page(&self, st: &AppState, now: f64) -> PageKind {
         let available = |page| match page {
-            PageKind::Ai => st.ai_on(),
+            PageKind::Ai => false,
             PageKind::Settings => false,
             PageKind::Script => st.script_on(),
             PageKind::Clipboard => st.settings.clipboard_history,
@@ -42,7 +42,7 @@ impl Context {
         // forgotten draft elsewhere must never override an intentional switch.
         let unfinished = match last {
             PageKind::Ai => !st.ai.full_open && (!st.ai.draft.trim().is_empty()
-                || !st.ai.pending.is_empty() || st.ai.attaching || st.ai.snipping),
+                || !st.ai.pending.is_empty() || st.ai.attaching),
             PageKind::Tasks => !st.ui.task_input.trim().is_empty(),
             PageKind::Shelf => st.phone.as_ref().is_some_and(|p| p.holds_island()),
             PageKind::Script => st.script.active,
@@ -111,9 +111,9 @@ mod tests {
         let mut st = music();
         let context = Context::default();
         st.ai.draft = "Follow up".into();
-        assert_eq!(context.page(&st, 500.0), PageKind::Ai);
+        assert_eq!(context.page(&st, 500.0), PageKind::Media,"AI drafts resume only through the AI gesture");
         st.ai.busy = true;
-        assert_eq!(context.page(&st, 500.0), PageKind::Ai, "a new draft is still work");
+        assert_eq!(context.page(&st, 500.0), PageKind::Media, "an AI draft cannot change a normal island opening");
         st.page = PageKind::Tasks;
         assert_eq!(context.page(&st, 500.0), PageKind::Media, "a hidden AI draft cannot steal focus");
         st.ui.task_input = "Finish this task".into();
@@ -127,7 +127,7 @@ mod tests {
         let mut st = music();
         let mut context = Context::default();
         context.interacted(PageKind::Ai, 100.0);
-        assert_eq!(context.page(&st, 110.0), PageKind::Ai);
+        assert_eq!(context.page(&st, 110.0), PageKind::Media);
         assert_eq!(context.page(&st, 191.0), PageKind::Media);
         st.ai.busy = true;
         assert_eq!(context.page(&st, 110.0), PageKind::Media);
@@ -189,9 +189,9 @@ mod tests {
         st.media_paused_at = Some(95.0);
         assert_eq!(context.page(&st, 100.0), PageKind::Media);
         st.now = 126.0;
-        assert_eq!(context.page(&st, 126.0), PageKind::Ai, "an expired paused activity cannot hide the last page");
+        assert_eq!(context.page(&st, 126.0), PageKind::Media, "normal island openings do not route to AI");
         st.media.as_mut().unwrap().timeline.playing = true;
         st.settings.show_media_activity = false;
-        assert_eq!(context.page(&st, 126.0), PageKind::Ai, "respect hidden media activity");
+        assert_eq!(context.page(&st, 126.0), PageKind::Media, "respect hidden media activity");
     }
 }

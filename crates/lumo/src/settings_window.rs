@@ -205,6 +205,11 @@ impl SettingsWindow {
 
     pub fn dismiss_model_picker(&mut self){self.input.focused=None;self.keyboard_focus=None;self.invalidate();}
     pub fn draw(&mut self, st: &mut AppState) -> Result<()> {
+        if !(self.section==Section::Ai&&st.ai.model_menu&&st.ai.model_settings)
+            && self.input.focused.is_some_and(|id|id==wid("ai.model-search")||id==wid("ai.effort-slider")) {
+            self.input.focused=None;
+        }
+        self.input.begin_frame();
         self.ai_on = st.ai_on();
         if !self.section.visible(self.ai_on) {
             self.section = Section::General;
@@ -221,6 +226,7 @@ impl SettingsWindow {
         self.hits.clear();
         let mut c = self.gfx.begin(RECT { left: 0, top: 0, right: width, bottom: height })?;
         let mut ui = Ui::new(&mut c, &mut self.input, &mut self.hits, st.now);
+        let model_input=(self.section==Section::Ai&&st.ai.model_menu&&st.ai.model_settings).then(||std::mem::take(ui.input));
         ui.c.fill_rrect(area.inset(1.0, 1.0), 16.0, BG);
         ui.c.clip(Rect::new(1.0, 1.0, SIDE, area.h - 2.0));
         ui.c.fill_rrect(area.inset(1.0, 1.0), 16.0, SIDEBAR);
@@ -275,11 +281,12 @@ impl SettingsWindow {
             let y=body.y+(body.h-h)*self.scroll/self.max_scroll;
             ui.c.fill_rrect(Rect::new(body.right()+9.0,y,3.0,h),1.5,Color::white(0.28));
         }
+        if let Some(input)=model_input{*ui.input=input;}
         if self.section==Section::Ai && st.ai.model_menu && st.ai.model_settings {crate::pages::ai::model_picker(&mut ui,st,body,true);}
         if let Some(hit) = self.keyboard_focus.and_then(|id| ui.hits.iter().find(|hit| hit.id == id)) {
             ui.c.stroke_rrect(hit.rect.inset(2.0, 2.0), 7.0, Color::white(0.7), 1.0);
         }
-        unsafe {let _=KillTimer(self.hwnd,71);if self.section==Section::Ai {if let Some(t)=crate::pages::ai::next_wake(st){SetTimer(self.hwnd,71,((t-st.now)*1000.0).ceil().max(1.0) as u32,None);}}}
+        unsafe {let _=KillTimer(self.hwnd,71);if !st.power.saver&&GetForegroundWindow()==self.hwnd{if let Some(t)=ui.input.caret_wake{SetTimer(self.hwnd,71,((t-st.now)*1000.0).ceil().max(10.0)as u32,None);}}}
         let repaint=ui.repaint_requested();
         self.input.end_frame();
         self.gfx.end()?;
@@ -291,7 +298,6 @@ impl SettingsWindow {
     pub fn message(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         unsafe {
             match msg {
-                WM_TIMER if wp.0==71 => {let _=KillTimer(self.hwnd,71);}
                 WM_TIMER if wp.0==71 => {let _=KillTimer(self.hwnd,71);}
                 WM_ACTIVATE => {
                     if (wp.0 & 0xffff) as u32 == WA_INACTIVE { self.release_open_priority(); }
@@ -313,7 +319,7 @@ impl SettingsWindow {
                 WM_MOUSEWHEEL => {
                     let delta=(wp.0>>16) as u16 as i16;
                     let mut p=POINT{x:lp.0 as i16 as i32,y:(lp.0>>16) as i16 as i32};let _=windows::Win32::Graphics::Gdi::ScreenToClient(self.hwnd,&mut p);let p=Point::new(p.x as f32/self.gfx.scale(),p.y as f32/self.gfx.scale());self.input.mouse=Some(p);
-                    if self.hits.iter().any(|h|h.id==wid("ai.model-surface") && h.rect.contains(p)){self.input.wheel+=f32::from(delta)/120.0;}else{self.scroll=(self.scroll-f32::from(delta)/120.0*48.0).clamp(0.0,self.max_scroll);}
+                    if self.hits.iter().any(|h|matches!(h.id,id if id==wid("ai.model-surface")||id==wid("ai.model-filter-surface")) && h.rect.contains(p)){self.input.wheel+=f32::from(delta)/120.0;}else{self.scroll=(self.scroll-f32::from(delta)/120.0*48.0).clamp(0.0,self.max_scroll);}
                     self.keyboard_focus=None;
                 }
                 WM_MOUSEHWHEEL => {
@@ -345,6 +351,8 @@ impl SettingsWindow {
                     let p = Point::new(lp.0 as i16 as f32 / s, (lp.0 >> 16) as i16 as f32 / s);
                     self.input.mouse = Some(p);
                     if msg == WM_LBUTTONDOWN {
+                        self.input.just_pressed=true;
+                        self.input.press_pos=Some(p);
                         self.keyboard_focus = None;
                         self.input.down = true;
                         self.input.pressed_id = self.hits.iter().rev().find(|h| h.rect.contains(p)).map(|h| h.id);
@@ -447,7 +455,7 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
     match section {
         Section::Search => {
             f.group(ui,"Open Search",1);
-            if f.toggle(ui,"preferences.search-gesture","Open with horizontal scroll","Swipe the closed island to open Search",Some(st.settings.search.horizontal_scroll)){st.settings.search.horizontal_scroll=!st.settings.search.horizontal_scroll;}
+            if f.toggle(ui,"preferences.search-gesture","Open with right scroll","Scroll right on the closed island. Left opens AI.",Some(st.settings.search.horizontal_scroll)){st.settings.search.horizontal_scroll=!st.settings.search.horizontal_scroll;}
             f.end();
             if ui.pill(wid("preferences.open-search"),Rect::new(f.x+4.0,f.y,148.0,32.0),"Open Search",Some(Icon::Search),PillStyle::Primary(st.accent)).clicked {st.cmd(Command::OpenSearch);}
             f.y+=48.0;
@@ -492,13 +500,31 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
             if f.toggle(ui, "preferences.sounds", "Reminder sounds", "A gentle chime when a timer finishes", Some(st.settings.sounds)) { st.settings.sounds = !st.settings.sounds; }
             f.end();
             let hover = st.settings.open_on_hover;
-            f.group(ui, "Interaction", if hover { 2 } else { 1 });
+            f.group(ui, "Interaction", if hover { 3 } else { 2 });
             if let Some(i) = f.choices(ui, "preferences.open-mode", "Open island with", &["Click", "Hover"], usize::from(hover)) { st.settings.open_on_hover = i == 1; }
             if hover {
                 let values = [0, 140, 220, 400];
                 if let Some(i) = f.choices(ui, "preferences.hover", "Hover delay", &["Instant", "Quick", "Normal", "Relaxed"], values.iter().position(|&v| v == st.settings.hover_delay_ms).unwrap_or(usize::MAX)) { st.settings.hover_delay_ms = values[i]; }
             }
+            if f.toggle(ui,"preferences.mouse-wheel-shortcuts","Mouse wheel shortcuts","Closed: up for AI, down for Search. Shift+wheel: compact views.",Some(st.settings.mouse_wheel_shortcuts)){st.settings.mouse_wheel_shortcuts=!st.settings.mouse_wheel_shortcuts;}
             f.end();
+            f.group(ui, "Phone Drop", 1);
+            let path = crate::paths::phone_inbox_dir(&st.settings).to_string_lossy().into_owned();
+            f.row(ui, "Save shared files to", &path);
+            f.end();
+            let label = if st.ui.choosing_phone_dir { "Choosing…" } else { "Change folder" };
+            let width = ui.pill_width(label, false, true);
+            if !st.ui.choosing_phone_dir && ui.pill(wid("preferences.phone-folder"), Rect::new(f.x, f.y, width, 30.0), label, None, PillStyle::Utility).clicked {
+                st.cmd(Command::ChoosePhoneDownloadDirectory);
+            }
+            if !st.settings.phone_download_directory.is_empty() {
+                let label = "Use Downloads";
+                let reset_width = ui.pill_width(label, false, true);
+                if ui.pill(wid("preferences.phone-folder-reset"), Rect::new(f.x + width + 8.0, f.y, reset_width, 30.0), label, None, PillStyle::Utility).clicked { st.settings.phone_download_directory.clear(); }
+            }
+            f.y += 40.0;
+            ui.c.text("New Phone Drop sessions use this folder.", Rect::new(f.x + 4.0, f.y, f.w - 8.0, 24.0), &TextStyle::footnote().color(palette::TEXT_DIM));
+            f.y += 38.0;
         }
         Section::Display => {
             f.group(ui, "Visibility", 2);
@@ -521,10 +547,24 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
             if let Some(i) = f.choices(ui, "preferences.idle", "When nothing is playing", &names, looks.iter().position(|&v| v == status::shown(st.settings.theme, st.settings.idle_style)).unwrap_or(0)) { st.settings.idle_style = looks[i]; }
             f.end();
             ui.c.text("Changes apply immediately.", Rect::new(f.x + 4.0, f.y, f.w - 8.0, 48.0), &TextStyle::footnote().color(palette::TEXT_DIM).wrap().top());
+            f.y+=48.0;
+            f.group(ui,"Clock & compact views",5);
+            if let Some(i)=f.choices(ui,"preferences.time-format","Time format",&["24 hour","12 hour"],usize::from(!st.settings.use_24h)){st.settings.use_24h=i==0;}
+            use lumo_core::settings::{ClockFont,ClockColor};
+            let fonts=[ClockFont::System,ClockFont::Rounded,ClockFont::Mono,ClockFont::Serif];
+            if let Some(i)=f.choices(ui,"preferences.clock-font","Clock font",&["System","Rounded","Mono","Serif"],fonts.iter().position(|v|*v==st.settings.clock_font).unwrap_or(0)){st.settings.clock_font=fonts[i];}
+            let colors=[ClockColor::White,ClockColor::Blue,ClockColor::Mint,ClockColor::Rose,ClockColor::Gold];
+            if let Some(i)=f.choices(ui,"preferences.clock-color","Clock color",&["White","Blue","Mint","Rose","Gold"],colors.iter().position(|v|*v==st.settings.clock_color).unwrap_or(usize::MAX)){st.settings.clock_color=colors[i];}
+            if f.toggle(ui,"preferences.clock-accent","Windows accent (wallpaper-derived)","Follows Windows accent; Windows chooses how it is derived",Some(st.settings.clock_color==ClockColor::WindowsAccent)){st.settings.clock_color=if st.settings.clock_color==ClockColor::WindowsAccent{ClockColor::White}else{ClockColor::WindowsAccent};}
+            if f.toggle(ui,"preferences.closed-scroll","Scroll through compact views","Touchpad up/down or Shift+mouse wheel: time, performance, network",Some(st.settings.closed_scroll)){st.settings.closed_scroll=!st.settings.closed_scroll;}
+            f.end();
+            let time=lumo_core::datetime::fmt_clock(&st.local,st.settings.use_24h);ui.c.text(&time,Rect::new(f.x+16.0,f.y,f.w-32.0,42.0),&crate::closed::clock_style(st,24.0));f.y+=52.0;
         }
         Section::Music => {
-            f.group(ui, "On the island", 4);
+            f.group(ui, "On the island", 6);
             if f.toggle(ui, "preferences.media", "Show playing music", "Track details and playback controls", Some(st.settings.show_media_activity)) { st.settings.show_media_activity = !st.settings.show_media_activity; }
+            if f.toggle(ui, "preferences.music-lyrics", "Lyrics in Music", "Show lyrics beside the expanded player", Some(st.settings.music_lyrics)) { st.settings.music_lyrics = !st.settings.music_lyrics; }
+            if f.toggle(ui, "preferences.music-scroll", "Scroll to change tracks", "Over the player: up for previous, down for next", Some(st.settings.music_scroll_tracks)) { st.settings.music_scroll_tracks = !st.settings.music_scroll_tracks; }
             if f.toggle(ui, "preferences.lyrics", "Lyrics on closed island", "Follow the current line while listening", Some(st.settings.island_lyrics)) { st.settings.island_lyrics = !st.settings.island_lyrics; }
             if f.toggle(ui, "preferences.lyrics-popup", "Lyrics window button", "Show the pop-out button in the Music player", Some(st.settings.lyrics_popup_button)) { st.settings.lyrics_popup_button = !st.settings.lyrics_popup_button; }
             if f.toggle(ui, "preferences.pronunciation", "Lyrics pronunciation", "Romanized Korean and Chinese lyrics", Some(st.settings.lyrics_pronunciation)) { st.settings.lyrics_pronunciation = !st.settings.lyrics_pronunciation; }
@@ -570,8 +610,8 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
         }
         Section::Focus => {
             f.group(ui, "Session lengths", 3);
-            let values = [15, 25, 45, 60];
-            if let Some(i) = f.choices(ui, "preferences.work", "Focus time", &["15 min", "25 min", "45 min", "60 min"], values.iter().position(|&v| v == st.settings.pomodoro.focus_min).unwrap_or(usize::MAX)) { st.settings.pomodoro.focus_min = values[i]; }
+            let values = [15, 25, 30, 45, 60];
+            if let Some(i) = f.choices(ui, "preferences.work", "Focus time", &["15 min", "25 min", "30 min", "45 min", "60 min"], values.iter().position(|&v| v == st.settings.pomodoro.focus_min).unwrap_or(usize::MAX)) { st.settings.pomodoro.focus_min = values[i]; }
             let values = [3, 5, 10, 15];
             if let Some(i) = f.choices(ui, "preferences.short-break", "Short break", &["3 min", "5 min", "10 min", "15 min"], values.iter().position(|&v| v == st.settings.pomodoro.short_break_min).unwrap_or(usize::MAX)) { st.settings.pomodoro.short_break_min = values[i]; }
             let values = [10, 15, 20, 30];
@@ -580,10 +620,21 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
             f.group(ui, "Sessions", 4);
             let values = [0, 2, 3, 4, 6];
             if let Some(i) = f.choices(ui, "preferences.long-every", "Focus sessions before a long break", &["Off", "2", "3", "4", "6"], values.iter().position(|&v| v == st.settings.pomodoro.long_every).unwrap_or(usize::MAX)) { st.settings.pomodoro.long_every = values[i]; }
-            let values = [0, 4, 6, 8, 12];
-            if let Some(i) = f.choices(ui, "preferences.focus-goal", "Daily goal", &["Off", "4 sessions", "6 sessions", "8 sessions", "12 sessions"], values.iter().position(|&v| v == st.settings.pomodoro.daily_goal).unwrap_or(usize::MAX)) { st.settings.pomodoro.daily_goal = values[i]; }
+            let values = [0, 4, 6, 8, 12, 15, 18, 24];
+            if let Some(i) = f.choices(ui, "preferences.focus-goal", "Daily goal (sessions)", &["Off", "4", "6", "8", "12", "15", "18", "24"], values.iter().position(|&v| v == st.settings.pomodoro.daily_goal).unwrap_or(usize::MAX)) { st.settings.pomodoro.daily_goal = values[i]; }
             if f.toggle(ui, "preferences.auto-breaks", "Start breaks automatically", "When a focus session ends", Some(st.settings.pomodoro.auto_start_breaks)) { st.settings.pomodoro.auto_start_breaks = !st.settings.pomodoro.auto_start_breaks; }
             if f.toggle(ui, "preferences.auto-focus", "Start focus automatically", "When a break ends", Some(st.settings.pomodoro.auto_start_focus)) { st.settings.pomodoro.auto_start_focus = !st.settings.pomodoro.auto_start_focus; }
+            f.end();
+            f.group(ui, "Completion lighting", 2);
+            if f.toggle(ui, "preferences.focus-light", "Spotlight", "A soft glow from the island when a focus session ends", Some(st.settings.focus_spotlight)) { st.settings.focus_spotlight = !st.settings.focus_spotlight; }
+            use lumo_core::settings::FocusLightColor;
+            let colors = [FocusLightColor::WindowsAccent, FocusLightColor::Blue, FocusLightColor::Mint, FocusLightColor::Rose, FocusLightColor::Gold, FocusLightColor::Violet];
+            if let Some(index) = f.choices(ui, "preferences.focus-light-color", "Light color", &["Windows", "Blue", "Mint", "Rose", "Gold", "Violet"], colors.iter().position(|c| *c == st.settings.focus_spotlight_color).unwrap_or(0)) { st.settings.focus_spotlight_color = colors[index]; }
+            f.end();
+            if ui.pill(wid("preferences.focus-light-preview"), Rect::new(f.x, f.y, 116.0, 30.0), "Preview", Some(Icon::Play), PillStyle::Primary(st.accent)).clicked { st.cmd(Command::PreviewFocusSpotlight); }
+            f.y += 40.0;
+            ui.c.text("Preview works while the effect is off. Clicks pass through the light.", Rect::new(f.x + 4.0, f.y, f.w - 8.0, 40.0), &TextStyle::footnote().color(palette::TEXT_DIM).top().wrap());
+            f.y += 50.0;
         }
         Section::Notifications => {
             f.group(ui, "Popups", 3);
@@ -658,6 +709,60 @@ fn draw_update_status(ui: &mut Ui, st: &mut AppState, f: &mut Form) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "native settings controls, without opening a picker or changing user files"]
+    fn focus_preview_works_while_disabled_and_shared_folder_can_reset() {
+        use super::*;
+        use lumo_core::settings::{FocusLightColor, Settings};
+        use lumo_core::store::Store;
+        let mut st = AppState::new(Settings::default(), Store::default());
+        let mut window = SettingsWindow::new(HWND::default()).unwrap();
+        window.section = Section::Focus;
+        window.draw(&mut st).unwrap();
+        window.input.clicked = Some((wid_n("preferences.work", 2), MouseButton::Left));
+        window.draw(&mut st).unwrap();
+        assert_eq!(st.settings.pomodoro.focus_min, 30);
+        for (index, sessions) in [(5, 15), (6, 18), (7, 24)] {
+            assert!(window.hits.iter().any(|hit| hit.id == wid_n("preferences.focus-goal", index)));
+            window.input.clicked = Some((wid_n("preferences.focus-goal", index), MouseButton::Left));
+            window.draw(&mut st).unwrap();
+            assert_eq!(st.settings.pomodoro.daily_goal, sessions);
+        }
+        window.scroll = window.max_scroll;
+        window.draw(&mut st).unwrap();
+        assert!(!st.settings.focus_spotlight);
+        assert!(window.hits.iter().any(|hit| hit.id == wid("preferences.focus-light-preview")));
+        window.input.clicked = Some((wid_n("preferences.focus-light-color", 5), MouseButton::Left));
+        window.draw(&mut st).unwrap();
+        assert_eq!(st.settings.focus_spotlight_color, FocusLightColor::Violet);
+        st.cmds.clear();
+        window.input.clicked = Some((wid("preferences.focus-light-preview"), MouseButton::Left));
+        window.draw(&mut st).unwrap();
+        assert!(st.cmds.contains(&Command::PreviewFocusSpotlight));
+        assert!(!st.settings.focus_spotlight, "preview leaves automatic completion lighting off");
+        if let Some(root) = std::env::var_os("LUMO_FOCUS_QA") {
+            let root = std::path::PathBuf::from(root); std::fs::create_dir_all(&root).unwrap();
+            let (w, h, pixels, _, _) = window.selftest_capture(&mut st, Section::Focus).unwrap();
+            crate::png::save_rgba(root.join("settings-focus-light.png"), w as u32, h as u32, &crate::png::pbgra_to_rgba(&pixels)).unwrap();
+        }
+        window.section = Section::General;
+        window.draw(&mut st).unwrap();
+        window.scroll = window.max_scroll;
+        window.draw(&mut st).unwrap();
+        st.cmds.clear();
+        window.input.clicked = Some((wid("preferences.phone-folder"), MouseButton::Left));
+        window.draw(&mut st).unwrap();
+        assert!(st.cmds.contains(&Command::ChoosePhoneDownloadDirectory));
+        st.settings.phone_download_directory = "D:\\Received files".into();
+        window.input.clicked = Some((wid("preferences.phone-folder-reset"), MouseButton::Left));
+        window.draw(&mut st).unwrap();
+        assert!(st.settings.phone_download_directory.is_empty());
+        if let Some(root) = std::env::var_os("LUMO_FOCUS_QA") {
+            let root = std::path::PathBuf::from(root);
+            let (w, h, pixels, _, _) = window.selftest_capture(&mut st, Section::General).unwrap();
+            crate::png::save_rgba(root.join("settings-phone-folder.png"), w as u32, h as u32, &crate::png::pbgra_to_rgba(&pixels)).unwrap();
+        }
+    }
     use super::*;
     use lumo_core::{settings::Settings, store::Store};
 
@@ -813,6 +918,12 @@ mod tests {
         window.show();
         let output = std::env::var_os("LUMO_SETTINGS_QA").map(std::path::PathBuf::from);
         if let Some(dir) = &output { std::fs::create_dir_all(dir).unwrap(); }
+        window.section=Section::Appearance;window.draw(&mut st).unwrap();
+        for (id,index)in [("preferences.time-format",1),("preferences.clock-font",2),("preferences.clock-color",4)]{window.input.clicked=Some((wid_n(id,index),MouseButton::Left));window.draw(&mut st).unwrap();}
+        assert!(!st.settings.use_24h);assert_eq!(st.settings.clock_font,lumo_core::settings::ClockFont::Mono);assert_eq!(st.settings.clock_color,lumo_core::settings::ClockColor::Gold);
+        window.input.clicked=Some((wid("preferences.clock-accent"),MouseButton::Left));window.draw(&mut st).unwrap();assert_eq!(st.settings.clock_color,lumo_core::settings::ClockColor::WindowsAccent);
+        window.input.clicked=Some((wid("preferences.closed-scroll"),MouseButton::Left));window.draw(&mut st).unwrap();assert!(!st.settings.closed_scroll);
+        if let Some(dir)=&output{window.scroll=window.max_scroll;let(w,h,p,_,_)=window.selftest_capture(&mut st,Section::Appearance).unwrap();crate::png::save_rgba(dir.join("settings-clock.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
         for (i, section) in Section::ALL.iter().copied().enumerate() {
             window.input.clicked = Some((wid_n("preferences.section", i as u64), MouseButton::Left));
             window.draw(&mut st).unwrap();
@@ -836,6 +947,15 @@ mod tests {
         window.section=Section::Ai;st.ai.models=(0..80).map(|i|lumo_core::ai::Model::manual(&format!("provider/model-{i}"))).collect();st.ai.model_menu=true;st.ai.model_settings=true;window.scroll=0.0;window.draw(&mut st).unwrap();
         let model_surface=window.hits.iter().find(|h|h.id==wid("ai.model-surface")).unwrap().rect;let mouse=model_surface.center();let mut bounds=RECT::default();unsafe{GetWindowRect(window.hwnd,&mut bounds).unwrap();}let mx=bounds.left+(mouse.x*window.gfx.scale()) as i32;let my=bounds.top+(mouse.y*window.gfx.scale()) as i32;let position=LPARAM(((my as u32 as usize)<<16 | (mx as u16 as usize)) as isize);
         window.message(WM_MOUSEWHEEL,WPARAM((-120i16 as u16 as usize)<<16),position);window.draw(&mut st).unwrap();assert!(st.ai.model_scroll>0.0,"Settings model list must receive the wheel");assert_eq!(window.scroll,0.0,"Settings behind the model selector must not scroll");
+        window.input.clicked=Some((wid("ai.model-filters"),MouseButton::Left));window.draw(&mut st).unwrap();assert!(st.ai.model_filters_open);
+        assert!(window.hits.iter().any(|h|h.id==wid("ai.model-filter-surface")));
+        // A native sidebar press closes the child popup without activating the
+        // underlying Settings section or dismissing the parent model picker.
+        let point=LPARAM(((((100.0*window.gfx.scale())as u16 as usize)<<16)|((24.0*window.gfx.scale())as u16 as usize))as isize);
+        window.message(WM_LBUTTONDOWN,WPARAM(0),point);window.draw(&mut st).unwrap();
+        assert!(!st.ai.model_filters_open&&st.ai.model_menu&&window.section==Section::Ai);
+        window.message(WM_LBUTTONUP,WPARAM(0),point);window.draw(&mut st).unwrap();
+        assert!(st.ai.model_menu&&window.section==Section::Ai);
         if let Some(dir)=&output{let(w,h,pixels,_,_)=window.selftest_capture(&mut st,Section::Ai).unwrap();crate::png::save_rgba(dir.join("settings-ai-models.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&pixels)).unwrap();}
         st.ai.model_menu=false;
         window.section = Section::General;
@@ -851,7 +971,19 @@ mod tests {
         window.draw(&mut st).unwrap();
         assert!(!st.settings.open_on_hover);
         assert!(!window.hits.iter().any(|hit| hit.id == wid_n("preferences.hover", 0)));
+        window.scroll=window.max_scroll;window.draw(&mut st).unwrap();
+        assert!(window.hits.iter().any(|h|h.id==wid("preferences.mouse-wheel-shortcuts")));
+        for expected in [false,true] {
+            window.input.clicked=Some((wid("preferences.mouse-wheel-shortcuts"),MouseButton::Left));window.draw(&mut st).unwrap();
+            assert_eq!(st.settings.mouse_wheel_shortcuts,expected);
+        }
+        if let Some(dir)=&output{let(w,h,p,_,_)=window.selftest_capture(&mut st,Section::General).unwrap();crate::png::save_rgba(dir.join("settings-mouse-wheel.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
         window.section = Section::Music;
+        for (id,lyrics,scroll) in [("preferences.music-lyrics",false,true),("preferences.music-scroll",false,false),("preferences.music-lyrics",true,false),("preferences.music-scroll",true,true)] {
+            st.cmds.clear();window.input.clicked=Some((wid(id),MouseButton::Left));window.draw(&mut st).unwrap();
+            assert_eq!((st.settings.music_lyrics,st.settings.music_scroll_tracks),(lyrics,scroll));
+            assert!(st.cmds.contains(&Command::SaveSettings));
+        }
         st.cmds.clear();
         window.input.clicked = Some((wid("preferences.local"), MouseButton::Left));
         window.draw(&mut st).unwrap();
