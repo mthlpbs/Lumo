@@ -63,8 +63,13 @@ mod tests {
     use super::*;
     #[test]
     fn engine_is_shared_only_while_views_hold_it(){
+        invalidate();
         assert!(load(false).unwrap().is_none());
-        let first=load(true).unwrap().unwrap();let second=load(true).unwrap().unwrap();
+        // Exercise sharing without requiring the optional protection add-on on CI.
+        let first=Rc::new(Engine::from_lists(["||ads.test^".into()],"[]").unwrap());
+        ENGINE.with(|shared|*shared.borrow_mut()=Rc::downgrade(&first));
+        assert!(load(false).unwrap().is_none());
+        let second=load(true).unwrap().unwrap();
         assert!(Rc::ptr_eq(&first,&second));let weak=Rc::downgrade(&first);
         drop(first);drop(second);assert!(weak.upgrade().is_none());
     }
