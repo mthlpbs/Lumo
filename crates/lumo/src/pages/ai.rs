@@ -51,6 +51,11 @@ pub fn height(st: &AppState) -> f32 {
     st.ai.island_height
 }
 pub fn next_wake(_st: &AppState) -> Option<f64> { None }
+/// Match the model picker's eight-pixel gap above the composer's controls.
+/// Pending attachments grow the composer upward without moving this anchor.
+fn attachment_popup(area:Rect)->Rect {
+    Rect::new(area.x,(area.bottom()-50.0-151.0).max(area.y+48.0),area.w.min(320.0),151.0)
+}
 pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) {
     draw_chat(ui, st, area, false);
 }
@@ -59,9 +64,7 @@ pub fn draw(ui: &mut Ui, st: &mut AppState, area: Rect) {
 pub fn draw_chat(ui: &mut Ui, st: &mut AppState, area: Rect, full: bool) {
     ai::ensure(st);
     if st.ai.attach_menu && ui.input.just_pressed {
-        let error=if st.ai.error.is_empty(){0.0}else{34.0};
-        let pending=if st.ai.pending.is_empty(){0.0}else{(area.h-288.0-error).clamp(48.0,112.0)+12.0};
-        let menu=Rect::new(area.x,(area.bottom()-104.0-pending-160.0).max(area.y+48.0),area.w.min(320.0),151.0);
+        let menu=attachment_popup(area);
         if ui.input.press_pos.or(ui.input.mouse).is_some_and(|p|!menu.contains(p)){
             st.ai.attach_menu=false;ui.input.clicked=None;ui.input.pressed_id=None;ui.input.released=None;ui.input.just_pressed=false;ui.input.down=false;
             ui.input.focused=Some(wid("ai.prompt"));st.cmd(Command::FocusText);
@@ -384,12 +387,7 @@ pub fn draw_chat(ui: &mut Ui, st: &mut AppState, area: Rect, full: bool) {
         attach_menu(
             ui,
             st,
-            Rect::new(
-                area.x,
-                (composer.y - 160.0).max(toolbar.bottom() + 12.0),
-                area.w.min(320.0),
-                151.0,
-            ),
+            attachment_popup(area),
         );
     }
     if st.ai.model_menu && !st.ai.model_settings {

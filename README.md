@@ -187,6 +187,8 @@ Click **Ask AI** in the workspace header to choose ChatGPT, Gemini, Claude,
 or Muse (`muse.ai`), with their logos. A selected website fills
 the island or mini window, with Lumo's controls overlaid at the top right and
 no address bar. The sites share Lumo's existing browser cookies and site storage.
+In the mini window, webpages follow the window's rounded corners, with no
+black Ask AI background around the edges, including after resizing.
 Supported page layouts can show reply-ready previews on the island. Choose
 **Ask AI** in the dropdown to return to the native chat described below.
 [AI website behavior and completion-detection limits](docs/ai-sites.md).
@@ -203,7 +205,9 @@ selector shows only the model name, directly beside Send. Temporary chats open
 with their own history notice. Replies render native color emojis. Empty AI
 composers and Search queries stay blank and hide the caret. Once text is
 entered, the focused caret blinks normally. Clearing the field hides it again. Clicking outside the
-attachment menu dismisses it. AI chat and composer text use 14 DIPs.
+attachment menu dismisses it. The attachment menu opens just above the **+**
+button, like the model selector, and stays there when attachments are added.
+AI chat and composer text use 14 DIPs.
 Toolbar icons in AI and the browser show their actions on hover. Attach,
 the composer model selector and Send/Stop have no hover text.
 Model provider names stay hidden on hover.

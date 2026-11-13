@@ -9,11 +9,12 @@ use windows::{
     core::{w, Result},
     Win32::{
         Foundation::*,
-        Graphics::Gdi::{InvalidateRect, ScreenToClient},
+        Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, InvalidateRect, ScreenToClient, SetWindowRgn},
         System::LibraryLoader::GetModuleHandleW,
         UI::{HiDpi::GetDpiForWindow, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
     },
 };
+pub(crate) const CORNER_RADIUS:f32=24.0;
 pub struct AiWindow {
     pub hwnd: HWND,
     gfx: Gfx,
@@ -23,6 +24,7 @@ pub struct AiWindow {
     restore_after_rest: bool,
     drop_registered: bool,
     double_press: bool,
+    outline: Option<(i32,i32,i32)>,
 }
 /// A native focus change can arrive while App is borrowed by a window call.
 pub const CHECK_ACTIVATION: u32 = WM_APP + 98;
@@ -106,6 +108,7 @@ impl AiWindow {
                 restore_after_rest: false,
                 drop_registered: false,
                 double_press: false,
+                outline: None,
             })
         }
     }
@@ -248,6 +251,16 @@ impl AiWindow {
             GetWindowRect(self.hwnd, &mut bounds)?;
         }
         let (w, h) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
+        // Clip the entire native window, including its WebView children. A
+        // transparent layered bitmap alone does not clip their DWM backing.
+        let diameter=(2.0*CORNER_RADIUS*self.gfx.scale()).round()as i32;
+        if self.outline!=Some((w,h,diameter)) {unsafe{
+            let region=CreateRoundRectRgn(0,0,w+1,h+1,diameter,diameter);
+            if !region.is_invalid(){
+                if SetWindowRgn(self.hwnd,region,true)!=0{self.outline=Some((w,h,diameter));}
+                else{let _=DeleteObject(region);}
+            }
+        }}
         self.gfx.set_surface(w, h)?;
         let area = Rect::new(
             0.0,
@@ -263,11 +276,13 @@ impl AiWindow {
             bottom: h,
         })?;
         let mut ui = crate::ui::Ui::new(&mut c, &mut self.input, &mut self.hits, st.now);
-        ui.c.fill_rrect(area.inset(1.0, 1.0), 24.0, Color::black(1.0));
+        if !(st.ai.sites.selected.is_some()&&st.ai.sites.web_visible&&st.ai.full_open){
+            ui.c.fill_rrect(area.inset(1.0, 1.0), CORNER_RADIUS, Color::black(1.0));
+        }
         if st.ai.sites.selected.is_some() {
             crate::ai_sites::draw_web(&mut ui, st, area, true);
         } else {
-            ui.c.stroke_rrect(area.inset(1.0, 1.0), 24.0, Color::white(0.13), 1.0);
+            ui.c.stroke_rrect(area.inset(1.0, 1.0), CORNER_RADIUS, Color::white(0.13), 1.0);
             crate::pages::ai::draw_chat(&mut ui, st, crate::pages::ai::workspace_area(area), true);
         }
         // A model description needs one delayed paint, never a repeating timer.
@@ -580,6 +595,14 @@ pub fn push_char(input: &mut Input, u: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn assert_native_corners(hwnd:HWND){unsafe{
+        use windows::Win32::Graphics::Gdi::{CreateRectRgn,GetWindowRgn,PtInRegion};
+        let mut rect=RECT::default();GetWindowRect(hwnd,&mut rect).unwrap();let(w,h)=(rect.right-rect.left,rect.bottom-rect.top);
+        let region=CreateRectRgn(0,0,0,0);assert!(GetWindowRgn(hwnd,region).0!=0,"the outer window must clip native child backing surfaces");
+        for(x,y)in[(0,0),(w-1,0),(0,h-1),(w-1,h-1)]{assert!(!PtInRegion(region,x,y).as_bool(),"corner ({x},{y}) must expose the desktop");}
+        assert!(PtInRegion(region,w/2,1).as_bool()&&PtInRegion(region,w/2,h/2).as_bool(),"keep the page edges and center visible");
+        let _=DeleteObject(region);
+    }}
     #[test]
     #[ignore = "requires a Windows desktop; offline native corner hit targets"]
     fn mini_corners_use_diagonal_resize_and_keep_the_chat() {
@@ -592,6 +615,10 @@ mod tests {
             crate::window::check_mini_resize_corners(hwnd, scale, |lp| {
                 w.message(WM_NCHITTEST, WPARAM(0), lp)
             });
+            w.draw(&mut st).unwrap();assert_native_corners(w.hwnd);
+            st.ai.sites.selected=Some(crate::ai_sites::Site::ChatGpt);st.ai.sites.web_visible=true;st.ai.full_open=true;
+            w.draw(&mut st).unwrap();assert_native_corners(w.hwnd);
+            st.ai.sites.selected=None;st.ai.sites.web_visible=false;st.ai.full_open=false;
         }
         w.gfx.set_dpi(96.0);
         for (width, height) in [(420, 460), (680, 740), (360, 360)] {
@@ -610,6 +637,7 @@ mod tests {
             w.message(WM_SIZE, WPARAM(0), LPARAM(0));
             w.draw(&mut st).unwrap();
             assert_eq!(st.ai.draft, "Keep this resize draft");
+            assert_native_corners(w.hwnd);
         }
     }
     #[test]
@@ -989,6 +1017,18 @@ mod tests {
         w.draw(&mut st).unwrap();
         st.ai.attach_menu = true;
         w.draw(&mut st).unwrap();
+        let menu = w.hits.iter().find(|h|h.id==wid("ai.attach-surface")).unwrap().rect;
+        let plus = w.hits.iter().find(|h|h.id==wid("ai.plus")).unwrap().rect;
+        assert!((menu.bottom()-(plus.y-8.0)).abs()<0.1,"attachments must open above the + control, inside the composer like the model picker");
+        st.ai.pending.push(lumo_core::ai::Attachment{name:"draft.txt".into(),mime:"text/plain".into(),data:String::new()});
+        w.draw(&mut st).unwrap();
+        assert_eq!(w.hits.iter().find(|h|h.id==wid("ai.attach-surface")).unwrap().rect,menu,"attachment previews must not move the popup away from its button");
+        // The newly overlapping composer area must count as inside the popup.
+        let inside = menu.inset(8.0,8.0).center();
+        w.input.mouse=Some(inside);w.input.press_pos=Some(inside);w.input.just_pressed=true;
+        w.draw(&mut st).unwrap();assert!(st.ai.attach_menu);
+        st.ai.pending.clear();
+        if let Some(dir)=std::env::var_os("LUMO_AI_QA"){w.capture(&mut st,&std::path::PathBuf::from(dir).join("attachment-popup-anchor.png"));}
         let r = w.hits.iter().find(|h| h.id == wid("ai.send")).unwrap().rect;
         let scale = w.gfx.scale();
         let p = LPARAM(

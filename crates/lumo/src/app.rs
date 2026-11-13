@@ -3921,7 +3921,7 @@ impl App {
             let scale=self.gfx.scale();let area=self.island.body_rect_at(self.cx);
             (self.hwnd,RECT{left:(area.x*scale).round()as i32,top:(area.y*scale).round()as i32,right:(area.right()*scale).round()as i32,bottom:(area.bottom()*scale).round()as i32},scale,area)
         };
-        let radius=if self.ai_window.is_some(){24.0}else{self.island.current().r};
+        let radius=if self.ai_window.is_some(){crate::ai_window::CORNER_RADIUS}else{self.island.current().r};
         let Some(web)=self.ai_web.as_mut()else{self.st.ai.sites.web_ready=false;self.st.ai.sites.web_visible=false;return false;};
         if visible{web.clip_radius(radius);}
         let(ready,error)=web.status();self.st.ai.sites.web_ready=ready;self.st.ai.sites.error=error;
@@ -6186,6 +6186,7 @@ mod tests {
                 app.handle_island(WM_LBUTTONDOWN,WPARAM(0),at,&mut deferred);app.frame(&mut deferred,None);app.handle_island(WM_LBUTTONUP,WPARAM(0),at,&mut deferred);app.frame(&mut deferred,None);
                 assert!(app.expanded&&app.text_focus,"clicking {id} must not dismiss AI");
                 assert_eq!(if id=="ai.history"{app.st.ai.history}else if id=="ai.plus"{app.st.ai.attach_menu}else{app.st.ai.model_menu},open);
+                if id=="ai.plus"&&open {let popup=app.hits.iter().find(|h|h.id==wid("ai.attach-surface")).unwrap().rect;let plus=app.hits.iter().find(|h|h.id==wid("ai.plus")).unwrap().rect;assert!((popup.bottom()-(plus.y-8.0)).abs()<0.1,"attachment popup follows its button in {theme:?}");}
             }
             assert_eq!(app.st.ai.draft,"Do not send this draft");app.st.ai.close_popovers();app.search_lost_activation(helper);assert!(!app.expanded,"an actual outside activation must still dismiss unpinned AI");app.st.cmds.clear();
         }
@@ -6528,6 +6529,11 @@ mod tests {
         {let(client,_)=app.ai_window.as_ref().unwrap().page_bounds();let mut outer=RECT::default();unsafe{GetWindowRect(mini,&mut outer).unwrap();}assert_eq!((client.right,client.bottom),(outer.right-outer.left,outer.bottom-outer.top),"the website gets the entire frameless client area");}
         assert_eq!(app.ai_web.as_ref().unwrap().parent(),mini);assert_eq!(app.ai_web.as_ref().unwrap().test_web().unwrap(),web);
         app.ai_window.as_mut().unwrap().draw(&mut app.st).unwrap();
+        unsafe{use windows::Win32::Graphics::Gdi::{CreateRectRgn,GetWindowRgn,PtInRegion,DeleteObject};
+            let region=CreateRectRgn(0,0,0,0);assert!(GetWindowRgn(mini,region).0!=0);
+            let(client,_)=app.ai_window.as_ref().unwrap().page_bounds();
+            for(x,y)in[(0,0),(client.right-1,0),(0,client.bottom-1),(client.right-1,client.bottom-1)]{assert!(!PtInRegion(region,x,y).as_bool(),"a real website must not expose the native chat backing at its corners");}let _=DeleteObject(region);
+        }
         app.st.settings.ai.keep_open=false;
         let dialog=unsafe{CreateWindowExW(WINDOW_EX_STYLE(0),w!("STATIC"),w!("Owned website dialog fixture"),WS_POPUP,0,0,80,80,mini,None,windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap(),None).unwrap()};
         app.handle_ai_window(mini,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(dialog.0 as isize));assert!(app.ai_window.is_some(),"website-owned dialogs must not dismiss the mini window");unsafe{DestroyWindow(dialog).unwrap();}app.st.settings.ai.keep_open=true;

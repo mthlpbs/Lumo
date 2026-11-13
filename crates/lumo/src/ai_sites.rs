@@ -225,7 +225,7 @@ pub fn title(ui: &mut Ui, st: &mut AppState, r: Rect) {
 pub fn draw_web(ui: &mut Ui, st: &mut AppState, area: Rect, full: bool) {
     if st.ai.sites.web_visible && full == st.ai.full_open {
         let radius = if full {
-            24.0
+            crate::ai_window::CORNER_RADIUS
         } else if crate::pill::on(st.settings.theme) {
             40.0
         } else {
