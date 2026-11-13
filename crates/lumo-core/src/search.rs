@@ -19,7 +19,6 @@ pub struct Config {
     pub browser_wide: bool,
     pub browser_height: u16,
     pub google_suggestions: bool,
-    pub show_browser_icon: bool,
     pub mini_width: u16,
     pub mini_height: u16,
 }
@@ -32,14 +31,13 @@ impl Default for Config {
             services: false,
             powertoys: true,
             vscode_commands: true,
-            web: false,
+            web: true,
             engine: Engine::Bing,
             keep_open: false,
             resume_page: false,
             browser_wide: false,
             browser_height: 680,
             google_suggestions: false,
-            show_browser_icon: true,
             mini_width: 560,
             mini_height: 680,
         }
@@ -323,6 +321,8 @@ pub struct Entry {
     words: String,
 }
 impl Entry {
+    pub fn is_browser(&self) -> bool { self.id == BROWSER_ID && matches!(&self.target, Target::Web{url,..} if url == BROWSER_URL) }
+    pub fn pinnable(&self) -> bool { self.is_browser() || matches!(self.target, Target::App(_)) }
     pub fn new(
         id: String,
         title: String,
@@ -343,6 +343,7 @@ impl Entry {
         }
     }
     pub fn enabled(&self, cfg: &Config) -> bool {
+        if self.is_browser() { return cfg.web; }
         match self.group {
             Group::App => cfg.apps,
             Group::Settings => cfg.settings,
@@ -351,6 +352,40 @@ impl Entry {
             Group::VSCode => cfg.vscode_commands,
         }
     }
+}
+pub const BROWSER_ID: &str = "lumo-browser";
+pub const BROWSER_URL: &str = "lumo://home";
+pub const MAX_PINS: usize = 32;
+pub fn browser_entry() -> Entry {
+    Entry::new(BROWSER_ID.into(), "Lumo Browser".into(), String::new(), "web internet", Group::App,
+        Target::Web { query: String::new(), url: BROWSER_URL.into() })
+}
+pub fn default_pins() -> Vec<String> { vec![BROWSER_ID.into()] }
+pub fn sanitize_pins(pins: &mut Vec<String>) {
+    pins.truncate(256);
+    let mut seen = std::collections::BTreeSet::new();
+    pins.retain(|id| !id.is_empty() && id.len() <= 4096 && !id.chars().any(char::is_control)
+        && !id.starts_with("file:") && seen.insert(id.clone()));
+    pins.truncate(MAX_PINS);
+}
+pub fn set_pinned(pins: &mut Vec<String>, entry: &Entry, pinned: bool) -> bool {
+    if !entry.pinnable() { return false; }
+    if let Some(index) = pins.iter().position(|id| *id == entry.id) {
+        if !pinned { pins.remove(index); return true; }
+    } else if pinned && pins.len() < MAX_PINS { pins.push(entry.id.clone()); return true; }
+    false
+}
+pub fn move_pin(pins: &mut Vec<String>, source: &str, target: &str) -> bool {
+    let Some(from) = pins.iter().position(|id| id == source) else { return false; };
+    let Some(to) = pins.iter().position(|id| id == target) else { return false; };
+    if from == to { return false; }
+    let id = pins.remove(from); pins.insert(to, id); true
+}
+/// Pins first in saved order, then newest applications without duplicates.
+pub fn launch_strip(entries: &[Entry], cfg: &Config, usage: &BTreeMap<String, Usage>, pins: &[String]) -> Vec<usize> {
+    let mut out: Vec<usize> = pins.iter().filter_map(|id| entries.iter().position(|e| e.id == *id && e.pinnable() && e.enabled(cfg))).collect();
+    out.extend(recent_without_pins(entries,cfg,usage,pins));
+    out
 }
 fn normalize(s: &str) -> String {
     s.to_lowercase()
@@ -395,6 +430,9 @@ fn score_keys(title: &str, words: &str, query: &str) -> Option<u32> {
     Some(score)
 }
 pub fn ranked(entries: &[Entry], query: &str, group: Option<Group>, cfg: &Config) -> Vec<usize> {
+    ranked_with_pins(entries, query, group, cfg, &[])
+}
+pub fn ranked_with_pins(entries: &[Entry], query: &str, group: Option<Group>, cfg: &Config, pins: &[String]) -> Vec<usize> {
     let query = normalize(&query.trim().chars().take(128).collect::<String>());
     let mut found: Vec<_> = entries
         .iter()
@@ -402,7 +440,7 @@ pub fn ranked(entries: &[Entry], query: &str, group: Option<Group>, cfg: &Config
         .filter(|(_, e)| e.enabled(cfg) && group.is_none_or(|g| e.group == g))
         .filter_map(|(i, e)| score_keys(&e.title_key, &e.words, &query).map(|s| (s, i)))
         .collect();
-    found.sort_by_key(|&(s, i)| (s, i));
+    found.sort_by_key(|&(s, i)| (pins.iter().position(|id|*id==entries[i].id).unwrap_or(usize::MAX), s, i));
     found.into_iter().take(100).map(|(_, i)| i).collect()
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,8 +479,11 @@ pub fn frequent(entries: &[Entry], cfg: &Config, usage: &BTreeMap<String, Usage>
 }
 /// Only apps opened through Search, newest first. No query text is retained.
 pub fn recent_applications(entries:&[Entry],cfg:&Config,usage:&BTreeMap<String,Usage>)->Vec<usize>{
+    recent_without_pins(entries,cfg,usage,&[])
+}
+fn recent_without_pins(entries:&[Entry],cfg:&Config,usage:&BTreeMap<String,Usage>,pins:&[String])->Vec<usize>{
     let mut items:Vec<_>=entries.iter().enumerate().filter_map(|(i,e)|{
-        if !e.enabled(cfg) || !matches!(e.target,Target::App(_)){return None;}
+        if !e.enabled(cfg) || !e.pinnable() || pins.contains(&e.id){return None;}
         usage.get(&e.id).filter(|u|u.count>0).map(|u|(i,u.last))
     }).collect();
     items.sort_by_key(|&(i,last)|(std::cmp::Reverse(last),i));
@@ -526,6 +567,29 @@ impl Application {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn pins_migrate_persist_reorder_and_do_not_duplicate_recent_apps(){
+        let old:crate::store::Store=serde_json::from_str("{}").unwrap();assert_eq!(old.search_pins,default_pins());
+        let empty:crate::store::Store=serde_json::from_str(r#"{"search_pins":[]}"#).unwrap();assert!(empty.search_pins.is_empty(),"unpinning the default must survive restart");
+        let app=Application::from_id_list(vec![4,0,10,20,0,0]).unwrap();let mut a=entry("A");a.target=Target::App(app.clone());let mut b=entry("B");b.target=Target::App(app);
+        let entries=vec![browser_entry(),a.clone(),b.clone(),entry("Setting")];let cfg=Config{web:true,..Default::default()};
+        let usage=BTreeMap::from([("A".into(),Usage{count:9,last:100}),("B".into(),Usage{count:1,last:200})]);
+        let mut pins=default_pins();assert!(set_pinned(&mut pins,&a,true));assert!(!set_pinned(&mut pins,&entries[3],true));
+        assert_eq!(launch_strip(&entries,&cfg,&usage,&pins),[0,1,2]);assert!(!set_pinned(&mut pins,&a,true));
+        assert!(move_pin(&mut pins,"A",BROWSER_ID));assert_eq!(launch_strip(&entries,&cfg,&usage,&pins),[1,0,2]);
+        let store=crate::store::Store{search_pins:pins.clone(),..Default::default()};let restored:crate::store::Store=serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();assert_eq!(restored.search_pins,pins);
+        assert!(set_pinned(&mut pins,&a,false));assert_eq!(launch_strip(&entries,&cfg,&usage,&pins),[0,2,1]);
+        assert_eq!(launch_strip(&entries,&Config{apps:false,..cfg.clone()},&usage,&pins),[0]);
+        let matches=ranked_with_pins(&entries,"A",None,&cfg,&pins);assert!(!matches.contains(&0),"pins must still match the typed query");
+        pins.extend(["".into(),BROWSER_ID.into(),"file:old".into()]);sanitize_pins(&mut pins);assert_eq!(pins,default_pins());
+        let retired:Config=serde_json::from_str(r#"{"show_browser_icon":false}"#).unwrap();assert_eq!(retired,Config::default());
+        let matching=vec![Entry::new("one".into(),"One App".into(),String::new(),"",Group::App,a.target.clone()),Entry::new("two".into(),"Two App".into(),String::new(),"",Group::App,a.target.clone())];
+        let results=ranked_with_pins(&matching,"app",None,&cfg,&["two".into()]);assert_eq!(results,[1,0]);
+        let many:Vec<_>=(0..200).map(|i|Entry::new(format!("app-{i}"),format!("App {i}"),String::new(),"",Group::App,a.target.clone())).collect();
+        let results=ranked_with_pins(&many,"App",None,&cfg,&["app-199".into()]);assert_eq!(results.len(),100);assert_eq!(results[0],199);
+
+
+    }
+    #[test]
     fn recent_apps_ignore_tools_and_frequency_and_follow_last_opened(){
         let app=Application::from_id_list(vec![4,0,10,20,0,0]).unwrap();
         let mut items=vec![entry("Older"),entry("Newest"),entry("Settings")];
@@ -534,7 +598,7 @@ mod tests {
         assert_eq!(recent_applications(&items,&Config::default(),&usage),[1,0]);
         assert!(recent_applications(&items,&Config{apps:false,..Default::default()},&usage).is_empty());
         let old:Config=serde_json::from_str(r#"{"knowledge_cards":true}"#).unwrap();
-        assert!(old.show_browser_icon);assert!(!serde_json::to_string(&old).unwrap().contains("knowledge"));
+        assert!(!serde_json::to_string(&old).unwrap().contains("knowledge"));
     }
     #[test]
     fn service_controls_and_retired_preferences_are_safe(){

@@ -304,8 +304,8 @@ fn run_deferred(d: Deferred) {
             }app.request_frame();});
         },
         Deferred::SearchMenu(entry,point)=>{
-            let Some((hwnd,frequent))=with_app(|app|(app.hwnd,app.st.store.search_usage.contains_key(&entry.id)))else{return;};
-            let action=crate::search_menu::show(hwnd,&entry,point,frequent);
+            let Some((hwnd,frequent,pinned))=with_app(|app|(app.hwnd,app.st.store.search_usage.contains_key(&entry.id),app.st.store.search_pins.contains(&entry.id)))else{return;};
+            let action=crate::search_menu::show(hwnd,&entry,point,frequent,pinned);
             with_app(|app|{
                 app.st.search.context_menu=false;
                 match action{
@@ -314,6 +314,7 @@ fn run_deferred(d: Deferred) {
                     crate::search_menu::Action::Copy(text)=>services::clipboard::set_text(hwnd,&text),
                     crate::search_menu::Action::CopyIcon(file)=>{if !app.st.search.action_pending{if let lumo_core::search::Target::App(application)=&entry.target{app.st.search.action_pending=true;services::imaging::copy_application_icon(application.clone(),entry.title.clone(),file,app.sink.clone());}}},
                     crate::search_menu::Action::Error(message)=>app.st.search.notice=message,
+                    crate::search_menu::Action::Pin(pin)=>{if lumo_core::search::set_pinned(&mut app.st.store.search_pins,&entry,pin){app.st.save();crate::search::refresh(&mut app.st);}else if pin&&app.st.store.search_pins.len()>=lumo_core::search::MAX_PINS{app.st.search.notice="Up to 32 apps can be pinned.".into();}},
                     crate::search_menu::Action::Forget=>{app.st.store.search_usage.remove(&entry.id);app.st.save();crate::search::refresh(&mut app.st);},
                     crate::search_menu::Action::Service(start)=>{if let lumo_core::search::Target::Service(service)=&entry.target{app.search_service(&service.name,start);}},
                     crate::search_menu::Action::None=>{},
@@ -1611,7 +1612,7 @@ impl App {
                 // Search/address chrome has no vertical wheel shortcut. In
                 // particular, don't fall through to the older header-close
                 // gesture after removing the Browser/Search bar switch.
-                if self.st.search.active && (if self.st.search.embedded(){crate::search::browser_toolbar(body,false).bar.contains(p)}else{self.hit_at(p).is_some_and(|h|h.id==wid("search.query")||h.id==wid("search.browser"))}) {return Some(LRESULT(0));}
+                if self.st.search.active && (if self.st.search.embedded(){crate::search::browser_toolbar(body,false).bar.contains(p)}else{self.hit_at(p).is_some_and(|h|h.id==wid("search.query"))}) {return Some(LRESULT(0));}
                 let mouse_shortcut=source==services::wheel_input::Source::Mouse && self.st.settings.mouse_wheel_shortcuts && !shift && !self.input.down;
                 if mouse_shortcut && !self.expanded && body.contains(p) {
                     if self.search_gesture.feed(delta,clock::mono()) {
@@ -1683,7 +1684,7 @@ impl App {
                 if before.search.mini_width!=self.st.settings.search.mini_width || before.search.mini_height!=self.st.settings.search.mini_height {window.apply_size(&self.st.settings.search);}
                 window.mark_dirty();
             }
-            if before.search.apps!=self.st.settings.search.apps || before.search.settings!=self.st.settings.search.settings {
+            if before.search.apps!=self.st.settings.search.apps || before.search.settings!=self.st.settings.search.settings || before.search.web!=self.st.settings.search.web {
                 crate::search::refresh(&mut self.st);
                 self.start_search_catalog(false);
             }
@@ -4179,7 +4180,7 @@ impl App {
         }
         if let Target::Web{url,..}=&target{
             if !self.st.settings.search.web{return;}
-            if url==crate::browser_home::URL{self.open_browser();return;}
+            if url==crate::browser_home::URL{self.record_search(&lumo_core::search::browser_entry());self.open_browser();return;}
             if self.st.search.detached {
                 if let Some(browser)=self.search_web.as_ref(){browser.navigate(url);self.st.search.address=url.clone();self.st.search.address_dirty=false;}
                 else {self.restart_mini_browser(url.clone());}
@@ -4403,6 +4404,7 @@ impl App {
             match c {
                 Command::OpenSearch => self.open_search(),
                 Command::ExecuteSearch(target) => self.execute_search(target),
+                Command::ReorderSearchPin{source,target}=>{if lumo_core::search::move_pin(&mut self.st.store.search_pins,&source,&target){self.st.save();crate::search::refresh(&mut self.st);}},
                 Command::SearchService{name,start}=>self.search_service(&name,start),
                 Command::SearchBrowserMenu(point)=>{let owner=self.browser_window.as_ref().map_or(self.hwnd,|w|w.hwnd);let scale=self.browser_window.as_ref().map_or(self.gfx.scale(),|w|w.page_bounds().1);let mut at=POINT{x:(point.x*scale).round() as i32,y:(point.y*scale).round() as i32};unsafe{let _=windows::Win32::Graphics::Gdi::ClientToScreen(owner,&mut at);}deferred.push(Deferred::BrowserMenu(at));},
                 Command::SearchIcons(items) => self.start_search_icons(items),
@@ -6313,36 +6315,55 @@ mod tests {
         clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
     }
 
-    #[test]#[ignore="native launcher layout, with isolated offline app icons"]
+    #[test]#[ignore="native launcher layout, persistent app pins and drag reordering"]
     fn search_opens_as_a_bar_and_recent_icons_then_expands_only_for_text(){
         unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
         window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));
-        let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;
-        app.st.settings.search.web=true;app.st.settings.search.show_browser_icon=true;
+        let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;app.st.settings.search.web=true;
         let all=services::search::scan(&std::sync::atomic::AtomicBool::new(false)).unwrap();app.st.search.apps=all.into_iter().take(20).collect();assert!(!app.st.search.apps.is_empty());
         let images=services::imaging::search_icons(app.st.search.apps.iter().rev().take(16).map(|e|(e.id.clone(),e.target.clone())).collect(),&std::sync::atomic::AtomicBool::new(false));app.st.search.icons.extend(images);
         for(i,e)in app.st.search.apps.iter().enumerate(){app.st.store.search_usage.insert(e.id.clone(),lumo_core::search::Usage{count:1,last:i as u64+1});}
+        let first=app.st.search.apps[0].clone();let browser=lumo_core::search::BROWSER_ID;
+        let packet=|p:Point,scale:f32|LPARAM((((p.y*scale).round()as u16 as u32)<<16|(p.x*scale).round()as u16 as u32)as isize);
         let mut deferred=vec![];
         for(index,theme)in [Theme::Classic,Theme::Pill].into_iter().enumerate(){
-            let base=100.0+index as f64*100.0;clock::hold(Some(base));app.st.now=base;app.st.settings.theme=theme;app.st.settings.search.show_browser_icon=true;app.open_search();
+            app.st.store.search_pins=lumo_core::search::default_pins();assert!(lumo_core::search::set_pinned(&mut app.st.store.search_pins,&first,true));
+            let base=100.0+index as f64*100.0;clock::hold(Some(base));app.st.now=base;app.st.settings.theme=theme;app.open_search();
             app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
-            let body=app.island.body_rect_at(app.cx);let width=app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.w;
-            let expected=crate::search::recent_capacity(body.w).min(app.st.search.apps.len());
-            assert_eq!(app.hits.iter().filter(|h|app.st.search.apps.iter().any(|e|h.id==crate::ui::wid_n("search.recent",wid(&e.id)))).count(),expected);
+            let before=app.st.settings.clone();app.st.settings.search.web=false;app.settings_changed(&before);app.frame(&mut deferred,None);assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.recent",wid(browser))));assert!(app.st.store.search_pins.iter().any(|id|id==browser));
+            let before=app.st.settings.clone();app.st.settings.search.web=true;app.settings_changed(&before);app.frame(&mut deferred,None);assert!(app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.recent",wid(browser))));
+            let body=app.island.body_rect_at(app.cx);let width=app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.w;assert_eq!(width,body.w-48.0);
+            let expected=crate::search::recent_capacity(body.w).min(app.st.search.apps.len()+1);
+            assert_eq!(app.hits.iter().filter(|h|h.id==crate::ui::wid_n("search.recent",wid(browser))||app.st.search.apps.iter().any(|e|h.id==crate::ui::wid_n("search.recent",wid(&e.id)))).count(),expected);
             assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",0)||h.id==wid("search.web")));
-            assert!(app.hits.iter().any(|h|h.id==wid("search.browser")));assert_eq!(app.st.search.view.as_ref().unwrap().selected().unwrap().id,app.st.search.apps.last().unwrap().id);
-            assert!((body.h-112.0).abs()<1.0);
-            if let Some(dir)=std::env::var_os("LUMO_SEARCH_REWORK_QA"){let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(dir.join(format!("empty-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
-            app.input.keys="sound".chars().map(KeyInput::Char).collect();app.frame(&mut deferred,None);clock::hold(Some(base+0.25));app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
-            assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")));let wide=app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.w;assert!((wide-width-48.0).abs()<1.0);
-            assert!(app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",0)));
-            if let Some(dir)=std::env::var_os("LUMO_SEARCH_REWORK_QA"){let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(dir).join(format!("typed-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            assert_eq!(app.st.search.view.as_ref().unwrap().selected().unwrap().id,browser);assert!((body.h-112.0).abs()<1.0);
+            let browser_rect=app.hits.iter().find(|h|h.id==crate::ui::wid_n("search.recent",wid(browser))).unwrap().rect;
+            let app_rect=app.hits.iter().find(|h|h.id==crate::ui::wid_n("search.recent",wid(&first.id))).unwrap().rect;assert!(browser_rect.x<app_rect.x);
+            assert_eq!(app.hits.iter().filter(|h|h.id==crate::ui::wid_n("search.recent",wid(&first.id))).count(),1,"a frequent app must not duplicate a pin");
+            app.search_context_menu(Some(browser_rect.center()),&mut deferred);assert!(matches!(deferred.last(),Some(Deferred::SearchMenu(e,_))if e.is_browser()));app.st.search.context_menu=false;deferred.clear();
+            // Exercise real capture/move/release rather than injecting a reorder command.
+            let scale=app.gfx.scale();app.handle_island(WM_LBUTTONDOWN,WPARAM(0),packet(browser_rect.center(),scale),&mut deferred);app.frame(&mut deferred,None);
+            app.handle_island(WM_MOUSEMOVE,WPARAM(1),packet(app_rect.center(),scale),&mut deferred);app.frame(&mut deferred,None);
+            app.handle_island(WM_LBUTTONUP,WPARAM(0),packet(app_rect.center(),scale),&mut deferred);app.frame(&mut deferred,None);app.frame(&mut deferred,None);
+            assert_eq!(app.st.store.search_pins,[first.id.clone(),browser.into()]);assert!(app.st.search.active&&!app.st.search.embedded()&&app.search_web.is_none(),"dragging a browser pin must not launch it");
+            let encoded=serde_json::to_string(&app.st.store).unwrap();let restarted=AppState::new(Settings::default(),serde_json::from_str(&encoded).unwrap());assert_eq!(restarted.store.search_pins,app.st.store.search_pins);
+            let before=app.st.store.search_pins.clone();let source=app.hits.iter().find(|h|h.id==crate::ui::wid_n("search.recent",wid(browser))).unwrap().rect.center();let outside=Point::new(body.right()-12.0,body.bottom()-12.0);
+            app.handle_island(WM_LBUTTONDOWN,WPARAM(0),packet(source,scale),&mut deferred);app.frame(&mut deferred,None);app.handle_island(WM_MOUSEMOVE,WPARAM(1),packet(outside,scale),&mut deferred);app.frame(&mut deferred,None);app.handle_island(WM_LBUTTONUP,WPARAM(0),packet(outside,scale),&mut deferred);app.frame(&mut deferred,None);
+            assert_eq!(app.st.store.search_pins,before);assert!(app.st.search.active&&!app.st.search.embedded(),"dropping outside pins cancels without opening the app");
+
+            app.input.mouse=None;app.frame(&mut deferred,None);
+            if let Some(dir)=std::env::var_os("LUMO_SEARCH_REWORK_QA"){let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(dir.join(format!("pins-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            for _ in 0..40{app.handle_island(WM_KEYDOWN,WPARAM(VK_DOWN.0 as usize),LPARAM(0),&mut deferred);}app.frame(&mut deferred,None);
+            let last=app.st.search.view.as_ref().unwrap().selected().unwrap().id;assert!(app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.recent",wid(&last))),"keyboard navigation must reveal apps beyond the visible strip");
+            for _ in 0..40{app.handle_island(WM_KEYDOWN,WPARAM(VK_UP.0 as usize),LPARAM(0),&mut deferred);}app.frame(&mut deferred,None);
+            app.input.keys="lumo browser".chars().map(KeyInput::Char).collect();app.frame(&mut deferred,None);clock::hold(Some(base+0.25));app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+            assert!(app.st.search.view.as_ref().unwrap().selected().unwrap().is_browser());assert_eq!(app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.w,width);
             app.input.keys=vec![KeyInput::SelectAll,KeyInput::Backspace];app.frame(&mut deferred,None);clock::hold(Some(base+0.5));app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
-            assert!(app.st.search.view.as_ref().unwrap().query.is_empty());assert!(app.hits.iter().any(|h|h.id==wid("search.browser")));assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",0)));
-            app.st.settings.search.show_browser_icon=false;app.frame(&mut deferred,None);clock::hold(Some(base+0.75));app.frame(&mut deferred,None);
-            assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")));assert!((app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.w-wide).abs()<1.0);
-            assert!(app.st.search.web_url.is_none(),"no browser opens just from showing Search");
-            app.close_search();
+            assert!(app.st.search.view.as_ref().unwrap().query.is_empty());assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")||h.id==crate::ui::wid_n("search.result",0)));
+            assert!(app.st.search.web_url.is_none(),"showing and arranging Search must not start a browser");
+            let browser_rect=app.hits.iter().find(|h|h.id==crate::ui::wid_n("search.recent",wid(browser))).unwrap().rect;
+            for msg in [WM_LBUTTONDOWN,WM_LBUTTONUP]{app.handle_island(msg,WPARAM(0),packet(browser_rect.center(),scale),&mut deferred);app.frame(&mut deferred,None);}app.frame(&mut deferred,None);
+            assert!(app.st.search.embedded()&&crate::browser_home::is_home(&app.st)&&app.search_web.is_none());assert!(app.st.store.search_usage.contains_key(browser));app.close_search();
         }
         clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
     }
@@ -6363,7 +6384,7 @@ mod tests {
         for (i,entry) in app.st.search.apps.iter().enumerate(){app.st.store.search_usage.insert(entry.id.clone(),lumo_core::search::Usage{count:(20-i)as u32,last:i as u64});}
         for (index,theme) in [Theme::Classic,Theme::Pill].into_iter().enumerate(){
             let now=100.0+index as f64*100.0;clock::hold(Some(now));app.st.now=now;app.st.settings.theme=theme;app.island.set_floating(pill::on(theme).then_some(pill::TOP_GAP));app.st.notice=None;app.st.pinned=true;app.expanded=false;app.mode=activities::collapsed_mode(&app.st);app.island.snap(app.geom_for(&app.mode));
-            let initial=app.island.current();app.open_search();app.frame(&mut deferred,None);clock::hold(Some(now+0.05));app.frame(&mut deferred,None);let middle=app.island.current();assert!(middle.w>initial.w&&middle.h>initial.h);
+            app.st.settings.search.web=false;let initial=app.island.current();app.open_search();app.frame(&mut deferred,None);clock::hold(Some(now+0.05));app.frame(&mut deferred,None);let middle=app.island.current();assert!(middle.w>initial.w&&middle.h>initial.h);
             for step in 1..=70{clock::hold(Some(now+0.05+step as f64/60.0));app.frame(&mut deferred,None);}
             assert!(app.st.search.active&&app.expanded&&app.island.settled());assert!(app.hits.iter().any(|h|h.id==wid("search.query")));
             assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.filter",0)||h.id==wid("search.settings")),"no filter chips or footer gear");
@@ -6719,7 +6740,7 @@ mod tests {
         assert_eq!((app.st.settings.search.mini_width,app.st.settings.search.mini_height),(389,317),"arbitrary mini dimensions are saved");
         app.open_search();app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
         assert!(app.st.search.active && app.st.search.detached && !app.st.search.embedded());
-        assert!(app.hits.iter().any(|h|h.id==wid("search.query")) && app.hits.iter().any(|h|h.id==wid("search.browser")) && !app.hits.iter().any(|h|h.id==wid("search.mini")),"local app search and its browser action stay available beside the mini browser");
+        assert!(app.hits.iter().any(|h|h.id==wid("search.query")) && app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.recent",wid(lumo_core::search::BROWSER_ID))) && !app.hits.iter().any(|h|h.id==wid("search.mini")),"local app search and its browser action stay available beside the mini browser");
         app.close_search();assert!(app.search_web.is_some() && app.browser_window.is_some());
         app.toggle_mini_browser();assert!(app.browser_window.is_none() && !app.st.search.detached && app.st.search.active);
         assert_eq!(app.search_web.as_ref().unwrap().test_web().unwrap(),kept);

@@ -439,6 +439,7 @@ impl AppState {
 
     pub fn new(settings: Settings, mut store: Store) -> Self {
         lumo_core::pinned_sites::sanitize(&mut store.pinned_sites);
+        lumo_core::search::sanitize_pins(&mut store.search_pins);
         store.search_usage.retain(|id,_|!id.starts_with("file:"));
         let pomodoro = Pomodoro::new(settings.pomodoro.clone());
         let page = PageKind::from_key(if settings.remember_page && !store.last_page.is_empty() {

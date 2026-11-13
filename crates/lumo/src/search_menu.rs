@@ -5,9 +5,9 @@ use crate::native_menu::{Item,Menu};
 use std::cell::RefCell;
 use windows::{core::{Interface,HSTRING},Win32::{Foundation::*,System::Com::CoTaskMemFree,Storage::EnhancedStorage::{PKEY_Link_TargetParsingPath,PKEY_AppUserModel_ID},UI::{Shell::*,WindowsAndMessaging::*}}};
 thread_local!{static HANDLER:RefCell<Option<IContextMenu>>=const{RefCell::new(None)};}
-pub enum Action{None,Execute,Invoked(bool),Copy(String),CopyIcon(bool),Forget,Service(bool),Error(String)}
+pub enum Action{None,Execute,Invoked(bool),Copy(String),CopyIcon(bool),Forget,Pin(bool),Service(bool),Error(String)}
 pub enum BrowserAction{Forward,External,Keep,Resume,Filters,Close}
-const FORGET:u32=0x7000;const COPY:u32=0x7001;const OPEN:u32=0x7002;const BROWSER:u32=0x7003;const START_SERVICE:u32=0x7004;const STOP_SERVICE:u32=0x7005;const ADMIN:u32=0x7006;const ICON_FILE:u32=0x7007;const ICON_IMAGE:u32=0x7008;
+const PIN:u32=0x7009;const FORGET:u32=0x7000;const COPY:u32=0x7001;const OPEN:u32=0x7002;const BROWSER:u32=0x7003;const START_SERVICE:u32=0x7004;const STOP_SERVICE:u32=0x7005;const ADMIN:u32=0x7006;const ICON_FILE:u32=0x7007;const ICON_IMAGE:u32=0x7008;
 pub fn message(msg:u32,wp:WPARAM,lp:LPARAM)->Option<LRESULT>{
     if let Some(result)=crate::native_menu::message(msg,wp,lp){return Some(result);}
     if !matches!(msg,WM_DRAWITEM|WM_MEASUREITEM|WM_INITMENUPOPUP|WM_MENUCHAR){return None;}
@@ -27,28 +27,29 @@ unsafe fn verb_id(menu:HMENU,context:&IContextMenu,verb:&str)->Option<u32>{
         if context.GetCommandString((id-1) as usize,GCS_VERBA,None,windows::core::PSTR(text.as_mut_ptr()),text.len() as u32).is_ok(){let n=text.iter().position(|b|*b==0).unwrap_or(text.len());if String::from_utf8_lossy(&text[..n]).eq_ignore_ascii_case(verb){return Some(id-1);}}
     }None
 }
-fn items(entry:&Entry,frequent:bool,copy:Option<&(String,String)>,admin:bool)->Vec<Item>{
+fn items(entry:&Entry,frequent:bool,pinned:bool,copy:Option<&(String,String)>,admin:bool)->Vec<Item>{
     let label=match entry.target{Target::Service(_)=>"Open Windows Services",Target::AppCommand{..}=>"Run command",Target::PowerToy{..}=>"Open tool",Target::Launch{..}=>"Open settings",_=>"Open"};
     let mut items=vec![Item::new(OPEN,label,'\u{e8a7}').primary()];
+    if entry.pinnable(){items.push(Item::new(PIN,if pinned{"Unpin app"}else{"Pin app"},'\u{e718}'));}
     if matches!(entry.target,Target::App(_)){items.push(Item::new(ADMIN,"Run as administrator",'\u{e83d}').disabled(!admin));}
     if let Target::Service(service)=&entry.target{if service.can_start(){items.push(Item::new(START_SERVICE,"Start service",'\u{e768}'));}if service.can_stop(){items.push(Item::new(STOP_SERVICE,"Stop service",'\u{e71a}'));}}
     if let Some((label,_))=copy{items.push(Item::separator());items.push(Item::new(COPY,label,'\u{e8c8}'));}
     if matches!(entry.target,Target::App(_)){items.push(Item::new(ICON_FILE,"Copy icon file",'\u{e8a5}'));items.push(Item::new(ICON_IMAGE,"Copy icon image",'\u{e91b}'));}
-    if matches!(entry.target,Target::Web{..}){items.push(Item::new(BROWSER,"Open in default browser",'\u{e8a7}'));}
-    if frequent{items.push(Item::separator());items.push(Item::new(FORGET,"Remove from frequent",'\u{e74d}'));}items
+    if !entry.is_browser() && matches!(entry.target,Target::Web{..}){items.push(Item::new(BROWSER,"Open in default browser",'\u{e8a7}'));}
+    if frequent&&!pinned{items.push(Item::separator());items.push(Item::new(FORGET,"Remove from frequent",'\u{e74d}'));}items
 }
-pub fn show(owner:HWND,entry:&Entry,point:POINT,frequent:bool)->Action{unsafe{
+pub fn show(owner:HWND,entry:&Entry,point:POINT,frequent:bool,pinned:bool)->Action{unsafe{
     let hidden=CreatePopupMenu().ok();let context=hidden.and_then(|menu|build_shell(owner,&entry.target,menu).ok());let admin=hidden.zip(context.as_ref()).and_then(|(m,c)|verb_id(m,c,"runas"));
     HANDLER.with(|cell|*cell.borrow_mut()=context.clone());
     let copy=match &entry.target{
         Target::App(app)=>application_location(app).map(|(path,file)|(if file{"Copy path"}else{"Copy app link"}.to_owned(),path)),
         Target::Windows(setting)=>Some(("Copy settings link".into(),setting.uri().into())),
-        Target::Web{url,..}=>Some(("Copy link".into(),url.clone())),
+        Target::Web{url,..} if !entry.is_browser()=>Some(("Copy link".into(),url.clone())),
         Target::Service(service)=>Some(("Copy service name".into(),service.name.clone())),_=>None,
     };
-    let chosen=Menu::new(owner,items(entry,frequent,copy.as_ref(),admin.is_some())).map(|menu|menu.show(owner,point)).unwrap_or(0);
+    let chosen=Menu::new(owner,items(entry,frequent,pinned,copy.as_ref(),admin.is_some())).map(|menu|menu.show(owner,point)).unwrap_or(0);
     let result=match chosen{
-        OPEN=>Action::Execute,FORGET=>Action::Forget,COPY=>copy.map(|(_,value)|Action::Copy(value)).unwrap_or(Action::None),
+        OPEN=>Action::Execute,PIN=>Action::Pin(!pinned),FORGET=>Action::Forget,COPY=>copy.map(|(_,value)|Action::Copy(value)).unwrap_or(Action::None),
         ICON_FILE=>Action::CopyIcon(true),ICON_IMAGE=>Action::CopyIcon(false),START_SERVICE=>Action::Service(true),STOP_SERVICE=>Action::Service(false),
         BROWSER=>{if let Target::Web{url,..}=&entry.target{crate::shell::open(url);}Action::Invoked(false)},
         ADMIN=>if let Some((context,id))=context.as_ref().zip(admin){let info=CMINVOKECOMMANDINFO{cbSize:std::mem::size_of::<CMINVOKECOMMANDINFO>() as u32,hwnd:owner,lpVerb:windows::core::PCSTR(id as usize as *const u8),nShow:SW_SHOWNORMAL.0,..Default::default()};match context.InvokeCommand(&info){Ok(())=>Action::Invoked(true),Err(_)=>Action::Error("Windows could not open this app as administrator.".into())}}else{Action::None},
@@ -83,10 +84,15 @@ mod tests {
     fn context_actions_match_result_and_frequency() {
         let entry=Entry::new("settings:about".into(),"About your PC".into(),String::new(),"",lumo_core::search::Group::Settings,Target::Windows(lumo_core::search::WindowsSetting::About));
         let copy=Some(("Copy settings link".into(),"ms-settings:about".into()));
-        let normal=items(&entry,false,copy.as_ref(),false);
+        let normal=items(&entry,false,false,copy.as_ref(),false);
         assert!(normal.iter().any(|item|item.id==COPY));
         assert!(!normal.iter().any(|item|matches!(item.id,ADMIN|ICON_FILE|ICON_IMAGE|FORGET)));
-        assert!(items(&entry,true,copy.as_ref(),false).iter().any(|item|item.id==FORGET));
+        assert!(items(&entry,true,false,copy.as_ref(),false).iter().any(|item|item.id==FORGET));
+        assert!(!normal.iter().any(|item|item.id==PIN));
+        let browser=lumo_core::search::browser_entry();let unpinned=items(&browser,true,false,None,false);let pinned=items(&browser,true,true,None,false);
+        assert!(unpinned.iter().any(|item|item.id==PIN));assert!(pinned.iter().any(|item|item.id==PIN));
+        assert!(!pinned.iter().any(|item|matches!(item.id,FORGET|BROWSER|COPY|ADMIN)));
+
     }
     #[test]
     #[ignore = "requires Windows Shell"]
@@ -112,7 +118,7 @@ mod tests {
             assert!(is_file && std::path::Path::new(&location).is_absolute());
             let entry=Entry::new("test-app".into(),"Test app".into(),String::new(),"",lumo_core::search::Group::App,Target::App(app.clone()));
             let copy=Some(("Copy path".into(),location));
-            let actions=items(&entry,true,copy.as_ref(),true);
+            let actions=items(&entry,true,false,copy.as_ref(),true);
             for id in [OPEN,ADMIN,COPY,ICON_FILE,ICON_IMAGE,FORGET]{assert!(actions.iter().any(|item|item.id==id));}
             let _context = build_shell(HWND::default(), &Target::App(app), menu).unwrap();
             assert!(GetMenuItemCount(menu) > 2);

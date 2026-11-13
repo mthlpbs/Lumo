@@ -2,8 +2,8 @@
 1 24 "lumo.manifest"
 
 1 VERSIONINFO
-FILEVERSION 2026,1113,3,0
-PRODUCTVERSION 2026,1113,3,0
+FILEVERSION 2026,1113,4,0
+PRODUCTVERSION 2026,1113,4,0
 FILEOS 0x40004
 FILETYPE 0x1
 BEGIN
@@ -13,12 +13,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "mthlpbs\0"
       VALUE "FileDescription", "Lumo\0"
-      VALUE "FileVersion", "2026.1113.3\0"
+      VALUE "FileVersion", "2026.1113.4\0"
       VALUE "InternalName", "lumo\0"
       VALUE "LegalCopyright", "Copyright (C) 2026 mthlpbs\0"
       VALUE "OriginalFilename", "lumo.exe\0"
       VALUE "ProductName", "Lumo\0"
-      VALUE "ProductVersion", "2026.1113.3\0"
+      VALUE "ProductVersion", "2026.1113.4\0"
     END
   END
   BLOCK "VarFileInfo"

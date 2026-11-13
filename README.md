@@ -63,17 +63,18 @@ The main pages are **Music**, **Focus**, **Shelf**, **Tasks**, **System** and
 ### Search apps and Windows settings
 
 Scroll **down with a mouse wheel** or **right with a touchpad** over the closed
-island to open Search. It opens as an empty field, an optional browser button,
-and a small row of recently opened application icons. The newest apps come first;
-the number of icons follows the window width. A fresh profile shows just the bar.
+island to open Search. Its empty field uses the full width. Small pinned-app
+icons appear below it, followed by recently opened apps, without duplicates.
+**Lumo Browser** is searchable by name and pinned by default. Right-click an app
+result or icon to pin/unpin it; a small pin badge marks pinned icons. Drag pins
+to reorder them. Their order survives restarts. Scroll the strip or use the
+keyboard to reveal icons that do not fit the current width.
 
-Typing hides the browser icon, expands the field and reveals matching results.
-Clearing the field fades the rows away and restores the compact view. Hide the
-browser icon, choose sources and configure suggestions in **Settings > Search**.
-Browser enablement, engine, layout and ad blocking have their own **Browser** section.
-
-Ctrl+Enter searches the current query, including with local matches or the
-browser icon hidden. An empty query opens a blank browser page.
+Typing reveals matching results, with matching pins first. Clearing the field
+fades rows away and restores the icon strip. Configure sources and suggestions
+in **Settings > Search**; engine, layout and ad blocking live under **Browser**.
+Ctrl+Enter searches the current query, including with local matches. An empty
+query opens the browser's native starting page.
 Vertical scrolling over the field does not switch workspaces.
 **Settings > Shortcut guide** lists the available keys and gestures.
 
@@ -96,7 +97,7 @@ Optional web search opens Bing, Google, DuckDuckGo or Brave inside the island,
 using the installed Edge WebView2 Runtime. It starts only when you choose a
 web action, or press <kbd>Ctrl+Enter</kbd> to search the current query with your
 chosen engine (an empty field opens a blank browser page). When web search is enabled,
-the browser button appears beside an empty search field. A unified address bar contains navigation, refresh/stop,
+Lumo Browser appears among the pinned/recent apps and matching results. A unified address bar contains navigation, refresh/stop,
 default-browser, mini-browser, pin and resume icons. It shows the webpage title
 while browsing; click or press <kbd>Ctrl+L</kbd> to edit the full URL with all icons
 hidden. Double-click selects the entire URL, including slashes. Optional Google

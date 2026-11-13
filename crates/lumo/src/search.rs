@@ -131,13 +131,10 @@ pub struct View {
     list_scroll: ListScroll,
     dirty: bool,
     pub suggestions: Vec<String>,
-    chrome_mix:f32,
-    chrome_from:f32,
-    chrome_target:f32,
-    chrome_start:Option<f64>,
     clear_fade:Option<(f64,Vec<Entry>)>,
     recent_keyboard:bool,
-    recent_limit:usize,
+    strip_start:usize,
+    pin_drag:Option<String>,
 }
 impl View {
     pub fn new(st: &AppState) -> Self {
@@ -150,13 +147,12 @@ impl View {
             list_scroll: ListScroll::default(),
             dirty: true,
             suggestions: vec![],
-            chrome_mix:if st.settings.search.web&&st.settings.search.show_browser_icon{1.0}else{0.0},
-            chrome_from:0.0,chrome_target:if st.settings.search.web&&st.settings.search.show_browser_icon{1.0}else{0.0},chrome_start:None,clear_fade:None,recent_keyboard:false,recent_limit:recent_capacity(WIDTH),
+            clear_fade:None,recent_keyboard:false,strip_start:0,pin_drag:None,
         }
     }
     pub fn navigate(&mut self, delta: isize) {
         self.list_scroll.reveal = true;self.recent_keyboard=true;
-        let count=if self.query.trim().is_empty(){self.results.len().min(self.recent_limit)}else if self.results.is_empty(){self.suggestions.len()+1}else{self.results.len()};
+        let count=if self.query.trim().is_empty(){self.results.len()}else if self.results.is_empty(){self.suggestions.len()+1}else{self.results.len()};
         self.selected = (self.selected as isize + delta)
             .clamp(0, count.saturating_sub(1) as isize)
             as usize;
@@ -209,13 +205,14 @@ impl View {
         if self.entries.len()!=old{self.dirty=true;}
         if self.dirty {
             self.results = if self.query.trim().is_empty() {
-                lumo_core::search::recent_applications(
+                lumo_core::search::launch_strip(
                     &self.entries,
                     &st.settings.search,
                     &st.store.search_usage,
+                    &st.store.search_pins,
                 )
             } else {
-                lumo_core::search::ranked(&self.entries, &self.query, None, &st.settings.search)
+                lumo_core::search::ranked_with_pins(&self.entries, &self.query, None, &st.settings.search, &st.store.search_pins)
             };
             self.selected = self.selected.min(self.results.len().saturating_sub(1));
             if !self.results.is_empty(){self.suggestions.clear();}
@@ -310,6 +307,7 @@ pub fn entries(st: &AppState) -> Vec<Entry> {
             Target::Windows(setting),
         ));
     }
+    if st.settings.search.web{entries.push(lumo_core::search::browser_entry());}
     entries.extend(st.search.apps.iter().cloned());
     entries.extend(st.search.integrations.iter().filter(|e|e.enabled(&st.settings.search) && crate::services::search_integrations::target_available(&e.target)).cloned());
 
@@ -349,12 +347,9 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
         return;
     }
     let browser_enabled = st.settings.search.web;
-    let target=if browser_enabled&&st.settings.search.show_browser_icon&&view.query.is_empty(){1.0}else{0.0};
-    if target!=view.chrome_target {view.chrome_from=view.chrome_mix;view.chrome_target=target;view.chrome_start=Some(ui.now);}
-    if let Some(start)=view.chrome_start {let t=if st.power.saver{1.0}else{((ui.now-start)/0.16).clamp(0.0,1.0)as f32};view.chrome_mix=view.chrome_from+(target-view.chrome_from)*t*t*(3.0-2.0*t);if t<1.0{ui.request_anim();}else{view.chrome_start=None;}}
     let input = ui.text_input_capsule(
         wid("search.query"),
-        rect(24.0, 16.0, body.w - 48.0 - 48.0*view.chrome_mix, 40.0),
+        rect(24.0, 16.0, body.w - 48.0, 40.0),
         &mut view.query,
         "",
         128,
@@ -364,7 +359,7 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
         if view.query.is_empty()&&!view.results.is_empty(){view.clear_fade=Some((ui.now,view.results.iter().take(MAX_ROWS).map(|i|view.entries[*i].clone()).collect()));}
         else{view.clear_fade=None;}
         if !st.search.action_pending{st.search.notice.clear();}
-        view.dirty = true;view.recent_keyboard=false;
+        view.dirty = true;view.recent_keyboard=false;view.strip_start=0;view.pin_drag=None;
         view.selected = 0;
         view.scroll = 0;
         view.list_scroll = ListScroll::default();
@@ -372,23 +367,11 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
         view.suggestions.clear();
 
     }
-    let mut control_tip = None;
+    let mut control_tip:Option<&str> = None;
     let mut execute = None;
-    if view.chrome_mix>0.001 {
-        let mix=view.chrome_mix;let r=rect(body.w-24.0-40.0*mix,16.0,40.0*mix,40.0);
-        if browser_enabled&&st.settings.search.show_browser_icon&&view.query.is_empty()&&mix>0.9 {
-            let response=ui.icon_button(wid("search.browser"),r,Icon::Globe,palette::TEXT_DIM,20.0*mix);
-            if response.hovered{control_tip=Some("Open browser (Ctrl+Enter)");}
-            if response.clicked{execute=Some(browser_target("",st.settings.search.engine));}
-        }else{ui.c.with_alpha(mix,|c|c.icon(Icon::Globe,Rect::new(r.center().x-10.0*mix,r.center().y-10.0*mix,20.0*mix,20.0*mix),palette::TEXT_DIM));}
-    }
-    // A first keystroke / clearing the field starts the finite width change
-    // immediately. No animation remains armed after the two states settle.
-    let desired=if browser_enabled&&st.settings.search.show_browser_icon&&view.query.is_empty(){1.0}else{0.0};
-    if desired!=view.chrome_target {view.chrome_from=view.chrome_mix;view.chrome_target=desired;view.chrome_start=Some(ui.now);ui.request_anim();}
     if view.query.trim().is_empty(){
         view.rank(st);
-        let capacity=recent_capacity(body.w);view.recent_limit=capacity;view.selected=view.selected.min(capacity.saturating_sub(1));
+        let capacity=recent_capacity(body.w).max(1);
         let fade=view.clear_fade.as_ref().map_or(0.0,|(start,_)|if st.power.saver{0.0}else{(1.0-((ui.now-start)/0.16)as f32).clamp(0.0,1.0)});
         if fade>0.0 {
             ui.c.clip(Rect::new(body.x,body.y+LIST_TOP,body.w,(body.h-LIST_TOP).max(0.0)));
@@ -396,16 +379,49 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
             ui.c.unclip();ui.request_anim();
         }else{view.clear_fade=None;}
         let mut missing=vec![];let alpha=ui.c.alpha();ui.c.set_alpha(alpha*(1.0-fade));
-        for (position,index) in view.results.iter().take(capacity).enumerate(){
-            let entry=&view.entries[*index];let r=rect(24.0+position as f32*36.0,68.0,32.0,32.0);
+        let strip=rect(24.0,64.0,body.w-48.0,40.0);
+        let wheel=ui.wheel_in(strip);
+        if wheel!=0.0{view.recent_keyboard=false;view.strip_start=(view.strip_start as isize-if wheel>0.0{1}else{-1}).max(0)as usize;}
+        if view.recent_keyboard{if view.selected<view.strip_start{view.strip_start=view.selected;}else if view.selected>=view.strip_start+capacity{view.strip_start=view.selected+1-capacity;}}
+        view.strip_start=view.strip_start.min(view.results.len().saturating_sub(capacity));
+        let pointer=ui.input.released.map(|(_,p)|p).or(ui.input.mouse);
+        let owner=ui.input.pressed_id.or(ui.input.released.map(|(id,_)|id));
+        if let Some((start,point))=ui.input.press_pos.zip(pointer){
+            if (point.x-start.x).hypot(point.y-start.y)>=5.0&&(ui.input.down||ui.input.released.is_some()){
+                if let Some(index)=view.results.iter().find(|i|owner==Some(wid_n("search.recent",wid(&view.entries[**i].id)))&&st.store.search_pins.contains(&view.entries[**i].id)){
+                    view.pin_drag=Some(view.entries[*index].id.clone());
+                }
+            }
+        }
+        let dragging=view.pin_drag.is_some();let mut drop_target=None;
+        for (position,index) in view.results.iter().enumerate().skip(view.strip_start).take(capacity){
+            let entry=&view.entries[*index];let r=rect(24.0+(position-view.strip_start)as f32*36.0,68.0,32.0,32.0);
             let response=ui.button(wid_n("search.recent",wid(&entry.id)),r);
+            let pinned=st.store.search_pins.contains(&entry.id);
             if response.hovered||response.pressed{ui.c.fill_rrect(r,8.0,Color::white(0.08));}
             if view.recent_keyboard&&view.selected==position{ui.c.stroke_rrect(r,8.0,st.accent,1.0);}
-            if let Some(Some(image))=st.search.icons.get(&entry.id){ui.c.image(image,Rect::new(r.x+6.0,r.y+6.0,20.0,20.0),3.0);}
+            if entry.is_browser(){ui.c.icon(Icon::Globe,Rect::new(r.x+6.0,r.y+6.0,20.0,20.0),st.accent);}
+            else if let Some(Some(image))=st.search.icons.get(&entry.id){ui.c.image(image,Rect::new(r.x+6.0,r.y+6.0,20.0,20.0),3.0);}
             else{ui.c.icon(Icon::App,Rect::new(r.x+7.0,r.y+7.0,18.0,18.0),palette::TEXT_DIM);if !st.search.icons.contains_key(&entry.id){missing.push((entry.id.clone(),entry.target.clone()));}}
-            if response.clicked&&!input.changed{execute=Some(entry.target.clone());}
-            if response.hovered{control_tip=Some(&entry.title);}
+            if pinned{draw_pin_badge(ui,Rect::new(r.right()-12.0,r.bottom()-12.0,11.0,11.0),st.accent);}
+            if dragging&&pinned&&pointer.is_some_and(|p|r.inset(-2.0,-4.0).contains(p)){
+                drop_target=Some(entry.id.clone());ui.c.stroke_rrect(r.inset(-1.0,-1.0),9.0,st.accent,1.5);
+            }
+            if response.clicked&&!input.changed&&!dragging{execute=Some(entry.target.clone());}
+            if response.hovered&&!dragging{control_tip=Some(&entry.title);}
         }
+        if ui.input.down{if let Some(entry)=view.pin_drag.as_ref().and_then(|id|view.entries.iter().find(|e|e.id==*id)){
+            if let Some(point)=pointer{let r=Rect::new(point.x-16.0,point.y-16.0,32.0,32.0);ui.c.fill_rrect(r,8.0,Color::hex(0x242427));ui.c.stroke_rrect(r,8.0,st.accent,1.0);
+                if entry.is_browser(){ui.c.icon(Icon::Globe,r.inset(6.0,6.0),st.accent);}else if let Some(Some(image))=st.search.icons.get(&entry.id){ui.c.image(image,r.inset(6.0,6.0),3.0);}else{ui.c.icon(Icon::App,r.inset(7.0,7.0),palette::TEXT_DIM);}
+            }
+        }}
+        if view.results.len()>capacity{
+            let width=strip.w*capacity as f32/view.results.len()as f32;
+            ui.c.fill_rrect(Rect::new(strip.x+(strip.w-width)*view.strip_start as f32/(view.results.len()-capacity)as f32,strip.bottom()+2.0,width,2.0),1.0,Color::white(0.20));
+        }
+        if ui.input.released.is_some(){
+            if let Some(source)=view.pin_drag.take(){if let Some(target)=drop_target{st.cmd(Command::ReorderSearchPin{source,target});}execute=None;}
+        }else if !ui.input.down{view.pin_drag=None;}
         ui.c.set_alpha(alpha);
         if input.submitted{execute=if ui.input.ctrl&&browser_enabled{Some(browser_target("",st.settings.search.engine))}else{view.selected().map(|e|e.target)};}
         if input.cancelled{st.cmd(Command::Collapse);}else if let Some(target)=execute{st.cmd(Command::ExecuteSearch(target));}
@@ -563,6 +579,7 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
                 ui.c.image(image, badge, 0.0);
             } else {
                 let icon = match entry.target {
+                    _ if entry.is_browser() => Icon::Globe,
                     Target::App(_) => Icon::App,
                     Target::Windows(_) | Target::Service(_) => Icon::Gear,
                     _ if entry.group==Group::PowerToys=>power_toy_glyph(&entry.id),
@@ -575,6 +592,7 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
                     else if let Some(path)=&entry.icon_path {missing.push((entry.id.clone(),Target::Launch{path:path.clone(),arguments:String::new()}));}
                 }
             }
+            if st.store.search_pins.contains(&entry.id){draw_pin_badge(ui,Rect::new(badge.right()-8.0,badge.bottom()-8.0,11.0,11.0),st.accent);}
             let is_service=matches!(entry.target,Target::Service(_));
             let title_width=r.w-if is_service{138.0}else{66.0};
             let detailed=is_service || matches!(entry.group,Group::PowerToys|Group::VSCode);
@@ -629,7 +647,12 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
     st.search.view = Some(view);
 }
 
-/// The browser button is an explicit navigation, even when there is no query.
+fn draw_pin_badge(ui:&mut crate::ui::Ui,r:lumo_core::geom::Rect,accent:lumo_core::geom::Color){
+    ui.c.fill_rrect(r,3.5,lumo_core::geom::Color::hex(0x171719));
+    ui.c.icon(crate::icons::Icon::Pin,r.inset(1.0,1.0),accent);
+}
+
+/// The browser entry is an explicit navigation, even when there is no query.
 /// Local search never starts the web runtime or contacts an engine on its own.
 pub(crate) fn browser_target(query: &str, engine: lumo_core::search::Engine) -> Target {
     let url=address_target(query,engine).unwrap_or_else(||crate::browser_home::URL.into());
@@ -976,7 +999,7 @@ mod tests {
     fn empty_search_is_compact_and_recent_capacity_follows_width(){
         let st=AppState::new(Default::default(),Default::default());
         let mut view=View::new(&st);view.rank(&st);
-        assert_eq!(view.height(&st),72.0);assert!(view.selected().is_none());
+        assert_eq!(view.height(&st),112.0);assert!(view.selected().unwrap().is_browser());
         assert_eq!(recent_capacity(280.0),6);assert_eq!(recent_capacity(560.0),14);assert_eq!(recent_capacity(4000.0),16);
     }
     #[test]
@@ -1016,7 +1039,7 @@ mod tests {
     }}
     #[test]
     fn service_source_preferences_update_live_and_saved_views(){
-        let mut st=AppState::new(Default::default(),Default::default());st.settings.search.apps=false;st.settings.search.settings=false;st.settings.search.services=true;
+        let mut st=AppState::new(Default::default(),Default::default());st.settings.search.apps=false;st.settings.search.settings=false;st.settings.search.web=false;st.settings.search.services=true;
         st.search.integrations=vec![Entry::new("fixture".into(),"Fixture service".into(),String::new(),"",Group::Service,Target::Service(lumo_core::search::Service{name:"fixture".into(),state:1,accepts_stop:false}))];
         st.search.view=Some(View::new(&st));st.search.saved_view=Some(View::new(&st));
         assert_eq!(entries(&st).iter().filter(|e|e.enabled(&st.settings.search)).count(),1);
@@ -1128,10 +1151,11 @@ mod tests {
         }
     }
     #[test]
-    fn only_apps_and_windows_settings_are_built() {
+    fn only_apps_windows_settings_and_the_builtin_browser_are_built() {
         let st = AppState::new(Default::default(), Default::default());
         let items = entries(&st);
-        assert!(items.iter().all(|e| matches!(e.target, Target::Windows(_))));
+        assert!(items.iter().all(|e| matches!(e.target, Target::Windows(_)) || e.is_browser()));
+        assert_eq!(items.iter().filter(|e|e.is_browser()).count(),1);
         assert!(items.iter().any(|e| e.title == "Wi-Fi"));
     }
     #[test]
@@ -1145,7 +1169,7 @@ mod tests {
             "app-id".into(),
             lumo_core::search::Usage { count: 2, last: 1 },
         );
-        let mut st = AppState::new(Default::default(), store);
+        let mut st = AppState::new(Default::default(), store);st.settings.search.web=false;
         assert!(!st.store.search_usage.contains_key("file:C:\\Old\\item.txt"));
         assert!(st.store.search_usage.contains_key("app-id"));
         let mut view = View::new(&st);

@@ -4,7 +4,7 @@ members = ["crates/lumo-core", "crates/lumo"]
 
 [workspace.package]
 # Date-based Windows build: year.monthday.build (increment build on the same day).
-version = "2026.1113.3"
+version = "2026.1113.4"
 edition = "2021"
 publish = false
 authors = ["mthlpbs"]

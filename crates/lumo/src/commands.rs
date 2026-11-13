@@ -51,6 +51,7 @@ pub enum Command {
     OpenSearch,
     RefreshSearchApps,
     ExecuteSearch(lumo_core::search::Target),
+    ReorderSearchPin { source: String, target: String },
     SearchIcons(Vec<(String, lumo_core::search::Target)>),
     CloseSearchWeb,
     ToggleMiniBrowser,

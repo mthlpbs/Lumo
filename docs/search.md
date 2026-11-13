@@ -4,21 +4,31 @@ Scroll right with a touchpad or down with a mouse wheel over the closed island
 to open Search. A fresh horizontal swipe or Escape closes it. Clicking outside
 also closes it unless Keep open is enabled.
 
-Search always opens with an empty search bar. The optional browser icon appears
-beside it. Below the field, only small icons for applications last opened through
-Search are shown, newest first. Their number follows the actual window width and
-spacing, capped at 16. Services, Windows settings, tools and web results never
-appear in this recent-app strip. A new profile with no recent apps shows only the
-field and browser icon. Hovering an icon identifies its application; clicking it
-opens the app. Up/Down or Tab can select a recent app, with a visible focus outline.
-Only result identifiers and last-opened times are stored, not typed queries.
+Search opens with an empty, full-width field. Below it, small pinned-app icons
+come first in their saved order, followed by recently opened applications,
+newest first. An app appears only once. **Lumo Browser** is a built-in search
+result and is pinned by default. Browser is enabled for new profiles; an existing
+profile's disabled Browser preference is respected. Nothing loads a webpage
+just from showing Search.
 
-Typing hides the browser icon and expands the field into its space. Full result
-rows appear only for a nonempty query. Clearing the field fades the old rows away,
-shrinks the panel and restores the browser icon and recent apps. These finite
-160 ms fades share the existing island height spring and stop after settling;
-battery saver snaps to the new state. **Settings > Search > Show browser icon**
-can hide the icon entirely. Ctrl+Enter remains available with the icon hidden.
+Right-click an application result or icon and choose **Pin app** or **Unpin app**.
+Pinned icons show a small pin badge at their bottom-right. Drag a pin onto another
+pin to change their order; dropping outside the pins cancels the move. Matching
+pins also come first in typed results, without showing pins that do not match.
+App IDs and their order are saved in the existing profile. Up to 32 apps can be
+pinned; unpinning Lumo Browser is remembered across restarts.
+
+The visible icon count follows the window width and spacing, capped at 16. Scroll
+over the strip to reveal overflow, or use Up/Down or Tab to select an icon and
+bring it into view. Hover identifies the app; click or Enter opens it. Services,
+Windows settings and tools are not pinnable. Missing catalog apps keep their pin
+records and reappear when available; disabled sources remain hidden.
+
+Full result rows appear only while typing. Clearing the field fades the old rows
+away and returns to the icon strip. The field keeps its full width in both
+states, with no separate browser button or browser-icon setting. The finite
+160 ms result fade stops after settling and snaps in battery saver. Search
+sources and suggestions are configured under **Settings > Search**.
 
 Registered desktop/Store apps, Windows settings and enabled local integrations
 use strict name/source matching. General file/folder search and Lumo commands are
@@ -28,7 +38,7 @@ matches; an empty query opens a blank browser page.
 
 The search/address field does not switch between Search and Browser when
 scrolled vertically, including right-button + wheel gestures. Open Browser with
-the browser icon or Ctrl+Enter.
+the Lumo Browser result/pin or Ctrl+Enter.
 
 ## Blank browser pages
 
@@ -43,16 +53,15 @@ The starting hint starts no WebView, network request, background worker or
 repeating timer. The compact navigation bar has no Home or
 bookmark/star action.
 
-Settings now separates **Search** (sources, suggestions, recent apps and icon
-visibility) from **Browser** (web enablement, engine, layout and ad blocking).
+Settings now separates **Search** (sources, suggestions, recent apps) from **Browser** (web enablement, engine, layout and ad blocking).
 **Settings > Shortcut guide** lists keyboard and gesture controls by context.
 
 ## Recent applications and context menus
 
-Only previously opened applications are shown as recent icons on opening Search.
+After pinned apps, only previously opened applications are shown as recent icons on opening Search.
 The most recently opened app comes first, independently of its old usage count.
 A fresh profile has no invented history. **Settings > Search > Clear recent apps**
-clears the stored usage. Query text is not saved. Retired file identifiers are
+clears the stored usage while preserving pins. Query text is not saved. Retired file identifiers are
 removed when loading older data.
 
 Right-click a result for a dark, rounded native Windows menu, with keyboard
@@ -145,7 +154,7 @@ to fit up to five visible rows.
 ## Optional web search
 
 Enable **Web search** in **Settings > Browser**, and choose Bing, Google,
-DuckDuckGo or Brave. It is off by default. When local search finds nothing,
+DuckDuckGo or Brave. It is enabled in new profiles and can be disabled in Settings > Browser. When local search finds nothing,
 choose the explicit Search provider action to send the query to that engine.
 Typing alone never sends a query to a web service unless optional Google
 suggestions are enabled.
@@ -225,7 +234,7 @@ restores the last address. The extra window renderer exists only while detached.
 ## Keep open and resume
 
 Two independent toggles live inside the browser address bar (or its overflow
-menu at narrow sizes). These toggles are separate from Local Search's browser button. Their accent background
+menu at narrow sizes). These toggles are separate from Local Search's pinned apps. Their accent background
 indicates when they are on; hover shows the name and current behavior. Both
 are off by default, and their preferences stay on until you turn them off.
 

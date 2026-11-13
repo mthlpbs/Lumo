@@ -1,6 +1,6 @@
 //! Internal blank document: no renderer, content, network or background work.
 use crate::state::AppState;
-pub const URL: &str = "lumo://home";
+pub const URL: &str = lumo_core::search::BROWSER_URL;
 pub fn is_home(st: &AppState) -> bool {
     st.search.web_url.as_deref() == Some(URL)
 }

@@ -479,8 +479,7 @@ fn draw_section(ui: &mut Ui, st: &mut AppState, section: Section, area: Rect) ->
             f.end();
             if (st.settings.search.apps || crate::services::search_integrations::enabled(&st.settings.search)) && ui.pill(wid("preferences.refresh-search"),Rect::new(f.x+4.0,f.y,166.0,30.0),"Refresh search sources",None,PillStyle::Utility).clicked {st.cmd(Command::RefreshSearchApps);}
             f.y+=44.0;
-            f.group(ui,"Search appearance",2);
-            if f.toggle(ui,"preferences.browser-icon","Show browser icon","Empty field only; requires Browser to be enabled",Some(st.settings.search.show_browser_icon)){st.settings.search.show_browser_icon=!st.settings.search.show_browser_icon;}
+            f.group(ui,"Search appearance",1);
             if f.toggle(ui,"preferences.google-suggestions","Search suggestions","Use Google for unmatched text and browser address searches",Some(st.settings.search.google_suggestions)){st.settings.search.google_suggestions=!st.settings.search.google_suggestions;}
             f.end();
             if ui.pill(wid("preferences.search-clear-history"),Rect::new(f.x+4.0,f.y,194.0,30.0),"Clear recent apps",None,PillStyle::Utility).clicked {st.store.search_usage.clear();st.save();crate::search::refresh(st);}

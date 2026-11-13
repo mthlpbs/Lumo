@@ -12,6 +12,8 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Up / Down or Tab", "Select a result or a recent application"),
         ("Page Up / Page Down", "Move the result selection by five rows"),
         ("Enter", "Open the selected result"),
+        ("Right-click an app", "Pin or unpin it; drag pinned icons to change their order"),
+        ("Wheel over the app icons", "Reveal pinned and recent apps that do not fit"),
         ("Ctrl + Enter", "Search the web; an empty field opens the browser"),
         ("Shift + F10 or Menu key", "Open the selected result's context menu"),
     ]),

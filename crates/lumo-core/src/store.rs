@@ -33,6 +33,8 @@ pub const STORE_VERSION: u32 = 1;
 pub struct Store {
     pub version: u32,
     pub search_usage: BTreeMap<String, crate::search::Usage>,
+    #[serde(default = "crate::search::default_pins")]
+    pub search_pins: Vec<String>,
     #[serde(alias="bookmarks")]
     pub pinned_sites: Vec<crate::pinned_sites::PinnedSite>,
     pub tasks: TaskList,
@@ -55,6 +57,7 @@ impl Default for Store {
         Self {
             version: STORE_VERSION,
             search_usage: BTreeMap::new(),
+            search_pins: crate::search::default_pins(),
             pinned_sites: vec![],
             tasks: TaskList::default(),
             water: serde_json::Value::Null,
