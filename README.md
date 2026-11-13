@@ -123,7 +123,9 @@ address field, and the search-to-browser transition fades smoothly.
 No browser engine is bundled. [Search controls and scope](docs/search.md).
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/search-2fc837ec498f.png" width="680" alt="Search inside the Pill island with native Windows app icons and a compact result list">
+  <img src="docs/brand/readme/lumo/search-c92134758acb.png" width="680" alt="Empty Search in the Pill island with a full-width field, pinned apps marked by pin badges, and recent app icons">
+  <br>
+  <img src="docs/brand/readme/lumo/search-single-6045b9e9789c.png" width="680" alt="Typing in Search reveals matching result rows beneath the field">
 </p>
 
 ### Music that stays within reach
@@ -152,7 +154,7 @@ Scroll to change tracks**. Both new Music switches are on by default. The
 lyrics area keeps text scrolling, and scrolling over the header changes sections.
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/mini-player-f7c19e5dd0f8.png" width="320" alt="Lumo mini player with synced lyrics, playback controls and the exit mini player icon at the top right">
+  <img src="docs/brand/readme/lumo/mini-player-a2576a6eba0d.png" width="320" alt="Lumo mini player with synced lyrics, playback controls and the exit control resting as a dot at the top right">
 </p>
 
 Korean and Chinese pronunciation can appear beneath the original text.
@@ -176,9 +178,9 @@ color, or **Windows accent (wallpaper-derived)**. Windows controls whether
 its accent follows the wallpaper. The same page can disable compact-view scrolling.
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/compact-performance-3af96e748bdd.png" width="350" alt="Icon-only CPU, GPU and RAM readout with compact percentages and small meters, using fictional readings">
+  <img src="docs/brand/readme/lumo/compact-performance-5c55c5f1b14e.png" width="350" alt="Icon-only CPU, GPU and RAM readout with compact percentages and small meters, using fictional readings">
   <br>
-  <img src="docs/brand/readme/lumo/compact-network-5a04a350b9e9.png" width="330" alt="Compact Network view with download/upload icons and compact transfer rates, using fictional readings">
+  <img src="docs/brand/readme/lumo/compact-network-a84605893881.png" width="330" alt="Compact Network view with download/upload icons and compact transfer rates, using fictional readings">
 </p>
 
 ### Ask AI without leaving your desktop
@@ -235,7 +237,8 @@ AI is off by default. Switching it off also hides its Settings section;
 your provider settings, saved key, models and chats stay for when you turn it back on.
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/ai-40487f69a121.png" width="560" alt="The AI workspace with compact conversation text, a fitted user bubble, multiline composer and mini-window, pin and resume controls">
+  <img src="docs/brand/readme/lumo/ai-607aea43711c.png" width="360" alt="The AI workspace with compact conversation text, a fitted user bubble, multiline composer and mini-window, pin and resume controls">
+  <img src="docs/brand/readme/lumo/ai-attachment-menu-3dba1b9c5587.png" width="360" alt="AI mini window with the attachment menu anchored just above the plus button and rounded outer corners">
 </p>
 
 Replies support Markdown, tables and copyable code blocks. History is
@@ -264,7 +267,7 @@ into one place. Open a module for its history and details. Optional game
 readouts show FPS, GPU and CPU information over borderless full-screen games.
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/system-c0ec9b9543f4.png" width="880" alt="Lumo's System page with CPU gauges, usage history, per-core activity and a process list">
+  <img src="docs/brand/readme/lumo/system-a35e9bd90dcd.png" width="880" alt="Lumo's System page with CPU gauges, usage history, per-core activity and a process list">
 </p>
 
 Counters are active while their page or an enabled readout needs them.
@@ -280,7 +283,7 @@ Counters are active while their page or an enabled readout needs them.
 | **Clipboard history** | Copied text in memory, with password-manager privacy markers respected. |
 
 <p align="center">
-  <img src="docs/brand/readme/lumo/focus-922e0d5da670.png" width="880" alt="Lumo's Focus page showing a Pomodoro session, timer controls and focus history">
+  <img src="docs/brand/readme/lumo/focus-a41cffafcbd0.png" width="880" alt="Lumo's Focus page showing a Pomodoro session, timer controls and focus history">
 </p>
 
 In **Settings > Focus**, focus lengths include **30 minutes**. Daily goals
@@ -571,4 +574,4 @@ section shows its icon and name, such as Music; other available sections show
 icons. Scroll up/down over the header, swipe horizontally, or click a tab to
 change sections. Settings is available from the tray icon's right-click menu.
 
-![Original section tabs restored](docs/brand/readme/lumo/section-tabs-b0e1cb33fb14.png)
+![Original section tabs restored](docs/brand/readme/lumo/section-tabs-97789f0ed028.png)

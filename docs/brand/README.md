@@ -1,5 +1,42 @@
 # Lumo brand assets
 
+## Current README screenshots
+
+Refreshed on 13 November 2026 from version **2026.1113.6**. These are
+unmodified app captures with fictional chat, music, phone and metric data.
+Search uses installed Windows application icons. No AI provider request is
+made. The README uses the hash-based filenames below to refresh image caches.
+These documentation images are not bundled in Lumo.
+
+| Image | Capture source | Theme / window |
+| --- | --- | --- |
+| `music-f8c50633d075.png` | `music_player_controls_fit_with_and_without_lyrics_at_supported_sizes` | Classic |
+| `search-c92134758acb.png` | `search_opens_as_a_bar_and_recent_icons_then_expands_only_for_text` | Pill |
+| `mini-player-a2576a6eba0d.png` | `lyrics_player_renders_resizes_controls_scrolls_and_follows_the_current_track` | Mini window |
+| `compact-performance-5c55c5f1b14e.png` | `layouts_render_in_both_themes_and_scroll_has_three_views` | Pill |
+| `compact-network-a84605893881.png` | `layouts_render_in_both_themes_and_scroll_has_three_views` | Pill |
+| `ai-607aea43711c.png` | `ai_workspace_preserves_handoffs_resume_pin_and_pauses_while_away` | Pill |
+| `phone-076dea3a298b.png` | `search_scroll_and_local_phone_drop_layouts` | Pill |
+| `system-a35e9bd90dcd.png` | `self-test: page-system` | Classic |
+| `focus-a41cffafcbd0.png` | `self-test: page-focus` | Classic |
+| `pill-9f103a9a843f.png` | `music_player_controls_fit_with_and_without_lyrics_at_supported_sizes` | Pill |
+| `section-tabs-97789f0ed028.png` | `section_tabs_restore_icons_and_active_name_with_wheel_navigation` | Pill |
+| `search-single-6045b9e9789c.png` | `inline_search_renders_icons_keyboard_filters_and_collapses_in_both_themes` | Pill |
+| `ai-attachment-menu-3dba1b9c5587.png` | `attachment_background_press_dismisses_without_sending_and_keeps_composer_focus` | Mini window |
+
+The native tests above are ignored desktop checks. Set `LUMO_AI_QA`,
+`LUMO_SEARCH_QA`, `LUMO_SEARCH_REWORK_QA`, `LUMO_LYRICS_QA`,
+`LUMO_COMPACT_QA` and `LUMO_PHONE_QA` to the capture directory, then run
+each named test in a separate process with `--ignored --test-threads=1`.
+Focus and System use `lumo.exe --selftest <output>` with
+`LUMO_SELFTEST_DPI=144` and `LUMO_SELFTEST_THEME=classic`.
+Copy new PNGs unchanged and use the first 12 SHA-256 digits in each name.
+When a fresh capture has identical pixels, keep the existing optimized PNG
+and its original capture name.
+The current manifest above takes precedence over older capture references below.
+
+## Capture workflows and previous screenshots
+
 Current compact captures (unmodified offline native fixtures):
 
 - `compact-performance-3af96e748bdd.png` and `compact-network-5a04a350b9e9.png`
