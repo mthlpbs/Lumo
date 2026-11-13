@@ -106,7 +106,9 @@ jobs:
           rustup target add x86_64-pc-windows-msvc
 
       - name: Test workspace
-        run: cargo test --workspace --locked --target x86_64-pc-windows-msvc
+        run: |
+          cargo test -p lumo-core --locked --target x86_64-pc-windows-msvc
+          cargo test -p lumo --locked --target x86_64-pc-windows-msvc -- --test-threads=1
 
       - name: Build Windows app
         run: cargo build -p lumo --release --locked --target x86_64-pc-windows-msvc
