@@ -154,6 +154,9 @@ impl BrowserWindow {
         self.dirty = true;
         self.focus();
     }
+    pub fn focus_field(&mut self,id:crate::ui::WidgetId,len:usize){self.input.focused=Some(id);self.input.caret=len;self.input.selection_all=false;self.input.selection_anchor=None;self.input.selection_owner=Some(id);self.dirty=true;self.focus();}
+    pub fn complete_address(&mut self,len:usize){self.focus_address(len);self.input.selection_all=false;self.input.selection_anchor=None;self.input.selection_owner=Some(wid("search.query"));}
+    #[cfg(test)] pub fn test_hit(&self,id:crate::ui::WidgetId)->Option<Rect>{self.hits.iter().find(|h|h.id==id).map(|h|h.rect)}
     pub fn blur_address(&mut self) {
         self.input.focused = None;
         self.dirty = true;
@@ -216,8 +219,8 @@ impl BrowserWindow {
             right: w,
             bottom: h,
         })?;
-        c.fill_rrect(area, 24.0, Color::black(1.0));
-        c.stroke_rrect(area.inset(0.5, 0.5), 24.0, Color::white(0.15), 1.0);
+        c.fill_rrect(area, 16.0, Color::black(1.0));
+        c.stroke_rrect(area.inset(0.5, 0.5), 16.0, Color::white(0.15), 1.0);
         self.hits.clear();
         let mut ui = Ui::new(&mut c, &mut self.input, &mut self.hits, st.now);
         crate::search::draw_browser(&mut ui, st, area);
@@ -532,7 +535,7 @@ impl BrowserWindow {
                     let _ = windows::Win32::Graphics::Gdi::ValidateRect(self.hwnd, None);
                 }
                 WM_CLOSE => st.cmd(Command::CloseMiniBrowser),
-                WM_KILLFOCUS=>{self.input.focused=None;st.search.address_editing=false;st.search.address_suggestions.clear();st.search.suggestions.cancel();},
+                WM_KILLFOCUS=>{crate::search::cancel_address_edit(st,&mut self.input);},
                 WM_EXITSIZEMOVE => {
                     let mut r = RECT::default();
                     let _ = GetWindowRect(self.hwnd, &mut r);

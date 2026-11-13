@@ -1,6 +1,11 @@
 # WinGet and Scoop distribution
 
-The release pipeline is prepared for both package managers. Lumo is **not yet
+**WinGet publishing is paused. Only Scoop publishing runs.** The workflows have
+no WinGet publishing job or token forwarding, including manual runs with
+`publish` on. Its local tooling and manifest generation are retained
+for a future explicit re-enable; adding a token does not resume it.
+
+Local manifest tooling is retained for both package managers. Lumo is **not yet
 listed in WinGet or a Scoop bucket**. Adding workflow files alone does not
 publish a listing; complete the one-time setup below, commit/push these changes,
 then run the package-manager workflow against an existing stable release or
@@ -26,8 +31,8 @@ The package-manager workflow:
    and no unsafe paths. It never builds Lumo or changes its version.
 3. Saves the generated WinGet/Scoop manifests as the small
    **lumo-package-managers** artifact, also retained for seven days.
-4. If configured, submits a WinGet manifest PR, including the first package
-   submission, and creates/updates `bucket/lumo.json` in your own Scoop bucket.
+4. If Scoop is configured, creates/updates `bucket/lumo.json` in your own Scoop
+   bucket. No WinGet PR is submitted while publishing is paused.
 
 Missing credentials skip that publisher and are reported in the run summary.
 Once configured, a publishing failure is visible as a failed job; it does not
@@ -42,6 +47,9 @@ initial submissions, not evidence that either listing has been published.
 Every workflow run generates fresh manifests from its selected release assets.
 
 ## One-time WinGet setup
+
+The following is retained for later. Do not perform it to enable publishing
+now; the maintainer must first explicitly restore the workflow's publishing job.
 
 The package identifier is **mthlpbs.Lumo**. WinGet uses the native x64, per-user
 NSIS setup produced by CI, with `/S` for unattended installation. Its uninstall
@@ -69,11 +77,10 @@ winget install --id mthlpbs.Lumo --exact --source winget
 winget upgrade --id mthlpbs.Lumo --exact --source winget
 ```
 
-CI passes the secret through **WINGET_CREATE_GITHUB_TOKEN**, never a `--token`
-argument. WinGetCreate v1.12.13.0 is pinned and its official SHA-256 is checked
-before execution. Updating this tool requires updating both URL and hash.
-The Windows publishing job installs its required .NET 9 SDK/runtime explicitly;
-this is CI tooling only, not a new dependency bundled with Lumo.
+Any restored job must pass the secret through **WINGET_CREATE_GITHUB_TOKEN**,
+never a `--token` argument, and use a pinned, SHA-256-verified WinGetCreate
+download. The paused job used v1.12.13.0 with its required .NET 9 runtime.
+This remains CI tooling only, not a dependency bundled with Lumo.
 
 References: [Microsoft submission process](https://learn.microsoft.com/windows/package-manager/package/winget-validation),
 [WinGetCreate token permissions and environment variable](https://github.com/microsoft/winget-create/blob/main/doc/token.md).
@@ -106,7 +113,6 @@ the secret prompt, not the command line):
 gh repo create mthlpbs/scoop-bucket --public --add-readme --description "Scoop bucket for Lumo"
 gh variable set SCOOP_BUCKET_REPO --repo mthlpbs/Lumo --body mthlpbs/scoop-bucket
 gh secret set SCOOP_BUCKET_TOKEN --repo mthlpbs/Lumo
-gh secret set WINGET_TOKEN --repo mthlpbs/Lumo
 ```
 
 After the first successful Scoop publishing job:
@@ -131,8 +137,8 @@ branch, open **Actions > Package managers > Run workflow**:
 - **release_tag:** an existing stable release, for example `2026.1107.2`.
 - Leave **publish** off first to review the generated manifests. This does not
   open a PR, commit to the bucket or create any app packages.
-- With secrets/variables configured, run again with **publish** on to submit
-  the first WinGet PR and first Scoop manifest. Future stable app releases
+- With Scoop secrets/variables configured, run again with **publish** on to submit
+  the first Scoop manifest. WinGet stays paused. Future stable app releases
   invoke this automatically after their asset uploads finish.
 
 CLI equivalents:
@@ -140,7 +146,7 @@ CLI equivalents:
 ```powershell
 # Preview from existing release downloads; no build or publication.
 gh workflow run package-managers.yml --repo mthlpbs/Lumo --ref main -f release_tag=2026.1107.2 -f publish=false
-# Publish the first listings, or retry a failed publisher without a rebuild.
+# Publish to Scoop, or retry its failed publisher without a rebuild.
 gh workflow run package-managers.yml --repo mthlpbs/Lumo --ref main -f release_tag=2026.1107.2 -f publish=true
 ```
 
@@ -160,5 +166,5 @@ download URLs must stay immutable for a version, since clients verify hashes.
 Only release automation and manifest metadata change here. No app crate,
 executable payload, runtime memory, idle work or per-frame work is added.
 The extra Actions artifact contains only a few KiB of manifests and lasts seven
-days. WinGet's Windows job runs only when publication is requested and its token
-is configured; it downloads the pinned Microsoft tooling on that runner.
+days. No WinGet Windows job or tool download runs. Scoop
+still runs only when publication is requested and its configuration is present.

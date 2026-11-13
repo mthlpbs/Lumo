@@ -106,7 +106,7 @@ fn wic_factory() -> WinResult<IWICImagingFactory> {
 pub fn search_icons(items:Vec<(String,lumo_core::search::Target)>,cancel:&std::sync::atomic::AtomicBool)->Vec<(String,Option<Image>)>{
     let _com=ComInit::new(COINIT_APARTMENTTHREADED);
     let Ok(factory)=wic_factory()else{return items.into_iter().map(|(id,_)|(id,None)).collect();};
-    items.into_iter().take(6).take_while(|_|!cancel.load(std::sync::atomic::Ordering::Relaxed)).map(|(id,target)|{
+    items.into_iter().take(16).take_while(|_|!cancel.load(std::sync::atomic::Ordering::Relaxed)).map(|(id,target)|{
         let image=unsafe{(||->WinResult<Image>{
             use windows::{core::PCWSTR,Win32::{Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES,UI::{Controls::{IImageList,ILD_TRANSPARENT},Shell::{SHGetFileInfoW,SHGetImageList,SHFILEINFOW,SHGFI_PIDL,SHGFI_SYSICONINDEX,SHIL_EXTRALARGE,SHCreateItemFromIDList},WindowsAndMessaging::{DestroyIcon,HICON}}}};
             let path_item:Option<windows::Win32::UI::Shell::IShellItem>=match &target {

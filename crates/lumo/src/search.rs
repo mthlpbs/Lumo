@@ -14,6 +14,8 @@ pub struct State {
     pub active: bool,
     pub context_menu: bool,
     pub web_url: Option<String>,
+    pub launcher_mode: bool,
+    pub home_return:Option<String>,
     pub web_error: String,
     pub web_ready: bool,
     pub web_visible: bool,
@@ -39,19 +41,19 @@ pub struct State {
     pub pending: Option<Scan>,
     pub request: u64,
     pub error: String,
-    pub suggestions: Suggestions,
+    pub suggestions: Lookup,
     pub browser_transition: Option<f64>,
     pub transition_query: String,
 }
 #[derive(Default)]
-pub struct Suggestions {
+pub struct Lookup {
     pub address:bool,
     pub query: String,
     pub due: Option<f64>,
     pub serial: u64,
     pub pending: Option<(u64,Arc<crate::services::http::Cancel>)>,
 }
-impl Suggestions {
+impl Lookup {
     pub fn cancel(&mut self) {
         if let Some((_,cancel))=self.pending.take(){cancel.cancel();}
         self.due=None;self.query.clear();self.serial=self.serial.wrapping_add(1);
@@ -63,11 +65,11 @@ pub struct Event {
     pub result: Result<Vec<Entry>, String>,
 }
 impl State {
-    pub fn embedded(&self) -> bool { self.web_url.is_some() && !self.detached }
+    pub fn embedded(&self) -> bool { self.web_url.is_some() && !self.detached && !self.launcher_mode }
     pub fn cancel(&mut self) {
         self.suggestions.cancel();
         self.address_suggestions.clear();self.address_selected=None;self.address_editing=false;
-        if let Some(view)=self.view.as_mut(){view.suggestions.clear();}
+        for view in [&mut self.view,&mut self.saved_view].into_iter().flatten(){view.suggestions.clear();}
         if let Some(scan) = &self.icon_pending {
             scan.cancel.store(true, Ordering::Relaxed);
         }
@@ -111,6 +113,7 @@ pub const WIDTH: f32 = 560.0;
 const LIST_TOP: f32 = 68.0;
 const ROW: f32 = 40.0;
 const MAX_ROWS: usize = 5;
+pub fn recent_capacity(width:f32)->usize {((width-48.0).max(0.0)/36.0).floor().min(16.0)as usize}
 pub const HEIGHT: f32 = LIST_TOP + ROW * MAX_ROWS as f32 + 16.0;
 pub fn service_action_id(name:&str,start:bool)->crate::ui::WidgetId{
     crate::ui::wid_n(if start{"search.service.start"}else{"search.service.stop"},crate::ui::wid(name))
@@ -128,6 +131,13 @@ pub struct View {
     list_scroll: ListScroll,
     dirty: bool,
     pub suggestions: Vec<String>,
+    chrome_mix:f32,
+    chrome_from:f32,
+    chrome_target:f32,
+    chrome_start:Option<f64>,
+    clear_fade:Option<(f64,Vec<Entry>)>,
+    recent_keyboard:bool,
+    recent_limit:usize,
 }
 impl View {
     pub fn new(st: &AppState) -> Self {
@@ -140,11 +150,13 @@ impl View {
             list_scroll: ListScroll::default(),
             dirty: true,
             suggestions: vec![],
+            chrome_mix:if st.settings.search.web&&st.settings.search.show_browser_icon{1.0}else{0.0},
+            chrome_from:0.0,chrome_target:if st.settings.search.web&&st.settings.search.show_browser_icon{1.0}else{0.0},chrome_start:None,clear_fade:None,recent_keyboard:false,recent_limit:recent_capacity(WIDTH),
         }
     }
     pub fn navigate(&mut self, delta: isize) {
-        self.list_scroll.reveal = true;
-        let count=if self.results.is_empty() && !self.suggestions.is_empty(){self.suggestions.len()+1}else{self.results.len()};
+        self.list_scroll.reveal = true;self.recent_keyboard=true;
+        let count=if self.query.trim().is_empty(){self.results.len().min(self.recent_limit)}else if self.results.is_empty(){self.suggestions.len()+1}else{self.results.len()};
         self.selected = (self.selected as isize + delta)
             .clamp(0, count.saturating_sub(1) as isize)
             as usize;
@@ -159,7 +171,9 @@ impl View {
         st.settings.search.web && !self.query.trim().is_empty() && !Self::pending(st)
     }
     pub fn height(&self, st: &AppState) -> f32 {
-        let height=if !self.results.is_empty() {
+        let height=if self.query.trim().is_empty() {
+            if self.results.is_empty(){72.0}else{112.0}
+        } else if !self.results.is_empty() {
             LIST_TOP + ROW * self.results.len().min(MAX_ROWS) as f32 + 16.0
         } else if self.web_action(st) {
             if self.suggestions.is_empty(){204.0}else{232.0+ROW*self.suggestions.len() as f32}
@@ -168,8 +182,8 @@ impl View {
         };height+if st.search.notice.is_empty(){0.0}else{32.0}
     }
     pub fn selected(&self) -> Option<Entry> {
-        if self.results.is_empty() && self.selected>0 {
-            let query=self.suggestions.get(self.selected-1)?;
+        if self.results.is_empty() {
+            let query=self.suggestions.get(self.selected.checked_sub(1)?)?;
             return Some(Entry::new("google-suggestion".into(),query.clone(),String::new(),"",Group::Settings,
                 Target::Web{query:query.clone(),url:lumo_core::search::Engine::Google.url(query)?}));
         }
@@ -178,6 +192,7 @@ impl View {
             .map(|&i| self.entries[i].clone())
     }
     pub fn result_at(&mut self, id: crate::ui::WidgetId) -> Option<Entry> {
+        if let Some(pos)=self.results.iter().position(|i|id==crate::ui::wid_n("search.recent",crate::ui::wid(&self.entries[*i].id))){self.selected=pos;return self.selected();}
         let pos = self
             .results
             .iter()
@@ -194,7 +209,7 @@ impl View {
         if self.entries.len()!=old{self.dirty=true;}
         if self.dirty {
             self.results = if self.query.trim().is_empty() {
-                lumo_core::search::frequent(
+                lumo_core::search::recent_applications(
                     &self.entries,
                     &st.settings.search,
                     &st.store.search_usage,
@@ -211,6 +226,7 @@ impl View {
         st.search.active && !st.search.embedded() && st.settings.search.web && st.settings.search.google_suggestions
             && self.results.is_empty() && !Self::pending(st) && self.query.trim().chars().count()>=2 && direct_address(&self.query).is_none()
     }
+
 }
 
 /// Pixel scrolling preserves precision-pad deltas. Frames stop as soon as
@@ -332,25 +348,70 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
         ui.c.set_alpha(alpha);
         return;
     }
+    let browser_enabled = st.settings.search.web;
+    let target=if browser_enabled&&st.settings.search.show_browser_icon&&view.query.is_empty(){1.0}else{0.0};
+    if target!=view.chrome_target {view.chrome_from=view.chrome_mix;view.chrome_target=target;view.chrome_start=Some(ui.now);}
+    if let Some(start)=view.chrome_start {let t=if st.power.saver{1.0}else{((ui.now-start)/0.16).clamp(0.0,1.0)as f32};view.chrome_mix=view.chrome_from+(target-view.chrome_from)*t*t*(3.0-2.0*t);if t<1.0{ui.request_anim();}else{view.chrome_start=None;}}
     let input = ui.text_input_capsule(
         wid("search.query"),
-        rect(24.0, 16.0, body.w - 48.0, 40.0),
+        rect(24.0, 16.0, body.w - 48.0 - 48.0*view.chrome_mix, 40.0),
         &mut view.query,
         "",
         128,
         st.accent,
     );
     if input.changed {
+        if view.query.is_empty()&&!view.results.is_empty(){view.clear_fade=Some((ui.now,view.results.iter().take(MAX_ROWS).map(|i|view.entries[*i].clone()).collect()));}
+        else{view.clear_fade=None;}
         if !st.search.action_pending{st.search.notice.clear();}
-        view.dirty = true;
+        view.dirty = true;view.recent_keyboard=false;
         view.selected = 0;
         view.scroll = 0;
         view.list_scroll = ListScroll::default();
         view.entries = entries(st);
         view.suggestions.clear();
+
     }
-    let control_tip=None;
+    let mut control_tip = None;
     let mut execute = None;
+    if view.chrome_mix>0.001 {
+        let mix=view.chrome_mix;let r=rect(body.w-24.0-40.0*mix,16.0,40.0*mix,40.0);
+        if browser_enabled&&st.settings.search.show_browser_icon&&view.query.is_empty()&&mix>0.9 {
+            let response=ui.icon_button(wid("search.browser"),r,Icon::Globe,palette::TEXT_DIM,20.0*mix);
+            if response.hovered{control_tip=Some("Open browser (Ctrl+Enter)");}
+            if response.clicked{execute=Some(browser_target("",st.settings.search.engine));}
+        }else{ui.c.with_alpha(mix,|c|c.icon(Icon::Globe,Rect::new(r.center().x-10.0*mix,r.center().y-10.0*mix,20.0*mix,20.0*mix),palette::TEXT_DIM));}
+    }
+    // A first keystroke / clearing the field starts the finite width change
+    // immediately. No animation remains armed after the two states settle.
+    let desired=if browser_enabled&&st.settings.search.show_browser_icon&&view.query.is_empty(){1.0}else{0.0};
+    if desired!=view.chrome_target {view.chrome_from=view.chrome_mix;view.chrome_target=desired;view.chrome_start=Some(ui.now);ui.request_anim();}
+    if view.query.trim().is_empty(){
+        view.rank(st);
+        let capacity=recent_capacity(body.w);view.recent_limit=capacity;view.selected=view.selected.min(capacity.saturating_sub(1));
+        let fade=view.clear_fade.as_ref().map_or(0.0,|(start,_)|if st.power.saver{0.0}else{(1.0-((ui.now-start)/0.16)as f32).clamp(0.0,1.0)});
+        if fade>0.0 {
+            ui.c.clip(Rect::new(body.x,body.y+LIST_TOP,body.w,(body.h-LIST_TOP).max(0.0)));
+            if let Some((_,rows))=&view.clear_fade{ui.c.with_alpha(fade,|c|{for (i,e)in rows.iter().enumerate(){c.text(&e.title,rect(70.0,LIST_TOP+i as f32*ROW,body.w-92.0,ROW),&TextStyle::body());}});}
+            ui.c.unclip();ui.request_anim();
+        }else{view.clear_fade=None;}
+        let mut missing=vec![];let alpha=ui.c.alpha();ui.c.set_alpha(alpha*(1.0-fade));
+        for (position,index) in view.results.iter().take(capacity).enumerate(){
+            let entry=&view.entries[*index];let r=rect(24.0+position as f32*36.0,68.0,32.0,32.0);
+            let response=ui.button(wid_n("search.recent",wid(&entry.id)),r);
+            if response.hovered||response.pressed{ui.c.fill_rrect(r,8.0,Color::white(0.08));}
+            if view.recent_keyboard&&view.selected==position{ui.c.stroke_rrect(r,8.0,st.accent,1.0);}
+            if let Some(Some(image))=st.search.icons.get(&entry.id){ui.c.image(image,Rect::new(r.x+6.0,r.y+6.0,20.0,20.0),3.0);}
+            else{ui.c.icon(Icon::App,Rect::new(r.x+7.0,r.y+7.0,18.0,18.0),palette::TEXT_DIM);if !st.search.icons.contains_key(&entry.id){missing.push((entry.id.clone(),entry.target.clone()));}}
+            if response.clicked&&!input.changed{execute=Some(entry.target.clone());}
+            if response.hovered{control_tip=Some(&entry.title);}
+        }
+        ui.c.set_alpha(alpha);
+        if input.submitted{execute=if ui.input.ctrl&&browser_enabled{Some(browser_target("",st.settings.search.engine))}else{view.selected().map(|e|e.target)};}
+        if input.cancelled{st.cmd(Command::Collapse);}else if let Some(target)=execute{st.cmd(Command::ExecuteSearch(target));}
+        if !missing.is_empty(){st.cmd(Command::SearchIcons(missing));}
+        draw_toolbar_tip(ui,body,control_tip);st.search.view=Some(view);return;
+    }
     let mut missing = vec![];
     {
         view.rank(st);
@@ -392,14 +453,16 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
                 &TextStyle::body().color(palette::TEXT_DIM),
             );
             if view.web_action(st) {
+                let card_offset=0.0;
+                let web_index=0;
                 if let Some(entry) = web_entry(&view.query,st.settings.search.engine) {
                     let target = entry.target;
-                    let r = rect(24.0, 112.0, body.w - 48.0, 68.0);
+                    let r = rect(24.0, 112.0+card_offset, body.w - 48.0, 68.0);
                     let response = ui.button(wid("search.web"), r);
                     ui.c.fill_rrect(
                         r,
                         18.0,
-                        if response.hovered || (!view.suggestions.is_empty() && view.selected==0) {
+                        if response.hovered || (!view.suggestions.is_empty() && view.selected==web_index) {
                             st.accent.mul_alpha(0.12)
                         } else {
                             Color::white(0.055)
@@ -436,23 +499,23 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
                     web_fallback = Some(target);
                 }
                 if !view.suggestions.is_empty() {
-                    ui.c.text("Google suggestions",rect(32.0,190.0,body.w-64.0,22.0),&TextStyle::footnote().color(palette::TEXT_DIM));
-                    let count=((body.h-232.0)/ROW).floor().max(0.0) as usize;
-                    if view.selected==0{view.scroll=0;}else if count>0 {
-                        let selected=view.selected-1;
+                    ui.c.text("Google suggestions",rect(32.0,190.0+card_offset,body.w-64.0,22.0),&TextStyle::footnote().color(palette::TEXT_DIM));
+                    let count=((body.h-232.0-card_offset)/ROW).floor().max(0.0) as usize;
+                    if view.selected<=web_index{view.scroll=0;}else if count>0 {
+                        let selected=view.selected-web_index-1;
                         if selected<view.scroll{view.scroll=selected;}
                         if selected>=view.scroll+count{view.scroll=selected+1-count;}
                     }
                     for (row,i) in (view.scroll..view.suggestions.len()).take(count).enumerate(){
-                        let r=rect(24.0,216.0+ROW*row as f32,body.w-48.0,38.0);
-                        let response=ui.button(wid_n("search.suggestion",i as u64),r);let selected=view.selected==i+1;
+                        let r=rect(24.0,216.0+card_offset+ROW*row as f32,body.w-48.0,38.0);
+                        let response=ui.button(wid_n("search.suggestion",i as u64),r);let selected=view.selected==i+web_index+1;
                         if selected || response.hovered{ui.c.fill_rrect(r,10.0,Color::white(if selected{0.08}else{0.04}));}
                         if selected{ui.c.fill_rrect(Rect::new(r.x+4.0,r.center().y-8.0,2.0,16.0),1.0,st.accent);}
                         ui.c.icon(Icon::Search,Rect::new(r.x+14.0,r.center().y-9.0,18.0,18.0),palette::TEXT_DIM);
                         let text=&view.suggestions[i];
                         ui.c.text(text,Rect::new(r.x+44.0,r.y,r.w-58.0,r.h),&TextStyle::body());
                         if response.clicked && !input.changed {
-                            view.selected=i+1;
+                            view.selected=i+web_index+1;
                             execute=Some(Target::Web{query:text.clone(),url:lumo_core::search::Engine::Google.url(text).unwrap()});
                         }
                     }
@@ -568,17 +631,8 @@ pub fn draw(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Re
 
 /// The browser button is an explicit navigation, even when there is no query.
 /// Local search never starts the web runtime or contacts an engine on its own.
-fn browser_target(query: &str, engine: lumo_core::search::Engine) -> Target {
-    use lumo_core::search::Engine;
-    let url = address_target(query,engine).unwrap_or_else(|| {
-        match engine {
-            Engine::Bing => "https://www.bing.com/",
-            Engine::Google => "https://www.google.com/",
-            Engine::DuckDuckGo => "https://duckduckgo.com/",
-            Engine::Brave => "https://search.brave.com/",
-        }
-        .into()
-    });
+pub(crate) fn browser_target(query: &str, engine: lumo_core::search::Engine) -> Target {
+    let url=address_target(query,engine).unwrap_or_else(||crate::browser_home::URL.into());
     Target::Web {
         query: query.trim().into(),
         url,
@@ -598,9 +652,10 @@ fn power_toy_glyph(id:&str)->crate::icons::Icon {
     else{Icon::Bolt}
 }
 
+pub fn web_radius(_st:&AppState)->f32{12.0}
 pub fn web_rect(body: lumo_core::geom::Rect) -> lumo_core::geom::Rect {
-    let top=76.0;
-    lumo_core::geom::Rect::new(body.x + 16.0, body.y + top, body.w - 32.0, (body.h - top - 16.0).max(1.0))
+    let top=48.0;
+    lumo_core::geom::Rect::new(body.x + 8.0, body.y + top, body.w - 16.0, (body.h - top - 8.0).max(1.0))
 }
 pub struct BrowserToolbar {
     pub bar:lumo_core::geom::Rect,
@@ -617,17 +672,18 @@ pub struct BrowserToolbar {
 }
 pub fn browser_toolbar(body:lumo_core::geom::Rect,detached:bool)->BrowserToolbar {
     use lumo_core::geom::Rect;
-    let bar=Rect::new(body.x+16.0,body.y+16.0,body.w-32.0,44.0);
-    let at=|i:f32|Rect::new(bar.right()-32.0-i*28.0,bar.y+8.0,28.0,28.0);
+    let bar=Rect::new(body.x+8.0,body.y+8.0,body.w-16.0,34.0);
+    let at=|i:f32|Rect::new(bar.right()-30.0-i*26.0,bar.y+4.0,26.0,26.0);
     let full=body.w>=440.0;let end=if detached{1.0}else{0.0};let zero=Rect::new(bar.x,bar.y,0.0,0.0);
-    let right=if full{(5.0+end)*28.0}else{(3.0+end)*28.0};
-    let left=if full{56.0}else{28.0};
+    let right=if full{(5.0+end)*26.0}else{(3.0+end)*26.0};
+    let left=if full{52.0}else{26.0};
     BrowserToolbar{bar,address:Rect::new(bar.x+4.0+left,bar.y,bar.w-8.0-left-right,bar.h),
-        back:Rect::new(bar.x+4.0,bar.y+8.0,28.0,28.0),
-        forward:if full{Rect::new(bar.x+32.0,bar.y+8.0,28.0,28.0)}else{zero},
+        back:Rect::new(bar.x+4.0,bar.y+4.0,26.0,26.0),
+        forward:if full{Rect::new(bar.x+30.0,bar.y+4.0,26.0,26.0)}else{zero},
         reload:at(end),mini:at(end+1.0),external:if full{at(end+2.0)}else{zero},
         pin:if full{at(end+3.0)}else{zero},resume:if full{at(end+4.0)}else{zero},
         more:(!full).then(||at(end+2.0)),close:detached.then(||at(0.0))}
+
 }
 pub fn address_dropdown(st:&AppState,body:lumo_core::geom::Rect)->Option<lumo_core::geom::Rect>{
     if !st.search.address_editing || st.search.address_suggestions.is_empty(){return None;}
@@ -688,6 +744,18 @@ pub fn web_entry(query:&str,engine:lumo_core::search::Engine)->Option<Entry>{
     Some(Entry::new("web".into(),title,String::new(),"",Group::Settings,
         Target::Web{query:query.trim().into(),url:address_target(query,engine)?}))
 }
+pub(crate) fn cancel_address_edit(st: &mut AppState, input: &mut crate::ui::Input) {
+    input.focused = None;
+    input.selection_all = false;
+    input.selection_anchor = None;
+    st.search.address_editing = false;
+    st.search.address_dirty = false;
+    st.search.address = if crate::browser_home::is_home(st) { String::new() } else { st.search.navigation.url.clone() };
+    st.search.address_suggestions.clear();
+    st.search.address_selected = None;
+    st.search.suggestions.cancel();
+}
+
 pub(crate) fn draw_browser(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo_core::geom::Rect) {
     use crate::{
         commands::Command,
@@ -698,6 +766,15 @@ pub(crate) fn draw_browser(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo
     };
     use lumo_core::geom::{palette, Color, Rect};
     let toolbar=browser_toolbar(body,st.search.detached);
+    // Native backgrounds do not send the WebView's PAGE_FOCUS event. Resolve
+    // blur here for both hosts, while preserving presses on suggestion rows.
+    if ui.input.focused==Some(wid("search.query")) && ui.input.just_pressed
+        && ui.input.press_pos.or(ui.input.mouse).is_some_and(|p|!toolbar.bar.contains(p)
+            && !address_dropdown(st,body).is_some_and(|r|r.contains(p))) {
+        cancel_address_edit(st,ui.input);
+    }
+    let suggestion_press=[ui.input.pressed_id,ui.input.clicked.map(|v|v.0),ui.input.released.map(|v|v.0)].into_iter().flatten().any(|id|(0..st.search.address_suggestions.len()).any(|i|id==crate::ui::wid_n("search.address-suggestion",i as u64)));
+    if st.search.address_editing&&suggestion_press{ui.input.focused=Some(wid("search.query"));}
     let editing=ui.input.focused==Some(wid("search.query"));st.search.address_editing=editing;
     let progress=st.search.navigation.loading.then_some(st.search.navigation.progress.clamp(0.05,1.0));
     let mut tip=None;
@@ -713,7 +790,7 @@ pub(crate) fn draw_browser(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo
                 .or_else(||address_target(&st.search.address,st.settings.search.engine));
             if let Some(url)=target{st.search.address_dirty=false;st.search.address_editing=false;st.search.address_suggestions.clear();ui.input.focused=None;st.cmd(Command::NavigateSearchWeb(url));}
         }
-        if input.cancelled{ui.input.focused=None;st.search.address_editing=false;st.search.address_dirty=false;st.search.address=st.search.navigation.url.clone();st.search.address_suggestions.clear();st.search.suggestions.cancel();}
+        if input.cancelled{cancel_address_edit(st,ui.input);}
     }else{
         ui.c.fill_rrect(toolbar.bar,12.0,Color::white(0.055));
         if let Some(progress)=progress{
@@ -724,35 +801,38 @@ pub(crate) fn draw_browser(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo
         }
         ui.c.stroke_rrect(toolbar.bar.inset(0.5,0.5),12.0,Color::white(0.09),1.0);
         let response=ui.button(wid("search.query"),toolbar.address);
-        let title=if st.search.navigation.title.trim().is_empty(){crate::search_web::display_address(&st.search.navigation.url)}else{st.search.navigation.title.clone()};
-        ui.c.text(&title,toolbar.address.inset(8.0,0.0),&TextStyle::body().center());
+        let blank=crate::browser_home::is_home(st);
+        let title=if blank{"Search or enter a web address".into()}else if st.search.navigation.title.trim().is_empty(){crate::search_web::display_address(&st.search.navigation.url)}else{st.search.navigation.title.clone()};
+        ui.c.text(&title,toolbar.address.inset(8.0,0.0),&TextStyle::body().center().color(if blank{palette::TEXT_DIM}else{palette::TEXT}));
         if response.clicked{st.cmd(Command::SearchWeb(Action::Address));}
         tip=draw_browser_controls(ui,st,&toolbar);
         for (id,r,icon,enabled,action,label) in [
-            ("search.back",toolbar.back,Icon::ChevronLeft,true,if st.search.navigation.back{Command::SearchWeb(Action::Back)}else{Command::CloseSearchWeb},"Back (Alt+Left)"),
+            ("search.back",toolbar.back,Icon::ChevronLeft,true,Command::SearchWeb(Action::Back),"Back (Alt+Left)"),
             ("search.forward",toolbar.forward,Icon::ChevronRight,st.search.navigation.forward,Command::SearchWeb(Action::Forward),"Forward (Alt+Right)"),
             ("search.reload",toolbar.reload,if st.search.navigation.loading{Icon::Close}else{Icon::Refresh},true,Command::SearchWeb(if st.search.navigation.loading{Action::Stop}else{Action::Reload}),if st.search.navigation.loading{"Stop loading"}else{"Reload (Ctrl+R)"}),
-            ("search.external",toolbar.external,Icon::ExternalLink,true,Command::OpenUrl(st.search.navigation.url.clone()),"Continue in default browser"),
+            ("search.external",toolbar.external,Icon::ExternalLink,!crate::browser_home::is_home(st),Command::OpenUrl(st.search.navigation.url.clone()),"Continue in default browser"),
             ("search.mini",toolbar.mini,if st.search.detached{Icon::ExitMiniPlayer}else{Icon::MiniPlayer},true,Command::ToggleMiniBrowser,if st.search.detached{"Return to island"}else{"Open mini browser"}),
         ]{
             if r.w<=0.0{continue;}
             if enabled{let response=ui.icon_button(wid(id),r,icon,palette::TEXT_DIM,17.0);if response.clicked{st.cmd(action);}if response.hovered{tip=Some(label);}}
-            else{ui.c.icon(icon,r.inset(6.0,6.0),palette::TEXT_FAINT.mul_alpha(0.45));if ui.hovered(r){tip=Some("No next page in browser history");}}
+            else{ui.c.icon(icon,r.inset(6.0,6.0),palette::TEXT_FAINT.mul_alpha(0.45));if ui.hovered(r){tip=Some(if id=="search.external"{"No external website is open"}else{"No next page in browser history"});}}
         }
         if let Some(r)=toolbar.more{let response=ui.button(wid("search.more"),r);if response.hovered{ui.c.fill_rrect(r,8.0,Color::white(0.08));tip=Some("More browser actions");}ui.c.text("⋯",r,&TextStyle::body().center());if response.clicked{st.cmd(Command::SearchBrowserMenu(r.center()));}}
         if let Some(r)=toolbar.close{let response=ui.icon_button(wid("search.close"),r,Icon::Close,palette::TEXT_DIM,17.0);if response.clicked{st.cmd(Command::CloseMiniBrowser);}if response.hovered{tip=Some("Close mini browser");}}
     }
     let scale = ui.c.scale();
-    let page = snapped_web_rect(body, scale);
-    ui.c.fill_rrect(page, 18.0, Color::rgba(0.075, 0.075, 0.08, 1.0));
-    if st.search.web_visible {
+    let page = snapped_web_rect(body, scale);let radius=web_radius(st);
+    ui.c.fill_rrect(page, radius, Color::rgba(0.075, 0.075, 0.08, 1.0));
+    if st.search.web_visible && !crate::browser_home::is_home(st) {
         // Two physical pixels cover both GDI's hard region rounding and the
         // antialiased fringe of the cutout, including partially clear corners.
         let seal = 2.0 / scale;
-        ui.c.web_aperture(page.inset(seal, seal), 18.0 - seal);
+        ui.c.web_aperture(page.inset(seal, seal), radius - seal);
     }
-    ui.c.stroke_rrect(page.inset(0.5, 0.5), 18.0, Color::white(0.10), 1.0);
-    if !st.search.web_error.is_empty() {
+    ui.c.stroke_rrect(page.inset(0.5, 0.5), radius, Color::white(0.10), 1.0);
+    if crate::browser_home::is_home(st) {
+        crate::browser_home::draw(ui,page,editing);
+    } else if !st.search.web_error.is_empty() {
         let cx = page.center().x;
         let cy = page.center().y;
         ui.c.icon(
@@ -795,7 +875,7 @@ pub(crate) fn draw_browser(ui: &mut crate::ui::Ui, st: &mut AppState, body: lumo
     }
     if let Some(drop)=address_dropdown(st,body){
         let cover=address_cover(st,body,scale) as f32/scale;
-        ui.c.push_outline_mask(&crate::pill::shape::segments(page,18.0));ui.c.fill_rect(Rect::new(page.x,page.y,page.w,cover),Color::rgba(0.075,0.075,0.08,1.0));ui.c.pop_shape_mask();
+        ui.c.push_outline_mask(&crate::pill::shape::segments(page,radius));ui.c.fill_rect(Rect::new(page.x,page.y,page.w,cover),Color::rgba(0.075,0.075,0.08,1.0));ui.c.pop_shape_mask();
         ui.c.fill_rrect(drop,12.0,Color::rgba(0.10,0.10,0.11,1.0));ui.c.stroke_rrect(drop.inset(0.5,0.5),12.0,Color::white(0.10),1.0);
         let count=((drop.h-12.0)/36.0) as usize;let start=st.search.address_selected.map_or(0,|i|(i+1).saturating_sub(count));
         for (row,i) in (start..st.search.address_suggestions.len()).take(count).enumerate(){let r=Rect::new(drop.x+6.0,drop.y+6.0+row as f32*36.0,drop.w-12.0,36.0);let response=ui.button(crate::ui::wid_n("search.address-suggestion",i as u64),r);
@@ -828,9 +908,9 @@ fn draw_browser_controls(
             },
             Command::ToggleSearchKeepOpen,
             if st.settings.search.keep_open {
-                "Keep Search open: on — click to turn off"
+                "Keep Browser open: on (click to turn off)"
             } else {
-                "Keep Search open when switching apps"
+                "Keep Browser open when switching apps"
             },
         ),
         (
@@ -840,9 +920,9 @@ fn draw_browser_controls(
             Icon::ResumePage,
             Command::ToggleSearchResume,
             if st.settings.search.resume_page {
-                "Resume page: on — click to turn off"
+                "Resume in Browser: on (click to turn off)"
             } else {
-                "Resume this page when Search reopens"
+                "Resume this page when Browser opens"
             },
         ),
     ] {
@@ -892,6 +972,13 @@ fn draw_toolbar_tip_at(ui: &mut crate::ui::Ui, body: lumo_core::geom::Rect, tip:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_search_is_compact_and_recent_capacity_follows_width(){
+        let st=AppState::new(Default::default(),Default::default());
+        let mut view=View::new(&st);view.rank(&st);
+        assert_eq!(view.height(&st),72.0);assert!(view.selected().is_none());
+        assert_eq!(recent_capacity(280.0),6);assert_eq!(recent_capacity(560.0),14);assert_eq!(recent_capacity(4000.0),16);
+    }
     #[test]
     fn pixel_scroll_preserves_small_deltas_settles_and_reveals_keyboard_selection() {
         let mut scroll = super::ListScroll::default();
@@ -1032,7 +1119,7 @@ mod tests {
                 panic!()
             };
             assert!(query.is_empty());
-            assert!(url.starts_with("https://") && !url.contains('?'));
+            assert_eq!(url,crate::browser_home::URL);
             let Target::Web { query, url } = browser_target(" About your PC ", engine) else {
                 panic!()
             };

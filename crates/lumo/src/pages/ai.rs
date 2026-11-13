@@ -68,17 +68,13 @@ pub fn draw_chat(ui: &mut Ui, st: &mut AppState, area: Rect, full: bool) {
         }
     }
     let modal = st.ai.model_menu && !st.ai.model_settings;
+    let providers_was_open=st.ai.sites.menu;
+    let provider_input=providers_was_open.then(||std::mem::take(ui.input));
     let model_input = modal.then(|| std::mem::take(ui.input));
     let mut tip = None;
     let toolbar = Rect::new(area.x, area.y, area.w, 36.0);
-    text(
-        ui,
-        if area.w < 380.0 { "AI" } else { "Ask AI" },
-        Rect::new(toolbar.x + 2.0, toolbar.y, 70.0, 36.0),
-        16.0,
-        palette::TEXT,
-    );
-    let left = if area.w < 380.0 { 38.0 } else { 76.0 };
+    crate::ai_sites::title(ui,st,Rect::new(toolbar.x,toolbar.y,if area.w<380.0{50.0}else{86.0},36.0));
+    let left = if area.w < 380.0 { 56.0 } else { 96.0 };
     for (index, (id, icon, label)) in [
         (
             "ai.history",
@@ -411,7 +407,7 @@ pub fn draw_chat(ui: &mut Ui, st: &mut AppState, area: Rect, full: bool) {
             false,
         );
     }
-    if !st.ai.model_menu && !st.ai.reasoning_menu && !st.ai.attach_menu {
+    if !st.ai.model_menu && !st.ai.reasoning_menu && !st.ai.attach_menu && !st.ai.sites.menu {
         if let Some((label, button)) = tip {
             let w = (ui.c.measure(label, &TextStyle::new(12.0), 260.0).0 + 24.0)
                 .clamp(100.0, 280.0)
@@ -428,6 +424,9 @@ pub fn draw_chat(ui: &mut Ui, st: &mut AppState, area: Rect, full: bool) {
             );
         }
     }
+    if let Some(input)=provider_input{*ui.input=input;}
+    if providers_was_open&&ui.input.clicked==Some((wid("ai.providers"),crate::ui::MouseButton::Left)){st.ai.sites.menu=false;}
+    crate::ai_sites::draw_menu(ui,st,area,false);
 }
 fn pending_attachments(ui: &mut Ui, st: &mut AppState, tray: Rect) {
     let count = st.ai.pending.len();

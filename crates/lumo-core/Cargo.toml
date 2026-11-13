@@ -11,6 +11,11 @@ description = "Platform-independent models and logic for the Lumo island (pure R
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# Brave's native blocking engine replaces the limited handwritten matcher.
+# Default features include its PSL domain resolver, regex support and the
+# single-thread optimization; it is constructed only for opted-in web views.
+adblock = { version = "=0.13.5", features = ["css-validation"] }
+base64 = "0.22"
 # QR codes for the phone-drop link (MIT, no dependencies).
 qrcodegen = "1.8"
 # Pairing keys and signed messages (RustCrypto, MIT OR Apache-2.0; str0m

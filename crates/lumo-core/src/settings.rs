@@ -78,6 +78,7 @@ pub enum MaximizedRule {
 pub struct Settings {
     pub search: crate::search::Config,
     pub ai: crate::ai::Config,
+    pub web: crate::web::Config,
     /// Missing in files written before versioning (treated as 0).
     #[serde(default = "version_zero")]
     pub settings_version: u32,
@@ -181,6 +182,7 @@ impl Default for Settings {
             search: crate::search::Config::default(),
             settings_version: SETTINGS_VERSION,
             ai: crate::ai::Config::default(),
+            web: crate::web::Config::default(),
             theme: Theme::Classic,
             idle_style: IdleStyle::Clock,
             use_24h: true,
@@ -297,6 +299,7 @@ impl Settings {
         // Retired background sampling: readers sleep whenever no visible view needs them.
         self.system_history=false;
         self.search.sanitize();
+        self.web.sanitize();
         self.ai.mini_width=self.ai.mini_width.clamp(360,1920);
         self.ai.mini_height=self.ai.mini_height.clamp(360,1600);
         // Retired calendar pages open Music when restoring older preferences.

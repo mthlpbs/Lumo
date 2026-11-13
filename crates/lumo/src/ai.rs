@@ -69,12 +69,16 @@ pub enum Event {
         unavailable: Option<(String, String)>, // catalog scope and requested ID
     },
     Previews(u64, Vec<(usize, usize, Image)>),
-    Attached { result: Result<Vec<Attachment>, String>, previews: Vec<Option<Image>> },
+    Attached {
+        result: Result<Vec<Attachment>, String>,
+        previews: Vec<Option<Image>>,
+    },
     Saved(Result<(), String>),
     KeySaved(ProviderKey, bool, Result<(), String>),
     WorkerFailed(String),
 }
 pub struct State {
+    pub sites: crate::ai_sites::State,
     pub return_page: Option<crate::pages::PageKind>,
     pub fresh_on_open: bool,
     pub island_height: f32,
@@ -123,11 +127,15 @@ pub struct State {
     pub model_rows: Vec<ModelRow>,
     pub model_rows_key: Option<(u64, usize, String, u8)>,
     pub model_filters_open: bool,
+    /// List height in px, frozen while the filter popover is open.
     pub model_filter_rows: usize,
     pub model_filters: u8,
     pub model_settings: bool,
     pub search: String,
     pub model_scroll: f32,
+    /// Keyboard-highlighted row of `model_rows`. Cleared when the pointer moves.
+    pub model_cursor: Option<usize>,
+    pub model_cursor_mouse: Option<lumo_core::geom::Point>,
     pub reveal_model: bool,
     pub hover_model: Option<(String, f64)>,
     pub attach_menu: bool,
@@ -143,6 +151,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            sites: Default::default(),
             return_page: None,
             fresh_on_open: false,
             island_height: 680.0,
@@ -196,6 +205,8 @@ impl Default for State {
             model_settings: false,
             search: String::new(),
             model_scroll: 0.0,
+            model_cursor: None,
+            model_cursor_mouse: None,
             reveal_model: true,
             hover_model: None,
             attach_menu: false,
@@ -214,19 +225,31 @@ impl State {
     /// Closing with Resume off releases unsent attachment/image buffers now;
     /// keep the current chat identity until reopening so an explicit in-flight
     /// request can still deliver its reply and notification normally.
-    pub fn close_workspace(&mut self,resume:bool){
-        self.close_popovers();self.fresh_on_open=!resume;
-        if !resume{self.draft.clear();self.pending.clear();self.pending_previews.clear();self.previews.clear();self.history_query.clear();self.history=false;self.scroll=0.0;self.max_scroll=0.0;}
+    pub fn close_workspace(&mut self, resume: bool) {
+        self.close_popovers();
+        self.fresh_on_open = !resume;
+        if !resume {
+            self.draft.clear();
+            self.pending.clear();
+            self.pending_previews.clear();
+            self.previews.clear();
+            self.history_query.clear();
+            self.history = false;
+            self.scroll = 0.0;
+            self.max_scroll = 0.0;
+        }
     }
     pub fn close_models(&mut self) {
         self.model_filters_open = false;
         self.model_filter_rows = 0;
+        self.model_cursor = None;
         self.model_menu = false;
         self.reasoning_menu = false;
         self.model_detail = None;
         self.hover_model = None;
     }
     pub fn close_popovers(&mut self) {
+        self.sites.menu = false;
         self.close_models();
         self.attach_menu = false;
     }
@@ -254,21 +277,36 @@ impl State {
             .cloned()
             .unwrap_or_else(|| Model::manual(id));
         model.reasoning.resolve(&model.id, config.provider);
-        if !id.is_empty() && lumo_core::ai::is_hackclub(config.models())
-            && self.catalog_key == config_catalog_key(config) && !self.models.is_empty()
-            && !self.models.iter().any(|m| &m.id == id) {
-            model.unavailable = Some("Not listed in the saved Hack Club AI catalog. Refresh the model list.".into());
+        if !id.is_empty()
+            && lumo_core::ai::is_hackclub(config.models())
+            && self.catalog_key == config_catalog_key(config)
+            && !self.models.is_empty()
+            && !self.models.iter().any(|m| &m.id == id)
+        {
+            model.unavailable = Some(
+                "Not listed in the saved Hack Club AI catalog. Refresh the model list.".into(),
+            );
         }
-        if self.unavailable_models.contains(&(config_catalog_key(config), model.id.clone())) {
-            model.unavailable = Some("Unavailable for this endpoint. Refresh the model list to try again.".into());
+        if self
+            .unavailable_models
+            .contains(&(config_catalog_key(config), model.id.clone()))
+        {
+            model.unavailable =
+                Some("Unavailable for this endpoint. Refresh the model list to try again.".into());
         }
         model
     }
     pub fn model_unavailable(&self, config: &lumo_core::ai::Config, id: &str) -> Option<String> {
-        if self.unavailable_models.contains(&(config_catalog_key(config), id.to_owned())) {
+        if self
+            .unavailable_models
+            .contains(&(config_catalog_key(config), id.to_owned()))
+        {
             Some("Unavailable for this endpoint. Refresh the model list to try again.".into())
         } else {
-            self.models.iter().find(|m| m.id == id).and_then(|m| m.unavailable.clone())
+            self.models
+                .iter()
+                .find(|m| m.id == id)
+                .and_then(|m| m.unavailable.clone())
         }
     }
     pub fn initialize(&mut self) {
@@ -278,13 +316,20 @@ impl State {
     }
     /// Escape dismisses the most local surface before its parent workspace.
     pub fn dismiss_popup(&mut self) {
-        if self.model_filters_open { self.model_filters_open=false; }
-        else if self.model_detail.is_some() { self.model_detail=None;self.model_detail_scroll=0.0; }
-        else { self.close_popovers(); }
+        if self.model_filters_open {
+            self.model_filters_open = false;
+        } else if self.model_detail.is_some() {
+            self.model_detail = None;
+            self.model_detail_scroll = 0.0;
+        } else {
+            self.close_popovers();
+        }
     }
 }
 pub fn ensure(st: &mut AppState) {
-    if !st.ai_on() { return; }
+    if !st.ai_on() {
+        return;
+    }
     if !st.ai.loaded && !st.ai.loading {
         st.ai.initialize();
         st.cmd(Command::Ai(Action::Load));
@@ -302,14 +347,43 @@ pub fn ensure(st: &mut AppState) {
 
 /// The same shortcuts in the island and mini host. They only change local
 /// UI state; opening an empty model catalog keeps its existing on-demand path.
-pub fn workspace_key(st:&mut AppState,key:u32,ctrl:bool,shift:bool)->Option<crate::ui::WidgetId>{
+pub fn workspace_key(
+    st: &mut AppState,
+    key: u32,
+    ctrl: bool,
+    shift: bool,
+) -> Option<crate::ui::WidgetId> {
     use crate::ui::wid;
-    if !ctrl{return None;}
+    if !ctrl || st.ai.sites.selected.is_some() {
+        return None;
+    }
     match key {
-        0x4e=>{st.cmd(Command::Ai(Action::New(shift)));Some(wid("ai.prompt"))},
-        0x48=>{st.ai.close_popovers();st.ai.history=!st.ai.history;Some(wid(if st.ai.history{"ai.history-filter"}else{"ai.prompt"}))},
-        0x4b=>{let open=!st.ai.model_menu;st.ai.close_popovers();st.ai.model_menu=open;st.ai.model_settings=false;st.ai.reveal_model=true;st.ai.model_scroll=0.0;if open&&st.ai.models.is_empty(){st.cmd(Command::Ai(Action::EnsureModels));}Some(wid(if open{"ai.model-search"}else{"ai.prompt"}))},
-        _=>None,
+        0x4e => {
+            st.cmd(Command::Ai(Action::New(shift)));
+            Some(wid("ai.prompt"))
+        }
+        0x48 => {
+            st.ai.close_popovers();
+            st.ai.history = !st.ai.history;
+            Some(wid(if st.ai.history {
+                "ai.history-filter"
+            } else {
+                "ai.prompt"
+            }))
+        }
+        0x4b => {
+            let open = !st.ai.model_menu;
+            st.ai.close_popovers();
+            st.ai.model_menu = open;
+            st.ai.model_settings = false;
+            st.ai.reveal_model = true;
+            st.ai.model_scroll = 0.0;
+            if open && st.ai.models.is_empty() {
+                st.cmd(Command::Ai(Action::EnsureModels));
+            }
+            Some(wid(if open { "ai.model-search" } else { "ai.prompt" }))
+        }
+        _ => None,
     }
 }
 pub fn apply(st: &mut AppState, event: Event, notify: bool) {
@@ -349,7 +423,7 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
             match r {
                 Ok(catalog) => {
                     if !catalog.from_cache {
-                        st.ai.unavailable_models.retain(|(scope,_)| scope != &key);
+                        st.ai.unavailable_models.retain(|(scope, _)| scope != &key);
                     }
                     let mut models = catalog.models;
                     // Hack Club documents this endpoint as its complete live
@@ -359,7 +433,8 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
                         for id in [&st.ai.selected, &st.settings.ai.default_model] {
                             if !id.is_empty() && !models.iter().any(|m| &m.id == id) {
                                 let mut m = Model::manual(id);
-                                m.unavailable = Some("Not listed in Hack Club AI's current catalog".into());
+                                m.unavailable =
+                                    Some("Not listed in Hack Club AI's current catalog".into());
                                 models.push(m);
                             }
                         }
@@ -387,9 +462,9 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
             st.ai.busy = false;
             st.ai.cancel = None;
             st.ai.generation_finished = st.now;
-            if let Some((scope,id)) = unavailable {
+            if let Some((scope, id)) = unavailable {
                 if st.ai.unavailable_models.len() < 5000 {
-                    st.ai.unavailable_models.insert((scope,id));
+                    st.ai.unavailable_models.insert((scope, id));
                     st.ai.catalog_revision = st.ai.catalog_revision.wrapping_add(1);
                 }
             }
@@ -439,7 +514,10 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
                 st.ai.previews = images.into_iter().map(|(m, a, i)| ((m, a), i)).collect();
             }
         }
-        Event::Attached { result: r, previews } => {
+        Event::Attached {
+            result: r,
+            previews,
+        } => {
             st.ai.attaching = false;
             match r {
                 Ok(a) => {
@@ -454,8 +532,15 @@ pub fn apply(st: &mut AppState, event: Event, notify: bool) {
                         st.ai.error =
                             "Attach up to 4 files, with a combined size under 18 MB.".into();
                     } else {
-                        st.ai.pending_previews.resize_with(st.ai.pending.len(), || None);
-                        st.ai.pending_previews.extend(previews.into_iter().chain(std::iter::repeat(None)).take(a.len()));
+                        st.ai
+                            .pending_previews
+                            .resize_with(st.ai.pending.len(), || None);
+                        st.ai.pending_previews.extend(
+                            previews
+                                .into_iter()
+                                .chain(std::iter::repeat(None))
+                                .take(a.len()),
+                        );
                         st.ai.pending.extend(a);
                         st.ai.error.clear();
                     }
@@ -524,7 +609,7 @@ pub fn paste_attachment(
     prompt_focused: bool,
     has_attachment: impl FnOnce() -> bool,
 ) -> bool {
-    if !prompt_focused || !has_attachment() {
+    if st.ai.sites.selected.is_some() || !prompt_focused || !has_attachment() {
         return false;
     }
     st.ai.close_popovers();
@@ -640,8 +725,12 @@ pub fn local(st: &mut AppState, a: &Action) -> bool {
                 .cloned()
             {
                 if st.ai.pending.len() < 4 {
-                    st.ai.pending_previews.resize_with(st.ai.pending.len(), || None);
-                    st.ai.pending_previews.push(st.ai.previews.get(&(*mi, *ai)).cloned());
+                    st.ai
+                        .pending_previews
+                        .resize_with(st.ai.pending.len(), || None);
+                    st.ai
+                        .pending_previews
+                        .push(st.ai.previews.get(&(*mi, *ai)).cloned());
                     st.ai.pending.push(a);
                 }
                 st.ai.attach_menu = false;
@@ -679,52 +768,135 @@ pub fn clear_ready(st: &mut AppState) {
 mod tests {
     #[test]
     fn escape_unwinds_filter_then_details_then_picker() {
-        let mut s=State::default();s.model_menu=true;s.model_filters_open=true;
-        s.dismiss_popup();assert!(s.model_menu&&!s.model_filters_open);
-        s.model_detail=Some("model".into());s.dismiss_popup();assert!(s.model_menu&&s.model_detail.is_none());
-        s.dismiss_popup();assert!(!s.model_menu);
+        let mut s = State::default();
+        s.model_menu = true;
+        s.model_filters_open = true;
+        s.dismiss_popup();
+        assert!(s.model_menu && !s.model_filters_open);
+        s.model_detail = Some("model".into());
+        s.dismiss_popup();
+        assert!(s.model_menu && s.model_detail.is_none());
+        s.dismiss_popup();
+        assert!(!s.model_menu);
     }
     #[test]
     fn model_refusal_stays_with_requested_endpoint_and_refresh_can_recover() {
-        let mut st=state();st.settings.ai.provider=lumo_core::ai::Provider::Compatible;
-        st.settings.ai.completion_url="https://example.org/chat".into();
-        let scope=catalog_key(&st);st.ai.selected="chosen-later".into();
-        st.ai.busy=true;st.ai.request=7;
-        apply(&mut st,Event::Reply{request:7,chat:17,result:Err("Model refused".into()),images:vec![],unavailable:Some((scope.clone(),"failed-model".into()))},false);
-        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_some());
+        let mut st = state();
+        st.settings.ai.provider = lumo_core::ai::Provider::Compatible;
+        st.settings.ai.completion_url = "https://example.org/chat".into();
+        let scope = catalog_key(&st);
+        st.ai.selected = "chosen-later".into();
+        st.ai.busy = true;
+        st.ai.request = 7;
+        apply(
+            &mut st,
+            Event::Reply {
+                request: 7,
+                chat: 17,
+                result: Err("Model refused".into()),
+                images: vec![],
+                unavailable: Some((scope.clone(), "failed-model".into())),
+            },
+            false,
+        );
+        assert!(st
+            .ai
+            .model_unavailable(&st.settings.ai, "failed-model")
+            .is_some());
         assert!(st.ai.model(&st.settings.ai).unavailable.is_none());
-        st.settings.ai.completion_url="https://elsewhere.org/chat".into();
-        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_none());
-        st.settings.ai.completion_url="https://example.org/chat".into();
-        let catalog=|from_cache| Catalog{models:vec![Model::manual("failed-model")],saved_at:1,from_cache,warning:None};
-        apply(&mut st,Event::Models(scope.clone(),Ok(catalog(true))),false);
-        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_some());
-        apply(&mut st,Event::Models(scope.clone(),Err("Offline".into())),false);
-        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_some());
-        apply(&mut st,Event::Models(scope,Ok(catalog(false))),false);
-        assert!(st.ai.model_unavailable(&st.settings.ai,"failed-model").is_none());
+        st.settings.ai.completion_url = "https://elsewhere.org/chat".into();
+        assert!(st
+            .ai
+            .model_unavailable(&st.settings.ai, "failed-model")
+            .is_none());
+        st.settings.ai.completion_url = "https://example.org/chat".into();
+        let catalog = |from_cache| Catalog {
+            models: vec![Model::manual("failed-model")],
+            saved_at: 1,
+            from_cache,
+            warning: None,
+        };
+        apply(
+            &mut st,
+            Event::Models(scope.clone(), Ok(catalog(true))),
+            false,
+        );
+        assert!(st
+            .ai
+            .model_unavailable(&st.settings.ai, "failed-model")
+            .is_some());
+        apply(
+            &mut st,
+            Event::Models(scope.clone(), Err("Offline".into())),
+            false,
+        );
+        assert!(st
+            .ai
+            .model_unavailable(&st.settings.ai, "failed-model")
+            .is_some());
+        apply(&mut st, Event::Models(scope, Ok(catalog(false))), false);
+        assert!(st
+            .ai
+            .model_unavailable(&st.settings.ai, "failed-model")
+            .is_none());
     }
     #[test]
     fn hackclub_refresh_keeps_missing_selection_disabled_and_preserves_draft() {
-        let mut st=state();st.settings.ai.provider=lumo_core::ai::Provider::Compatible;
-        st.settings.ai.models_url="https://ai.hackclub.com/proxy/v1/models".into();
-        st.ai.selected="gone".into();st.ai.draft="Unsent draft".into();
-        let scope=catalog_key(&st);
-        apply(&mut st,Event::Models(scope,Ok(Catalog{models:vec![Model::manual("new")],saved_at:1,from_cache:false,warning:None})),false);
-        assert_eq!(st.ai.selected,"gone");assert_eq!(st.ai.draft,"Unsent draft");
+        let mut st = state();
+        st.settings.ai.provider = lumo_core::ai::Provider::Compatible;
+        st.settings.ai.models_url = "https://ai.hackclub.com/proxy/v1/models".into();
+        st.ai.selected = "gone".into();
+        st.ai.draft = "Unsent draft".into();
+        let scope = catalog_key(&st);
+        apply(
+            &mut st,
+            Event::Models(
+                scope,
+                Ok(Catalog {
+                    models: vec![Model::manual("new")],
+                    saved_at: 1,
+                    from_cache: false,
+                    warning: None,
+                }),
+            ),
+            false,
+        );
+        assert_eq!(st.ai.selected, "gone");
+        assert_eq!(st.ai.draft, "Unsent draft");
         assert!(st.ai.model(&st.settings.ai).unavailable.is_some());
-        assert!(st.ai.models.iter().any(|m|m.id=="gone"&&m.unavailable.is_some()));
-        st.ai.selected="missing-manual".into();
+        assert!(st
+            .ai
+            .models
+            .iter()
+            .any(|m| m.id == "gone" && m.unavailable.is_some()));
+        st.ai.selected = "missing-manual".into();
         assert!(st.ai.model(&st.settings.ai).unavailable.is_some());
-        assert!(!st.cmds.iter().any(|c|matches!(c,Command::Ai(Action::Send))));
+        assert!(!st
+            .cmds
+            .iter()
+            .any(|c| matches!(c, Command::Ai(Action::Send))));
     }
     #[test]
     fn workspace_shortcuts_focus_local_tools_without_sending() {
-        let mut st=state();st.cmds.clear();
-        assert!(workspace_key(&mut st,0x4e,false,false).is_none());assert!(st.cmds.is_empty());
-        assert_eq!(workspace_key(&mut st,0x48,true,false),Some(crate::ui::wid("ai.history-filter")));assert!(st.ai.history);
-        workspace_key(&mut st,0x4b,true,false);assert!(st.ai.model_menu&&!st.ai.reasoning_menu);workspace_key(&mut st,0x4b,true,false);assert!(!st.ai.model_menu);
-        workspace_key(&mut st,0x4e,true,true);assert!(st.cmds.contains(&Command::Ai(Action::New(true))));assert!(!st.cmds.iter().any(|c|matches!(c,Command::Ai(Action::Send|Action::Retry))));
+        let mut st = state();
+        st.cmds.clear();
+        assert!(workspace_key(&mut st, 0x4e, false, false).is_none());
+        assert!(st.cmds.is_empty());
+        assert_eq!(
+            workspace_key(&mut st, 0x48, true, false),
+            Some(crate::ui::wid("ai.history-filter"))
+        );
+        assert!(st.ai.history);
+        workspace_key(&mut st, 0x4b, true, false);
+        assert!(st.ai.model_menu && !st.ai.reasoning_menu);
+        workspace_key(&mut st, 0x4b, true, false);
+        assert!(!st.ai.model_menu);
+        workspace_key(&mut st, 0x4e, true, true);
+        assert!(st.cmds.contains(&Command::Ai(Action::New(true))));
+        assert!(!st
+            .cmds
+            .iter()
+            .any(|c| matches!(c, Command::Ai(Action::Send | Action::Retry))));
     }
     use super::*;
     #[test]
@@ -756,11 +928,14 @@ mod tests {
         st.ai.attaching = true;
         apply(
             &mut st,
-            Event::Attached { result: Ok(vec![Attachment {
-                name: "Copied image.png".into(),
-                mime: "image/png".into(),
-                data: "YWJj".into(),
-            }]), previews: vec![None] },
+            Event::Attached {
+                result: Ok(vec![Attachment {
+                    name: "Copied image.png".into(),
+                    mime: "image/png".into(),
+                    data: "YWJj".into(),
+                }]),
+                previews: vec![None],
+            },
             false,
         );
         assert!(!st.ai.attaching);

@@ -175,6 +175,7 @@ pub struct TextInputResp {
 enum InputLook {
     Secret,
     Area,
+    AreaTop,
     Box,
     Row { accent: Color, icon: Option<Icon> },
 }
@@ -420,7 +421,7 @@ impl<'a, 'g> Ui<'a, 'g> {
     }
     /// Browser address field, with space reserved for its trailing reload control.
     pub fn address_input(&mut self, id: WidgetId, r: Rect, buf: &mut String, accent: Color, progress: Option<f32>) -> TextInputResp {
-        self.search_editor(id, r, buf, "Search or enter an address", 2048, accent, true, progress)
+        self.search_editor(id, r, buf, "", 2048, accent, true, progress)
     }
 
     pub fn text_secret(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize)->TextInputResp {
@@ -430,6 +431,9 @@ impl<'a, 'g> Ui<'a, 'g> {
         self.text_input_styled(id,r,buf,placeholder,max_chars,InputLook::Area)
     }
 
+    pub fn text_area_top(&mut self,id:WidgetId,r:Rect,buf:&mut String,placeholder:&str,max_chars:usize)->TextInputResp {
+        self.text_input_styled(id,r,buf,placeholder,max_chars,InputLook::AreaTop)
+    }
     fn text_pointer(&mut self,id:WidgetId,buf:&str,style:&TextStyle,width:f32,origin:Point,multiline:bool){
         let release=self.input.released.filter(|(owner,_)|*owner==id);
         // Windows can deliver down and up before the next paint. The release
@@ -522,7 +526,7 @@ impl<'a, 'g> Ui<'a, 'g> {
         let text_style=if compact{style.center()}else{style};
         if display.is_empty(){self.c.text(placeholder,inner,&style.color(palette::TEXT_FAINT));}
         else{self.c.text(display,Rect::new(inner.x-scroll,inner.y,if focused{width.max(inner.w)+1.0}else{inner.w},inner.h),&text_style);}
-        if focused&&self.input.caret_visible(self.now,out.changed,!display.is_empty()){self.c.line(Point::new(inner.x+cx-scroll+0.5,y+2.0),Point::new(inner.x+cx-scroll+0.5,y+height-2.0),palette::TEXT,1.5);}
+        if focused&&self.input.caret_visible(self.now,out.changed,address||!display.is_empty()){self.c.line(Point::new(inner.x+cx-scroll+0.5,y+2.0),Point::new(inner.x+cx-scroll+0.5,y+height-2.0),palette::TEXT,1.5);}
         self.c.unclip();out
     }
 
@@ -531,8 +535,8 @@ impl<'a, 'g> Ui<'a, 'g> {
         let mut out = TextInputResp::default();
         let pointer_active=(self.input.just_pressed&&self.input.pressed_id==Some(id))||(self.input.down&&self.input.pressed_id==Some(id))||self.input.released.is_some_and(|(owner,_)|owner==id);
         if pointer_active {
-        let pointer_inner=match look{InputLook::Area=>r.inset(3.0,0.0),InputLook::Row{..}=>Rect::new(r.x+36.0,r.y,(r.w-46.0).max(1.0),r.h),_=>r.inset(10.0,0.0)};
-        let area=matches!(look,InputLook::Area);
+        let pointer_inner=match look{InputLook::Area|InputLook::AreaTop=>r.inset(3.0,0.0),InputLook::Row{..}=>Rect::new(r.x+36.0,r.y,(r.w-46.0).max(1.0),r.h),_=>r.inset(10.0,0.0)};
+        let area=matches!(look,InputLook::Area|InputLook::AreaTop);
         let pointer_style=if area{text_area_style()}else{TextStyle::new(crate::gfx::ts::BODY)};
         let masked=if matches!(look,InputLook::Secret){"•".repeat(buf.chars().count())}else{String::new()};
         let display=if matches!(look,InputLook::Secret){masked.as_str()}else{buf.as_str()};
@@ -540,7 +544,7 @@ impl<'a, 'g> Ui<'a, 'g> {
         let(cx,cy,ch)=self.c.text_caret(display,&pointer_style,width,if self.input.focused==Some(id){self.input.caret}else{display.chars().count()});
         let text_h=if area{self.c.measure(display,&pointer_style,width).1}else{ch};
         let origin=Point::new(pointer_inner.x-if !area&&self.input.focused==Some(id){(cx-pointer_inner.w+3.0).max(0.0)}else{0.0},
-            pointer_inner.y+if area{((pointer_inner.h-text_h)/2.0).max(0.0)-(cy+ch-pointer_inner.h+3.0).max(0.0)}else{0.0});
+            pointer_inner.y+if area{(if look==InputLook::AreaTop{0.0}else{((pointer_inner.h-text_h)/2.0).max(0.0)})-(cy+ch-pointer_inner.h+3.0).max(0.0)}else{0.0});
         self.text_pointer(id,display,&pointer_style,width,origin,area);
         }else if self.input.focused==Some(id)&&self.input.selection_owner!=Some(id){self.input.selection_owner=Some(id);self.input.selection_anchor=None;self.input.text_scroll=0.0;}
         // Also support widgets activated programmatically through their click ID.
@@ -555,7 +559,7 @@ impl<'a, 'g> Ui<'a, 'g> {
             for k in keys {
                 let selected=anchor.filter(|a|*a!=caret).map(|a|a.min(caret)..a.max(caret));
                 match k {
-                    KeyInput::Char(c) if !c.is_control() || (matches!(look,InputLook::Area) && c=='\n') => {
+                    KeyInput::Char(c) if !c.is_control() || (matches!(look,InputLook::Area|InputLook::AreaTop) && c=='\n') => {
                         if let Some(range)=selected{caret=range.start;chars.drain(range);}anchor=None;
                         if chars.len() < max_chars {
                             chars.insert(caret, c);
@@ -597,7 +601,7 @@ impl<'a, 'g> Ui<'a, 'g> {
         }
         // Draw.
         let inner = match look {
-            InputLook::Area => r.inset(3.0,0.0),
+            InputLook::Area|InputLook::AreaTop => r.inset(3.0,0.0),
             InputLook::Box | InputLook::Secret => {
                 let bg = if focused { Color::white(0.13) } else if resp.hovered { Color::white(0.1) } else { palette::SURFACE };
                 self.c.fill_rrect(r, 9.0, bg);
@@ -620,14 +624,14 @@ impl<'a, 'g> Ui<'a, 'g> {
                 Rect::new(r.x + 36.0, r.y, (r.w - 46.0).max(0.0), r.h)
             }
         };
-        let area=matches!(look,InputLook::Area);
+        let area=matches!(look,InputLook::Area|InputLook::AreaTop);
         let st=if area {text_area_style()}else{TextStyle::new(crate::gfx::ts::BODY)};
         let masked=if matches!(look,InputLook::Secret){"•".repeat(buf.chars().count())}else{String::new()};
         let display=if matches!(look,InputLook::Secret){masked.as_str()}else{buf.as_str()};
         let caret=if focused{self.input.caret}else{display.chars().count()};
         let (cx,cy,ch)=if display.is_empty(){(0.0,0.0,st.size*1.3)}else{self.c.text_caret(display,&st,if area{inner.w}else{10000.0},caret)};
         let text_h=if area && !display.is_empty(){self.c.measure(display,&st,inner.w).1}else{st.size*1.3};
-        let offset_y=if area{((inner.h-text_h)/2.0).max(0.0)}else{0.0};
+        let offset_y=if area&&look!=InputLook::AreaTop{((inner.h-text_h)/2.0).max(0.0)}else{0.0};
         let scroll_y=if area{(cy+ch-inner.h+3.0).max(0.0)}else{0.0};
         let scroll_x=if !area && focused{(cx-inner.w+3.0).max(0.0)}else{0.0};
         self.c.clip(inner);
@@ -635,7 +639,7 @@ impl<'a, 'g> Ui<'a, 'g> {
             let y=if area{inner.y+offset_y-scroll_y}else{inner.center().y-ch/2.0};
             self.c.fill_rect(Rect::new(inner.x+hit.x-scroll_x,y+hit.y,hit.w,hit.h),Color::rgba(0.2,0.4,0.7,0.6));
         }}}
-        if buf.is_empty(){let mut placeholder_style=st;placeholder_style.vcenter=true;self.c.text(placeholder,inner,&placeholder_style.color(palette::TEXT_FAINT));}
+        if buf.is_empty(){let mut placeholder_style=st;placeholder_style.vcenter=look!=InputLook::AreaTop;self.c.text(placeholder,inner,&placeholder_style.color(palette::TEXT_FAINT));}
         else if area {let (_,h)=self.c.measure(display,&st,inner.w);self.c.text(display,Rect::new(inner.x,inner.y+offset_y-scroll_y,inner.w,h.max(inner.h)),&st);}
         else {let(w,_)=self.c.measure(display,&st,10000.0);self.c.text(display,Rect::new(inner.x-scroll_x,inner.y,if focused{w.max(inner.w)+1.0}else{inner.w},inner.h),&st);}
         if focused&&self.input.caret_visible(self.now,out.changed,!area||!buf.is_empty()) {let x=inner.x+cx-scroll_x+0.5;let y=if area{inner.y+offset_y+cy-scroll_y}else{inner.center().y-ch/2.0};self.c.line(Point::new(x,y+2.0),Point::new(x,y+ch-2.0),Color::white(0.9),1.5);}

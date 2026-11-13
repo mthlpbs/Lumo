@@ -79,6 +79,7 @@ pub enum LyricsResult {
 }
 
 pub enum AppEvent {
+    AdBlockingUpdated(Result<(),String>),
     Search(crate::search::Event),
     SearchIntegrations(crate::services::search_integrations::CatalogEvent),
     SearchAction {result:Result<String,String>,refresh:bool},

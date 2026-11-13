@@ -1,5 +1,11 @@
 # AI workspace
 
+Click the **Ask AI** title for a dropdown with ChatGPT, Gemini, Claude and Muse.
+Website mode fills the island or mini window and overlays
+its controls at the top right. It shares Lumo's embedded-browser cookies.
+[AI websites and reply-ready previews](ai-sites.md) describes this mode; the
+native Ask AI conversation below remains available from the same dropdown.
+
 Enable **AI companion** in Add-ons. From the closed island, scroll **left** to
 open AI and **right** to open Search. AI lives outside the normal page tabs;
 ordinary island clicks still open the page appropriate to your current activity.

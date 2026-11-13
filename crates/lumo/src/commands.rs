@@ -42,6 +42,8 @@ pub enum FolderPick {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    OpenAdBlocking,
+    PrepareAdBlocking,
     ChoosePhoneDownloadDirectory,
     PreviewFocusSpotlight,
     SearchBrowserMenu(lumo_core::geom::Point),
@@ -58,6 +60,7 @@ pub enum Command {
     ToggleSearchKeepOpen,
     ToggleSearchResume,
     Ai(crate::ai::Action),
+    SelectAiSite(Option<crate::ai_sites::Site>),
     OpenAiWindow,
     ReturnAiToIsland,
     CloseAi,

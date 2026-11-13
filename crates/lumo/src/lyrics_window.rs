@@ -481,8 +481,15 @@ impl Scene {
             ui.c.text("Nothing playing", layout.lyrics, &TextStyle::new(28.0).weight(Weight::Semibold).color(Color::white(0.7)));
         }
         let close = Rect::new(area.w-44.0, 10.0, 34.0, 30.0);
-        // Always show the return action; a hover must not be needed to find it.
-        let response = ui.icon_button(wid("lyrics.close"), close, Icon::ExitMiniPlayer, Color::white(0.85), 20.0);
+        // Keep the full hit area while resting as a dot. Pointer events redraw
+        // the icon immediately; this needs no hover animation or timer.
+        let response = ui.button(wid("lyrics.close"), close);
+        if response.hovered || response.pressed {
+            ui.c.fill_rrect(close, 15.0, Color::white(if response.pressed { 0.16 } else { 0.10 }));
+            ui.c.icon(Icon::ExitMiniPlayer, Rect::from_center(close.center(), 20.0, 20.0), Color::white(0.85));
+        } else {
+            ui.c.fill_circle(close.center(), 3.0, Color::white(0.65));
+        }
         if response.clicked { st.cmd(Command::CloseLyricsWindow); }
         if response.hovered {
             let hint = Rect::new(close.right()-138.0, close.bottom()+6.0, 138.0, 26.0);
@@ -675,8 +682,30 @@ mod tests {
         st.lyrics.lyrics = Some(lumo_core::lrc::Lyrics::plain("A line without timing\nAnother line to scroll"));
         window.draw(&mut st, true).unwrap();
         assert!(!window.hits.iter().any(|hit| hit.id == wid_n("lyrics.line", 0)), "unsynced lyrics cannot seek");
-        window.input.mouse = Some(Point::new(313.0,25.0));
-        for _ in 0..3 { st.now += 0.05; window.draw(&mut st, true).unwrap(); }
+        let close = window.hits.iter().find(|hit| hit.id == wid("lyrics.close")).unwrap().rect;
+        let scale = window.gfx.scale();
+        let close_pixels = |width:i32, pixels:&[u8]| -> Vec<u8> {
+            let mut region=Vec::new();
+            for y in (close.y*scale).ceil() as usize..(close.bottom()*scale).floor() as usize {
+                let start=(y*width as usize+(close.x*scale).ceil() as usize)*4;
+                let end=(y*width as usize+(close.right()*scale).floor() as usize)*4;
+                region.extend_from_slice(&pixels[start..end]);
+            }
+            region
+        };
+        window.input.mouse=None;
+        let(w,h,dot)=window.capture(&mut st);
+        window.input.mouse=Some(close.center());
+        let(_,_,hover)=window.capture(&mut st);
+        assert_ne!(close_pixels(w,&dot),close_pixels(w,&hover),"hover reveals the exit icon in the same hit area");
+        window.message(&mut st,WM_MOUSELEAVE_,WPARAM(0),LPARAM(0));
+        let(_,_,rest)=window.capture(&mut st);
+        assert_eq!(close_pixels(w,&dot),close_pixels(w,&rest),"leaving restores the resting dot");
+        if let Some(dir)=output.as_ref(){
+            for(name,pixels)in [("lyrics-exit-dot",&dot),("lyrics-exit-hover",&hover)]{
+                crate::png::save_rgba(dir.join(format!("{name}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(pixels)).unwrap();
+            }
+        }
         window.input.clicked = Some((wid("lyrics.close"), MouseButton::Left));
         window.draw(&mut st, true).unwrap();
         assert!(st.cmds.contains(&Command::CloseLyricsWindow));

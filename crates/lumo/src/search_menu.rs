@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use windows::{core::{Interface,HSTRING},Win32::{Foundation::*,System::Com::CoTaskMemFree,Storage::EnhancedStorage::{PKEY_Link_TargetParsingPath,PKEY_AppUserModel_ID},UI::{Shell::*,WindowsAndMessaging::*}}};
 thread_local!{static HANDLER:RefCell<Option<IContextMenu>>=const{RefCell::new(None)};}
 pub enum Action{None,Execute,Invoked(bool),Copy(String),CopyIcon(bool),Forget,Service(bool),Error(String)}
-pub enum BrowserAction{Forward,External,Keep,Resume,Close}
+pub enum BrowserAction{Forward,External,Keep,Resume,Filters,Close}
 const FORGET:u32=0x7000;const COPY:u32=0x7001;const OPEN:u32=0x7002;const BROWSER:u32=0x7003;const START_SERVICE:u32=0x7004;const STOP_SERVICE:u32=0x7005;const ADMIN:u32=0x7006;const ICON_FILE:u32=0x7007;const ICON_IMAGE:u32=0x7008;
 pub fn message(msg:u32,wp:WPARAM,lp:LPARAM)->Option<LRESULT>{
     if let Some(result)=crate::native_menu::message(msg,wp,lp){return Some(result);}
@@ -56,9 +56,9 @@ pub fn show(owner:HWND,entry:&Entry,point:POINT,frequent:bool)->Action{unsafe{
     };
     HANDLER.with(|cell|*cell.borrow_mut()=None);if let Some(menu)=hidden{let _=DestroyMenu(menu);}result
 }}
-pub fn show_browser(owner:HWND,point:POINT,keep:bool,resume:bool,forward:bool,detached:bool)->Option<BrowserAction>{
-    let entries=vec![Item::new(1,"Forward",'\u{e72a}').disabled(!forward),Item::new(2,"Open in default browser",'\u{e8a7}'),Item::separator(),Item::new(3,if keep{"Keep open: On"}else{"Keep open: Off"},'\u{e718}'),Item::new(4,if resume{"Resume page: On"}else{"Resume page: Off"},'\u{e777}'),Item::separator(),Item::new(5,if detached{"Close mini browser"}else{"Close search"},'\u{e711}')];
-    match Menu::new(owner,entries).ok()?.show(owner,point){1=>Some(BrowserAction::Forward),2=>Some(BrowserAction::External),3=>Some(BrowserAction::Keep),4=>Some(BrowserAction::Resume),5=>Some(BrowserAction::Close),_=>None}
+pub fn show_browser(owner:HWND,point:POINT,keep:bool,resume:bool,forward:bool,detached:bool,home:bool)->Option<BrowserAction>{
+    let entries=vec![Item::new(1,"Forward",'\u{e72a}').disabled(!forward),Item::new(2,"Open in default browser",'\u{e8a7}').disabled(home),Item::separator(),Item::new(3,if keep{"Keep open: On"}else{"Keep open: Off"},'\u{e718}'),Item::new(4,if resume{"Resume page: On"}else{"Resume page: Off"},'\u{e777}'),Item::separator(),Item::new(6,"Ad blocking settings...",'\u{e713}'),Item::new(5,if detached{"Close mini browser"}else{"Close browser"},'\u{e711}')];
+    match Menu::new(owner,entries).ok()?.show(owner,point){1=>Some(BrowserAction::Forward),2=>Some(BrowserAction::External),3=>Some(BrowserAction::Keep),4=>Some(BrowserAction::Resume),5=>Some(BrowserAction::Close),6=>Some(BrowserAction::Filters),_=>None}
 }
 unsafe fn build_shell(
     owner: HWND,

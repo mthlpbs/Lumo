@@ -17,6 +17,12 @@ mod activities;
 #[cfg(windows)]
 mod ai;
 #[cfg(windows)]
+mod ai_sites;
+#[cfg(windows)]
+mod web_settings;
+#[cfg(windows)]
+mod web_blocking;
+#[cfg(windows)]
 mod ai_window;
 #[cfg(windows)]
 mod app;
@@ -63,6 +69,8 @@ mod state;
 mod settings_window;
 #[cfg(windows)]
 mod search;
+mod browser_home;
+mod shortcut_guide;
 #[cfg(windows)]
 mod search_web;
 #[cfg(windows)]

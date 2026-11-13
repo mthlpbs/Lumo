@@ -40,7 +40,7 @@ or use these pinned **2026.1107.2** downloads:
 To build the current source, use the [local packaging script](docs/packaging.md).
 It creates a standalone EXE, portable ZIP and setup installer in `dist/<version>/`.
 
-WinGet and Scoop distribution is prepared but not yet published. Maintainers can
+WinGet publishing is paused; package-manager publishing currently targets Scoop only. Maintainers can
 follow the [one-time setup and automatic release updates](docs/package-managers.md).
 
 **First time here?** Click the island to open it. Scroll vertically over its
@@ -63,26 +63,24 @@ The main pages are **Music**, **Focus**, **Shelf**, **Tasks**, **System** and
 ### Search apps and Windows settings
 
 Scroll **down with a mouse wheel** or **right with a touchpad** over the closed
-island to open Search. Swipe
-again anywhere over Search to collapse it. Open pages keep their normal
-horizontal navigation. Clicking outside closes Search immediately, even after wheel opening without
-activation, unless its Keep open
-pin is enabled, including after dismissing a result's context menu. The compact
-list shows frequently opened results first, with native Windows icons and a
-clear selection marker. VS Code commands use a small source icon; PowerToys
-uses installed tool icons with readable vector fallbacks. The native result
-menu has compact grouped actions for opening, copying and frequent results.
-The island fits the
-number of results, so a single match uses just one row. When nothing matches,
-the island shrinks around a web-search card with your selected engine and
-query preview. Optional Google suggestions can appear beneath it; turn them
-on in **Settings > Search**. They send unmatched text or address-bar search text to Google after you pause
-typing and are off by default. Website addresses are excluded.
+island to open Search. It opens as an empty field, an optional browser button,
+and a small row of recently opened application icons. The newest apps come first;
+the number of icons follows the window width. A fresh profile shows just the bar.
 
-**Settings > Search** controls applications, Windows Settings and optional web
-search. Right-click results for dark native Windows menus with administrator
-actions where supported, copy-path and separate icon-file/icon-image copying.
-Frequent results can be removed individually. Lumo commands and preference pages are excluded.
+Typing hides the browser icon, expands the field and reveals matching results.
+Clearing the field fades the rows away and restores the compact view. Hide the
+browser icon, choose sources and configure suggestions in **Settings > Search**.
+Browser enablement, engine, layout and ad blocking have their own **Browser** section.
+
+Ctrl+Enter searches the current query, including with local matches or the
+browser icon hidden. An empty query opens a blank browser page.
+Vertical scrolling over the field does not switch workspaces.
+**Settings > Shortcut guide** lists the available keys and gestures.
+
+Full app/setting/tool rows appear only while typing. Right-click results for
+native menus with supported administrator, copy-path and icon-copy actions.
+Lumo preference pages and commands are excluded. Search details are in
+[the guide](docs/search.md).
 
 Search can also find **Windows services**, installed **PowerToys tools**, and
 **VS Code commands**. Enable services to see their last-read state and explicit
@@ -97,16 +95,20 @@ sources**. Each source has its own toggle in **Settings > Search**.
 Optional web search opens Bing, Google, DuckDuckGo or Brave inside the island,
 using the installed Edge WebView2 Runtime. It starts only when you choose a
 web action, or press <kbd>Ctrl+Enter</kbd> to search the current query with your
-chosen engine (an empty field opens its home page). The neutral search field has
-no browser button. A unified address bar contains navigation, refresh/stop,
+chosen engine (an empty field opens a blank browser page). When web search is enabled,
+the browser button appears beside an empty search field. A unified address bar contains navigation, refresh/stop,
 default-browser, mini-browser, pin and resume icons. It shows the webpage title
 while browsing; click or press <kbd>Ctrl+L</kbd> to edit the full URL with all icons
 hidden. Double-click selects the entire URL, including slashes. Optional Google
 suggestions also work while typing an address-bar search. Loading fills the
 rounded bar and follows its bottom edge. Search has no close button; press
 <kbd>Esc</kbd> or swipe horizontally to close it.
+Browser opens to a quiet starting hint. Its idle address bar says **Search or enter
+a web address**; clicking it opens an empty editor. Clicking the page background
+restores the toolbar controls. **Resume page** restores the
+retained page when Browser opens; opening Search keeps its empty bar.
 The browser expands vertically at the same width as Search by default.
-**Settings > Search > Browser** offers Tall or Wide layout and height presets.
+**Settings > Browser** offers Tall or Wide layout and height presets.
 Pages open at their normal size with a desktop user agent; Lumo does not zoom
 them to fit the window. Type a URL or bare domain such as `hirunews.lk` to see
 **Visit** and open it directly instead of searching for it.
@@ -134,7 +136,8 @@ to seek to that line. **Settings > Music > Lyrics in Music** hides or restores
 the column independently of closed-island lyrics. The LRC button replaces
 the player/application name and switches
 closed-island lyrics. Select the mini player icon beside Pin in Music to open a
-separate, resizable player with lyrics. All four corners support diagonal resizing. Its exit mini player icon returns to
+separate, resizable player with lyrics. All four corners support diagonal resizing. Its exit control rests as a dot;
+hover to reveal the exit mini player icon, then click to return to
 Music in the island; the same icon is available in Music while the mini player
 is open.
 
@@ -178,6 +181,14 @@ its accent follows the wallpaper. The same page can disable compact-view scrolli
 </p>
 
 ### Ask AI without leaving your desktop
+
+Click **Ask AI** in the workspace header to choose ChatGPT, Gemini, Claude,
+or Muse (`muse.ai`), with their logos. A selected website fills
+the island or mini window, with Lumo's controls overlaid at the top right and
+no address bar. The sites share Lumo's existing browser cookies and site storage.
+Supported page layouts can show reply-ready previews on the island. Choose
+**Ask AI** in the dropdown to return to the native chat described below.
+[AI website behavior and completion-detection limits](docs/ai-sites.md).
 
 Turn on **AI companion** in **Add-ons**, then scroll **up with a mouse wheel**
 or **left with a touchpad** over the closed island. Mouse down or touchpad right

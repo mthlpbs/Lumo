@@ -3,8 +3,12 @@ import base64
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from zipfile import ZipFile
 
@@ -29,6 +33,25 @@ def fixture(tag='2026.1109.1'):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_workflow_keeps_winget_paused_even_with_credentials_and_scoop_enabled(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / '.github/workflows/package-managers.yml').read_text(encoding='utf-8')
+        self.assertNotIn('\n  winget:\n', workflow)
+        self.assertNotIn('WINGET_TOKEN', workflow)
+        self.assertNotIn('WINGET_TOKEN', (root / '.github/workflows/ci.yml').read_text(encoding='utf-8'))
+        self.assertIn("if: inputs.publish && needs.prepare.outputs.scoop == 'true'", workflow)
+        step = workflow.split('      - name: Check package-manager configuration\n', 1)[1]
+        script = step.split('        run: |\n', 1)[1].split('      - name:', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            output, summary = (Path(directory) / name for name in ['output', 'summary'])
+            result = subprocess.run([sys.executable, '-c', textwrap.dedent(script)], capture_output=True, text=True,
+                                    env={**os.environ, 'WINGET_TOKEN': 'fixture', 'SCOOP_BUCKET_TOKEN': 'fixture',
+                                         'SCOOP_BUCKET_REPO': 'test/bucket', 'GITHUB_OUTPUT': str(output),
+                                         'GITHUB_STEP_SUMMARY': str(summary)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text().splitlines(), ['scoop=true'])
+            self.assertIn('WinGet publishing: paused', summary.read_text())
+
     def test_first_release_manifests_have_exact_immutable_urls_and_payload_hashes(self):
         for tag in ['2026.1109.1', 'v2026.1109.1']:
             release, data, fetch = fixture(tag)

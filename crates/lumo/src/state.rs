@@ -119,6 +119,7 @@ pub enum NoticeAction {
     OpenPage(PageKind),
     /// Open the exact completed chat, independent of the current activity.
     OpenAiReply(u64),
+    OpenAiSite(crate::ai_sites::Site),
     /// Open Focus and start the (idle) timer.
     StartFocus,
     /// Open the Update sheet in Settings (a new version's notice).
@@ -153,7 +154,7 @@ pub struct Notice {
 impl Notice {
     /// An unread reply waits for an explicit open/dismiss, without a timer.
     pub fn is_ai_reply(&self) -> bool {
-        matches!(self.action,Some(NoticeAction::OpenAiReply(_)))
+        matches!(self.action,Some(NoticeAction::OpenAiReply(_)|NoticeAction::OpenAiSite(_)))
     }
 }
 
@@ -270,6 +271,7 @@ impl PhoneDrop {
 /// Transient per-page UI state (scroll offsets, text being typed, …).
 #[derive(Clone, Debug, Default)]
 pub struct PageUiState {
+    pub web: crate::web_settings::Editor,
     pub choosing_music_dir: bool,
     pub choosing_lyrics_dir: bool,
     pub choosing_phone_dir: bool,
@@ -436,6 +438,7 @@ impl AppState {
     }
 
     pub fn new(settings: Settings, mut store: Store) -> Self {
+        lumo_core::pinned_sites::sanitize(&mut store.pinned_sites);
         store.search_usage.retain(|id,_|!id.starts_with("file:"));
         let pomodoro = Pomodoro::new(settings.pomodoro.clone());
         let page = PageKind::from_key(if settings.remember_page && !store.last_page.is_empty() {

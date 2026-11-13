@@ -44,3 +44,6 @@ pub mod todo;
 pub mod ttml;
 pub mod update;
 pub mod urlenc;
+pub mod web;
+pub mod adblocking;
+pub mod pinned_sites;

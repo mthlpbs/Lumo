@@ -13,6 +13,18 @@ use crate::sha256;
 /// Where the files live: `<RELEASES>/<tag>/<name>`.
 pub const RELEASES: &str = "https://github.com/mthlpbs/lumo/releases/download";
 
+/// Managed Brave-engine protection data. It is enabled only from Browser,
+/// with a short-lived, cancellable download rather than the add-on retry loop.
+pub const WEB_BLOCKING: Addon = Addon {
+    id:"web-blocking",title:"Web ad blocking",blurb:"Brave adblock-rust protection for embedded websites",
+    tag:"web-blocking-2026.1113.1",
+    files:&[
+        AddonFile{name:"easylist.txt",size:2044083,sha256:"316356f48dd784da248e162a1c895d6e426e9145c5dcd28b3334332991d8ffd8"},
+        AddonFile{name:"easyprivacy.txt",size:1505358,sha256:"e97535eea6c7825cd1a264cd33d4968bfe381845dfc748cef699eeab37ab25b5"},
+        AddonFile{name:"resources.json",size:596966,sha256:"d1f5e7fb0263cb70c19aac5ae432e18a920448527d1354d1c2d2ca309500932d"},
+    ],
+};
+
 /// One file an add-on downloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AddonFile {

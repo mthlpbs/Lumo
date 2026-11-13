@@ -54,8 +54,12 @@ the version tool, CI version/tag validation, and the full Rust workspace.
 Use Windows, Python 3.11+, Rust stable and the matching x64 linker. Inno Setup
 6.5.2+ or NSIS with native amd64 support is required. Auto selection prefers
 Inno Setup when available, then NSIS. Standard tools are found on PATH; the
-workspace's existing `.tools` Python/Rust/MinGW installation is also supported.
-Build-environment changes are restored when the script exits.
+workspace's complete `.tools` GNU Rust/MinGW installation takes precedence over
+a global Cargo installation, including when the global Rust host is MSVC.
+`-Target x86_64-pc-windows-msvc` explicitly selects the system MSVC setup instead.
+The script also finds a bundled `.tools/nsis*/compiler/makensis.exe` without
+manual PATH changes. Build-environment changes, including the Rust toolchain
+and NSIS directory, are restored when the script exits.
 
 Packages are prepared in an isolated `.tools/package-<id>/` folder. The script
 checks EXE and installer product versions, the app's x64 architecture, portable

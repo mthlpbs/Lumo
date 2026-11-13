@@ -212,7 +212,11 @@ const SLIDE: f32 = 20.0;
 /// `body` is the island at its final size, so nothing reflows while it opens.
 pub fn draw_expanded(ui: &mut Ui, st: &mut AppState, body: Rect, page: PageKind, transition: Option<PageTransition>) {
     if st.search.view.is_some() { crate::search::draw(ui, st, body); return; }
-    if page==PageKind::Ai {ai::draw(ui,st,ai::workspace_area(body));return;}
+    if page==PageKind::Ai {
+        if st.ai.sites.selected.is_some(){crate::ai_sites::draw_web(ui,st,body,false);}
+        else{ai::draw(ui,st,ai::workspace_area(body));}
+        return;
+    }
     if crate::pill::expanded::draw(ui, st, body, page, transition) {
         return;
     }

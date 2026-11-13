@@ -19,6 +19,7 @@ pub struct Config {
     pub browser_wide: bool,
     pub browser_height: u16,
     pub google_suggestions: bool,
+    pub show_browser_icon: bool,
     pub mini_width: u16,
     pub mini_height: u16,
 }
@@ -38,6 +39,7 @@ impl Default for Config {
             browser_wide: false,
             browser_height: 680,
             google_suggestions: false,
+            show_browser_icon: true,
             mini_width: 560,
             mini_height: 680,
         }
@@ -413,7 +415,7 @@ pub fn record_usage(usage: &mut BTreeMap<String, Usage>, id: String, now: u64) {
     if !usage.contains_key(&id) && usage.len() >= 128 {
         if let Some(key) = usage
             .iter()
-            .min_by_key(|(_, u)| (u.count, u.last))
+            .min_by_key(|(_, u)| (u.last, u.count))
             .map(|(k, _)| k.clone())
         {
             usage.remove(&key);
@@ -436,6 +438,15 @@ pub fn frequent(entries: &[Entry], cfg: &Config, usage: &BTreeMap<String, Usage>
         .collect();
     out.sort_by_key(|&(i, count, last)| (std::cmp::Reverse(count), std::cmp::Reverse(last), i));
     out.into_iter().take(100).map(|(i, _, _)| i).collect()
+}
+/// Only apps opened through Search, newest first. No query text is retained.
+pub fn recent_applications(entries:&[Entry],cfg:&Config,usage:&BTreeMap<String,Usage>)->Vec<usize>{
+    let mut items:Vec<_>=entries.iter().enumerate().filter_map(|(i,e)|{
+        if !e.enabled(cfg) || !matches!(e.target,Target::App(_)){return None;}
+        usage.get(&e.id).filter(|u|u.count>0).map(|u|(i,u.last))
+    }).collect();
+    items.sort_by_key(|&(i,last)|(std::cmp::Reverse(last),i));
+    items.into_iter().take(16).map(|(i,_)|i).collect()
 }
 /// Suppress short inertial tails, while deliberate reversals and sustained
 /// motion can start another action without requiring a finger lift.
@@ -514,6 +525,17 @@ impl Application {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recent_apps_ignore_tools_and_frequency_and_follow_last_opened(){
+        let app=Application::from_id_list(vec![4,0,10,20,0,0]).unwrap();
+        let mut items=vec![entry("Older"),entry("Newest"),entry("Settings")];
+        items[0].target=Target::App(app.clone());items[1].target=Target::App(app);
+        let usage=BTreeMap::from([("Older".into(),Usage{count:100,last:1}),("Newest".into(),Usage{count:1,last:20}),("Settings".into(),Usage{count:1000,last:30})]);
+        assert_eq!(recent_applications(&items,&Config::default(),&usage),[1,0]);
+        assert!(recent_applications(&items,&Config{apps:false,..Default::default()},&usage).is_empty());
+        let old:Config=serde_json::from_str(r#"{"knowledge_cards":true}"#).unwrap();
+        assert!(old.show_browser_icon);assert!(!serde_json::to_string(&old).unwrap().contains("knowledge"));
+    }
     #[test]
     fn service_controls_and_retired_preferences_are_safe(){
         let stopped=Service{name:"fixture".into(),state:1,accepts_stop:false};assert!(stopped.can_start()&&!stopped.can_stop());

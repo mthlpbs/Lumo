@@ -10,8 +10,6 @@ on:
         type: boolean
         default: false
     secrets:
-      WINGET_TOKEN:
-        required: false
       SCOOP_BUCKET_TOKEN:
         required: false
   workflow_dispatch:
@@ -21,7 +19,7 @@ on:
         type: string
         required: true
       publish:
-        description: Submit WinGet PR and update configured Scoop bucket
+        description: Update configured Scoop bucket (WinGet publishing is paused)
         type: boolean
         default: false
 
@@ -38,7 +36,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.manifests.outputs.version }}
-      winget: ${{ steps.config.outputs.winget }}
       scoop: ${{ steps.config.outputs.scoop }}
     steps:
       - uses: actions/checkout@v7
@@ -47,18 +44,16 @@ jobs:
       - name: Check package-manager configuration
         id: config
         env:
-          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
           SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
           SCOOP_BUCKET_REPO: ${{ vars.SCOOP_BUCKET_REPO }}
         shell: python3 {0}
         run: |
           import os
-          winget = bool(os.environ.get('WINGET_TOKEN'))
           scoop = bool(os.environ.get('SCOOP_BUCKET_TOKEN') and os.environ.get('SCOOP_BUCKET_REPO'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f'winget={str(winget).lower()}\nscoop={str(scoop).lower()}\n')
+              out.write(f'scoop={str(scoop).lower()}\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
-              out.write('WinGet configured: ' + str(winget) + '\n\nScoop configured: ' + str(scoop) + '\n\n')
+              out.write('WinGet publishing: paused\n\nScoop configured: ' + str(scoop) + '\n\n')
               out.write('Missing configuration skips that publisher. See docs/package-managers.md for initial setup.\n')
       - name: Verify published assets and generate manifests
         id: manifests
@@ -80,45 +75,10 @@ jobs:
           PUBLISH: ${{ inputs.publish }}
         run: |
           if [ "$PUBLISH" = true ]; then
-            echo 'Configured publishers will submit these verified manifests. WinGet still requires upstream approval.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Only the configured Scoop bucket will be updated. WinGet publishing is paused.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'Preview only: no pull request or Scoop commit will be created. Existing release downloads were used; no app package was built.' >> "$GITHUB_STEP_SUMMARY"
           fi
-
-  winget:
-    needs: prepare
-    if: inputs.publish && needs.prepare.outputs.winget == 'true'
-    runs-on: windows-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          name: lumo-package-managers
-          path: package-managers
-      - name: Install WinGetCreate runtime
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          dotnet-version: 9.0.x
-      - name: Get pinned Microsoft WinGetCreate
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $url = 'https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe'
-          $expected = '24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea'
-          Invoke-WebRequest -Uri $url -OutFile wingetcreate.exe
-          if ((Get-FileHash wingetcreate.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'WinGetCreate checksum mismatch' }
-      - name: Submit first package or new version to WinGet
-        env:
-          # Microsoft recommends the environment variable, never a token CLI argument.
-          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
-          APP_VERSION: ${{ needs.prepare.outputs.version }}
-        shell: pwsh
-        run: |
-          python tools/package_managers.py winget --version "$env:APP_VERSION" --tool ./wingetcreate.exe --manifest-dir "package-managers/winget/manifests/m/mthlpbs/Lumo/$env:APP_VERSION"
-          if ($LASTEXITCODE -ne 0) { throw 'WinGet submission failed; the app release remains available. See docs/package-managers.md to retry.' }
 
   scoop:
     needs: prepare

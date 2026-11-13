@@ -1952,6 +1952,15 @@ impl<'a> Canvas<'a> {
     }
 
     /// The GPU pixels live in a transparent owned window above the island's
+    /// input window. A full-client website has no native frame behind it.
+    pub fn web_surface(&mut self,r:Rect,radius:f32){
+        unsafe{self.g.rt.PushAxisAlignedClip(&rectf(r),D2D1_ANTIALIAS_MODE_ALIASED);self.g.rt.Clear(Some(&CLEAR));self.g.rt.PopAxisAlignedClip();}
+        // Software layered windows need a nonzero alpha hit surface for their
+        // WebView child. Keep its rounded corners fully click-through.
+        if !self.on_gpu(){self.fill_rrect(r,radius,Color::black(1.0/255.0));}
+    }
+
+    /// The GPU pixels live in a transparent owned window above the island's
     /// input window. Leave an aperture for the native WebView2 child below
     /// it. The software path keeps one alpha step for parent hit testing.
     pub fn web_aperture(&mut self,r:Rect,radius:f32){

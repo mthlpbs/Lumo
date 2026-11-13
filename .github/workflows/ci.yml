@@ -219,5 +219,4 @@ jobs:
       release_tag: ${{ github.event.release.tag_name }}
       publish: true
     secrets:
-      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
       SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}

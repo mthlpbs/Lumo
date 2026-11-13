@@ -1,4 +1,5 @@
-//! Vector icons drawn on a 24×24 grid as SVG path data (original artwork).
+//! Vector icons drawn on a 24×24 grid as SVG path data. Provider marks have
+//! separate attribution in res/ai-sites/README.md; the other icons are original.
 //!
 //! Stroked parts use a 2-unit round-capped stroke; filled parts are solid.
 //! Geometry is parsed once and cached by [`crate::gfx::Gfx`].
@@ -7,6 +8,11 @@ pub const STROKE: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
+    ChatGpt,
+    Gemini,
+    Claude,
+    Muse,
+    Perplexity,
     Search,
     Globe,
     ArrowRight,
@@ -125,6 +131,11 @@ macro_rules! p {
 pub fn parts(icon: Icon) -> &'static [Part] {
     use Icon::*;
     match icon {
+        ChatGpt => p![f(include_str!("../res/ai-sites/chatgpt.path"))],
+        Gemini => p![f(include_str!("../res/ai-sites/gemini.path"))],
+        Claude => p![f(include_str!("../res/ai-sites/claude.path"))],
+        Muse => p![f(include_str!("../res/ai-sites/muse.path"))],
+        Perplexity => p![f(include_str!("../res/ai-sites/perplexity.path"))],
         ChevronDown => p![s("M6 9l6 6 6-6")],
         Star => p![f("M12 2.5l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5L2.6 9.3l6.5-.9z")],
         Image => p![s("M3 4h18v16H3zM3 16l5-5 5 5 3-3 5 5"),s("M15 8h.01")],
@@ -284,6 +295,7 @@ mod tests {
     use super::*;
 
     const ALL: &[Icon] = &[
+        Icon::ChatGpt,Icon::Gemini,Icon::Claude,Icon::Muse,Icon::Perplexity,
         Icon::Play, Icon::Pause, Icon::Next, Icon::Prev, Icon::Music, Icon::Lyrics, Icon::PopOut, Icon::PopIn, Icon::MiniPlayer, Icon::ExitMiniPlayer, Icon::Timer, Icon::Coffee,
         Icon::Tray, Icon::ListChecks, Icon::Check, Icon::CheckCircle, Icon::Circle, Icon::Plus, Icon::Minus,
         Icon::Close, Icon::Clipboard, Icon::Copy, Icon::Search, Icon::Globe, Icon::ArrowRight, Icon::ArrowLeft, Icon::ChevronLeft, Icon::ChevronRight, Icon::Refresh, Icon::ExternalLink, Icon::ResumePage, Icon::Clock, Icon::Cpu, Icon::Memory, Icon::Disk,

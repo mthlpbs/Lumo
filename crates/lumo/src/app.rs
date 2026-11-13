@@ -292,13 +292,14 @@ unsafe extern "system" fn helper_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
 fn run_deferred(d: Deferred) {
     match d {
         Deferred::BrowserMenu(point)=>{
-            let Some((owner,keep,resume,forward,detached))=with_app(|app|(app.browser_window.as_ref().map_or(app.hwnd,|w|w.hwnd),app.st.settings.search.keep_open,app.st.settings.search.resume_page,app.st.search.navigation.forward,app.st.search.detached))else{return;};
-            let action=crate::search_menu::show_browser(owner,point,keep,resume,forward,detached);
+            let Some((owner,keep,resume,forward,detached,home))=with_app(|app|(app.browser_window.as_ref().map_or(app.hwnd,|w|w.hwnd),app.st.settings.search.keep_open,app.st.settings.search.resume_page,app.st.search.navigation.forward,app.st.search.detached,crate::browser_home::is_home(&app.st)))else{return;};
+            let action=crate::search_menu::show_browser(owner,point,keep,resume,forward,detached,home);
             with_app(|app|{match action{
                 Some(crate::search_menu::BrowserAction::Forward)=>app.search_web_action(crate::search_web::Action::Forward),
-                Some(crate::search_menu::BrowserAction::External)=>app.st.cmd(Command::OpenUrl(app.st.search.navigation.url.clone())),
+                Some(crate::search_menu::BrowserAction::External)=>{if !crate::browser_home::is_home(&app.st){app.st.cmd(Command::OpenUrl(app.st.search.navigation.url.clone()));}},
                 Some(crate::search_menu::BrowserAction::Keep)=>app.st.cmd(Command::ToggleSearchKeepOpen),
                 Some(crate::search_menu::BrowserAction::Resume)=>app.st.cmd(Command::ToggleSearchResume),
+                Some(crate::search_menu::BrowserAction::Filters)=>app.st.cmd(Command::OpenAdBlocking),
                 Some(crate::search_menu::BrowserAction::Close)=>app.st.cmd(if app.st.search.detached{Command::CloseMiniBrowser}else{Command::Collapse}),None=>{}
             }app.request_frame();});
         },
@@ -344,6 +345,8 @@ pub struct App {
     ai_ctrl_watch: Option<services::ai_shortcut::Watch>,
     wheel_input: Option<services::wheel_input::Watch>,
     workspace_dismiss: Option<services::workspace_dismiss::Watch>,
+    ai_web:Option<crate::search_web::Browser>,
+    ai_web_resting:bool,
     ai_window: Option<crate::ai_window::AiWindow>,
     settings_window: Option<crate::settings_window::SettingsWindow>,
     search_gesture: lumo_core::search::Gesture,
@@ -585,6 +588,8 @@ impl App {
             wheel_input: None,
             workspace_dismiss: None,
             ai_window: None,
+            ai_web:None,
+            ai_web_resting:false,
             settings_window: None,
             search_gesture: Default::default(),
             search_web: None,
@@ -1029,6 +1034,12 @@ impl App {
                                     self.input.pressed_id=None;
                                     self.open_ai_reply(chat);
                                 }
+                                Some(NoticeAction::OpenAiSite(site))=>{
+                                    let url=self.st.ai.sites.ready.as_ref().filter(|r|r.site==site).map(|r|r.url.clone());
+                                    if self.st.ai.sites.selected!=Some(site){self.select_ai_site(Some(site));}
+                                    if let Some(url)=url{self.st.ai.sites.url=url;}
+                                    crate::ai_sites::clear_ready(&mut self.st);self.open_ai(true);
+                                }
                                 Some(NoticeAction::OpenUpdate) => self.st.open_update(),
                                 Some(NoticeAction::StartFocus) => {
                                     self.set_page(PageKind::Focus);
@@ -1121,20 +1132,30 @@ impl App {
                 self.collapse();
                 Some(LRESULT(0))
             }
-            WM_RBUTTONUP | WM_CONTEXTMENU => {self.search_context_menu(if msg==WM_CONTEXTMENU{None}else{Some(self.mouse_dip(lp))},deferred);Some(LRESULT(0))},
-            crate::search_web::CHANGED=>{self.sync_search_web();self.request_frame();Some(LRESULT(0))},
-            crate::search_web::CLOSE=>{if self.st.search.detached{self.close_search_web();}else{self.close_search();}self.request_frame();Some(LRESULT(0))},
-            crate::search_web::ACTION=>{if let Some(action)=crate::search_web::Action::from_message(wp.0){self.search_web_action(action);}Some(LRESULT(0))},
-            crate::search_web::SWIPE=>self.handle_island(WM_MOUSEHWHEEL,wp,lp,deferred),
-            crate::search_web::PAGE_FOCUS=>{if self.st.search.web_url.is_some(){self.input.focused=None;if let Some(w)=self.browser_window.as_mut(){w.blur_address();}self.st.search.address_editing=false;self.st.search.address_suggestions.clear();self.st.search.suggestions.cancel();self.st.search.address_dirty=false;self.st.search.address=self.st.search.navigation.url.clone();self.request_frame();}Some(LRESULT(0))},
-            WM_KILLFOCUS if self.st.search.embedded()=>{self.input.focused=None;self.st.search.address_editing=false;self.st.search.address_suggestions.clear();self.st.search.suggestions.cancel();self.request_frame();None},
+            WM_RBUTTONUP | WM_CONTEXTMENU => {
+                if self.st.search.embedded()&&crate::browser_home::is_home(&self.st){return Some(LRESULT(0));}
+                self.search_context_menu(if msg==WM_CONTEXTMENU{None}else{Some(self.mouse_dip(lp))},deferred);Some(LRESULT(0))},
+            crate::search_web::CHANGED=>{self.sync_search_web();self.sync_ai_web();if let Some(w)=self.ai_window.as_ref(){w.invalidate();}self.request_frame();Some(LRESULT(0))},
+            crate::search_web::CLOSE=>{if wp.0==1{self.close_ai_host();}else if self.st.search.detached{self.close_search_web();}else{self.close_search();}self.request_frame();Some(LRESULT(0))},
+            crate::search_web::ACTION=>{if let Some(action)=crate::search_web::Action::from_message(wp.0){if lp.0==1{if let Some(web)=self.ai_web.as_ref(){web.action(action);}}else{self.search_web_action(action);}}Some(LRESULT(0))},
+            crate::search_web::SWIPE=>{
+                if self.ai_window.as_ref().is_some_and(|w|w.hwnd.0 as isize==lp.0) {
+                    let delta=(wp.0>>16)as u16 as i16;
+                    if !self.locked&&!self.display_off&&self.search_gesture.feed(delta,clock::mono()) {
+                        self.st.closed_view=Default::default();self.close_ai_host();self.request_frame();
+                    }
+                    Some(LRESULT(0))
+                } else {self.handle_island(WM_MOUSEHWHEEL,wp,LPARAM(0),deferred)}
+            },
+            crate::search_web::PAGE_FOCUS=>{if wp.0==1{self.input.focused=None;if self.st.ai.sites.menu{self.st.ai.sites.menu=false;if let Some(w)=self.ai_window.as_ref(){w.invalidate();}self.request_frame();}}else if self.st.search.embedded()||self.st.search.detached{self.input.focused=None;if let Some(w)=self.browser_window.as_mut(){w.blur_address();}self.st.search.address_editing=false;self.st.search.address_suggestions.clear();self.st.search.suggestions.cancel();self.st.search.address_dirty=false;self.st.search.address=self.st.search.navigation.url.clone();self.request_frame();}Some(LRESULT(0))},
+            WM_KILLFOCUS if self.st.search.embedded()=>{crate::search::cancel_address_edit(&mut self.st,&mut self.input);self.request_frame();None},
             WM_MOUSEHWHEEL => {
                 let delta = (wp.0 >> 16) as u16 as i16;
                 if self.locked || self.display_off { return Some(LRESULT(0)); }
                 if self.st.search.active || !self.expanded || self.st.page==PageKind::Ai {
                     if self.search_gesture.feed(delta,clock::mono()) {
                         if self.st.search.active { self.close_search(); }
-                        else if self.expanded && self.st.page==PageKind::Ai {self.collapse();}
+                        else if self.expanded && self.st.page==PageKind::Ai {self.st.closed_view=Default::default();self.collapse();}
                         else if delta>0 && self.st.settings.search.horizontal_scroll { self.open_search(); }
                         else if delta<0 && self.st.settings.ai.horizontal_scroll && self.st.ai_on(){self.open_ai(false);}
                     }
@@ -1191,13 +1212,16 @@ impl App {
                 if let Some(action)=crate::search_web::Action::from_key(wp.0 as u32,unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0,alt){self.search_web_action(action);Some(LRESULT(0))}else{None}
             }
             WM_KEYDOWN => {
+                if self.expanded&&self.st.page==PageKind::Ai&&self.st.ai.sites.selected.is_some()&&self.st.ai.sites.menu&&wp.0==VK_ESCAPE.0 as usize{
+                    self.st.ai.sites.menu=false;self.input.focused=None;if let Some(web)=self.ai_web.as_ref(){web.focus();}self.request_frame();return Some(LRESULT(0));
+                }
                 if self.expanded&&self.st.page==PageKind::Ai&&!self.st.search.active{if let Some(field)=crate::ai::workspace_key(&mut self.st,wp.0 as u32,unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0,unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0){self.input.focused=Some(field);self.input.caret=0;self.focus_text();self.request_frame();return Some(LRESULT(0));}}
                 if self.st.search.active {
                     let key=VIRTUAL_KEY(wp.0 as u16);
                     if key==VK_ESCAPE {if self.st.search.embedded()&&self.input.focused==Some(wid("search.query")){self.input.keys.push(KeyInput::Escape);self.request_frame();}else{self.close_search();}return Some(LRESULT(0));}
                     if self.st.search.embedded(){if let Some(action)=crate::search_web::Action::from_key(key.0 as u32,unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0,unsafe{GetKeyState(VK_MENU.0 as i32)}<0){self.search_web_action(action);return Some(LRESULT(0));}}
                     if key==VK_APPS || (key==VK_F10 && unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0){self.search_context_menu(None,deferred);return Some(LRESULT(0));}
-                    if key==VK_TAB && self.st.search.embedded(){if let Some(browser)=self.search_web.as_ref(){browser.focus();}return Some(LRESULT(0));}
+                    if key==VK_TAB && self.st.search.embedded(){if self.complete_address_suggestion(){return Some(LRESULT(0));}if let Some(browser)=self.search_web.as_ref(){browser.focus();}return Some(LRESULT(0));}
                     if self.st.search.embedded()&&self.input.focused==Some(wid("search.query"))&&matches!(key,VK_UP|VK_DOWN){self.input.keys.push(if key==VK_UP{KeyInput::Up}else{KeyInput::Down});self.request_frame();return Some(LRESULT(0));}
                     if let Some(view)=self.st.search.view.as_mut() {
                         match key {
@@ -1209,7 +1233,7 @@ impl App {
                     }
                     if matches!(key,VK_UP|VK_DOWN|VK_PRIOR|VK_NEXT|VK_TAB) {self.request_frame();return Some(LRESULT(0));}
                 }
-                if wp.0==VK_ESCAPE.0 as usize && self.st.page==PageKind::Ai && (self.st.ai.model_menu || self.st.ai.reasoning_menu || self.st.ai.attach_menu) {
+                if wp.0==VK_ESCAPE.0 as usize && self.st.page==PageKind::Ai && (self.st.ai.model_menu || self.st.ai.reasoning_menu || self.st.ai.attach_menu || self.st.ai.sites.menu) {
                     self.st.ai.dismiss_popup();self.input.focused=Some(wid(if self.st.ai.model_menu{"ai.model-search"}else{"ai.prompt"}));self.input.caret=0;self.request_frame();return Some(LRESULT(0));
                 }
                 if wp.0==VK_ESCAPE.0 as usize&&self.expanded&&self.st.page==PageKind::Ai&&!self.st.search.active{self.collapse();return Some(LRESULT(0));}
@@ -1584,6 +1608,10 @@ impl App {
                 let p = Point::new(pt.x as f32 / scale, pt.y as f32 / scale);
                 self.input.mouse = Some(p);
                 let body = self.island.body_rect_at(self.cx);
+                // Search/address chrome has no vertical wheel shortcut. In
+                // particular, don't fall through to the older header-close
+                // gesture after removing the Browser/Search bar switch.
+                if self.st.search.active && (if self.st.search.embedded(){crate::search::browser_toolbar(body,false).bar.contains(p)}else{self.hit_at(p).is_some_and(|h|h.id==wid("search.query")||h.id==wid("search.browser"))}) {return Some(LRESULT(0));}
                 let mouse_shortcut=source==services::wheel_input::Source::Mouse && self.st.settings.mouse_wheel_shortcuts && !shift && !self.input.down;
                 if mouse_shortcut && !self.expanded && body.contains(p) {
                     if self.search_gesture.feed(delta,clock::mono()) {
@@ -1633,6 +1661,14 @@ impl App {
 
     /// Apply side effects of a settings change (from the menu, a reload or a page).
     fn settings_changed(&mut self, before: &Settings) {
+        if before.web != self.st.settings.web {
+            if self.st.ai.sites.selected.is_some_and(|s|s.configured(&self.st.settings).is_none()) { self.select_ai_site(None); }
+            if before.web.adblocking!=self.st.settings.web.adblocking {
+                if let Some(c)=&self.st.ui.web.cancel{c.cancel();}
+                if self.st.settings.web.adblocking&&!self.locked&&!self.display_off&&!self.st.power.saver{crate::web_blocking::ensure(&mut self.st,self.sink.clone());}
+                self.refresh_web_blocking();
+            }
+        }
         if before.mouse_wheel_shortcuts!=self.st.settings.mouse_wheel_shortcuts {self.wheel_input=None;self.search_gesture=Default::default();}
         if before.closed_scroll&&!self.st.settings.closed_scroll{self.st.closed_view=Default::default();self.wheel_pager=Default::default();}
         if (before.ai.mini_width,before.ai.mini_height)!=(self.st.settings.ai.mini_width,self.st.settings.ai.mini_height){if let Some(w)=self.ai_window.as_ref(){w.apply_size(&self.st.settings.ai);}}
@@ -1744,6 +1780,8 @@ impl App {
             self.st.ai.close_popovers();
             self.st.ai.full_open = false;
             self.ai_ctrl_watch = None;
+            self.ai_web=None;
+            self.st.ai.sites.attempted=false;self.st.ai.sites.working=false;self.st.ai.sites.web_ready=false;self.ai_web_resting=false;
             self.ai_window = None;
             self.ai_resize_hold = None;
             self.ai_reply_peek = false;
@@ -1851,11 +1889,22 @@ impl App {
 
     pub fn on_event(&mut self, ev: AppEvent) {
         // Only events that change Settings content repaint the auxiliary window.
-        let refresh_settings = matches!(&ev, AppEvent::Ai(_) | AppEvent::Autostart(_) | AppEvent::FolderChosen { .. } | AppEvent::Update(_) | AppEvent::ForegroundApp(_));
+        let refresh_settings = matches!(&ev, AppEvent::AdBlockingUpdated(_) | AppEvent::Ai(_) | AppEvent::Autostart(_) | AppEvent::FolderChosen { .. } | AppEvent::Update(_) | AppEvent::ForegroundApp(_));
         let now = clock::mono();
         self.st.now = now;
         let media_before = matches!(ev, AppEvent::Media(_) | AppEvent::MediaTimeline { .. }).then(|| self.media_snapshot());
         match ev {
+            AppEvent::AdBlockingUpdated(result)=>{
+                self.st.ui.web.downloading=false;self.st.ui.web.cancel=None;
+                let ready=result.is_ok();
+                self.st.ui.web.protection_status=match result{Ok(())=>"Protection ready. Reload open websites to apply all changes.".into(),Err(e)=>e};
+                crate::web_blocking::invalidate();self.refresh_web_blocking();
+                if ready {
+                    if self.ai_web.is_none(){self.st.ai.sites.attempted=false;}
+                    if self.search_web.is_none(){self.st.search.web_error.clear();}
+                    self.sync_ai_web();self.sync_search_web();
+                }
+            },
             AppEvent::SearchIcons(event)=>{
                 if self.st.search.icon_pending.as_ref().is_some_and(|p|p.request==event.request) {
                     let cancelled=self.st.search.icon_pending.take().unwrap().cancel.load(std::sync::atomic::Ordering::Relaxed);
@@ -2039,6 +2088,7 @@ impl App {
             AppEvent::Power(p) => {
                 let old = self.st.power;
                 self.st.power = p;
+                if p.saver {if let Some(cancel)=&self.st.ui.web.cancel {cancel.cancel();}}
                 if p.saver { self.focus_light = None; }
                 if p.saver {self.st.search.cancel();if self.search_web.is_some(){self.search_web=None;self.st.search.web_ready=false;self.st.search.web_visible=false;self.st.search.web_error="Web search is paused in battery saver.".into();self.st.search.navigation.loading=false;self.st.search.navigation.progress=0.0;}}
                 self.request_frame();
@@ -2099,6 +2149,11 @@ impl App {
                 self.st.cmd(Command::Ai(crate::ai::Action::AttachFiles(paths)));
                 self.request_frame();
             }
+            AppEvent::FilesDropped { .. } if self.expanded&&self.st.page==PageKind::Ai&&self.st.ai.sites.selected.is_some()=>{
+                // WebView2 owns file drops on the site itself. Dropping on our
+                // overlay must not attach to native chat or switch to Shelf.
+                self.drag_hover=false;self.st.drag_hover=false;self.drag_owner=None;
+            }
             AppEvent::FilesDropped { owner, .. } if owner.hwnd()!=self.hwnd => {},
             AppEvent::FilesDropped { paths, .. } if self.expanded && self.st.page == PageKind::Script && pages::script::take_drop(&mut self.st, &paths) => {
                 // A text file dropped on the Script page becomes the script.
@@ -2121,6 +2176,7 @@ impl App {
                 pinfo!("shelf: {n} new item(s)");
             }
             AppEvent::DragHover { owner, on } => {
+                if on&&self.expanded&&self.st.page==PageKind::Ai&&self.st.ai.sites.selected.is_some(){return;}
                 let ai=self.ai_drop_owner(owner.hwnd());
                 if on {
                     if owner.hwnd()!=self.hwnd && !ai {return;}
@@ -2297,6 +2353,7 @@ impl App {
 
     fn open_ai_reply(&mut self, chat: u64) {
         if !self.st.ai_on() { return; }
+        if self.st.ai.sites.selected.is_some(){self.select_ai_site(None);}
         if self.st.ai.current.id!=chat {crate::ai::local(&mut self.st,&crate::ai::Action::Select(chat));}
         crate::ai::clear_ready(&mut self.st);
         self.st.ai.history=false;
@@ -2362,7 +2419,7 @@ impl App {
         let closing_ai=self.expanded&&self.st.page==PageKind::Ai;
         if self.st.search.active {self.st.search.active=false;self.st.search.cancel();self.cancel_hover();self.park_search_web();}
         if self.expanded&&self.st.page==PageKind::Ai {
-            if !self.st.ai.full_open {self.st.ai.close_workspace(self.st.settings.ai.resume);}
+            if !self.st.ai.full_open&&self.st.ai.sites.selected.is_none(){self.st.ai.close_workspace(self.st.settings.ai.resume);}
             if let Some(page)=self.st.ai.return_page.take(){self.st.page=page;}
         }
         self.st.ai.close_popovers();
@@ -2477,6 +2534,9 @@ impl App {
     /// also on battery saver (`lumo_core::sysmon::reads`). What it drops, the
     /// page drops too, so a minute from before never shows as the last one.
     fn tell_sysmon_rest(&mut self) {
+        if self.locked || self.display_off || self.st.power.saver {
+            if let Some(cancel)=&self.st.ui.web.cancel {cancel.cancel();}
+        }
         let rest = self.rest_now();
         if rest == self.sysmon_rest || self.selftest.is_some() {
             return;
@@ -3002,7 +3062,7 @@ impl App {
         if matches!(m,Mode::Expanded(_)) && self.st.search.view.is_some() {
             let available=(self.monitor.rect.right-self.monitor.rect.left) as f32/self.gfx.scale()-32.0;
             let web=self.st.search.embedded();let height=((self.monitor.work.bottom-self.monitor.top()) as f32/self.gfx.scale()-32.0).max(300.0);
-            return Geom::new((if web && self.st.settings.search.browser_wide{900.0}else{crate::search::WIDTH}).min(available).max(320.0),(if web{f32::from(self.st.settings.search.browser_height)}else{self.st.search.view.as_ref().map(|view|view.height(&self.st)).unwrap_or(crate::search::HEIGHT)}).min(height),if pill::on(self.st.settings.theme){40.0}else{30.0});
+            return Geom::new((if web && self.st.settings.search.browser_wide{900.0}else{crate::search::WIDTH}).min(available).max(320.0),(if web{f32::from(self.st.settings.search.browser_height)}else{self.st.search.view.as_ref().map(|view|view.height(&self.st)).unwrap_or(crate::search::HEIGHT)}).min(height),if web{16.0}else if pill::on(self.st.settings.theme){40.0}else{30.0});
         }
         if *m==Mode::Expanded(PageKind::Ai) {
             let available=(self.monitor.rect.right-self.monitor.rect.left) as f32/self.gfx.scale()-32.0;
@@ -3056,9 +3116,13 @@ impl App {
         if let Some(ready)=self.st.ai.ready_reply.as_ref() {
             let current=ready.chat==self.st.ai.current.id;
             let exists=current || self.st.ai.chats.iter().any(|c|c.id==ready.chat);
-            let viewed=current && ((!self.st.search.active && self.expanded && self.st.page==PageKind::Ai) || self.ai_window.as_ref().is_some_and(|w|unsafe{IsWindowVisible(w.hwnd)}.as_bool() && !unsafe{IsIconic(w.hwnd)}.as_bool()));
+            let viewed=current && self.st.ai.sites.selected.is_none() && ((!self.st.search.active && self.expanded && self.st.page==PageKind::Ai) || self.ai_window.as_ref().is_some_and(|w|unsafe{IsWindowVisible(w.hwnd)}.as_bool() && !unsafe{IsIconic(w.hwnd)}.as_bool()));
             if !exists || viewed {crate::ai::clear_ready(&mut self.st);self.apply_fullscreen(now);}
             else if self.st.notice.is_none() {crate::ai::announce_ready(&mut self.st);self.apply_fullscreen(now);}
+        }
+        if self.st.ai.sites.ready.is_some(){
+            if self.ai_site_visible(){crate::ai_sites::clear_ready(&mut self.st);}
+            else if self.st.notice.is_none(){crate::ai_sites::announce_ready(&mut self.st);self.apply_fullscreen(now);}
         }
         // A new version's notice (or "Updated to") waits for the island to be
         // free. The first frame counts (the window shows at its end).
@@ -3087,6 +3151,7 @@ impl App {
         if self.st.search.detached && (self.locked || self.display_off || self.widgets_open || self.st.power.saver) { self.sync_search_web(); }
         if !self.expanded && !matches!(self.mode,Mode::Expanded(_)) && self.island.settled() && !self.st.search.active && self.st.search.view.is_some() {self.park_search_view();self.layout_surface();}
         if let Some(w)=self.ai_window.as_mut(){w.rest(self.locked||self.display_off||self.st.power.saver||self.widgets_open);}
+        self.sync_ai_web();
         let watch=self.st.ai_on() && self.hovering && !self.expanded && !self.locked && !self.display_off && !self.st.power.saver && !self.fullscreen_hidden && self.st.notice.is_none() && self.st.hud.is_none();
         if watch && self.ai_ctrl_watch.is_none(){self.input.ctrl=services::ai_shortcut::control_down();self.ai_ctrl_watch=services::ai_shortcut::Watch::start(self.hwnd).ok();}else if !watch{self.ai_ctrl_watch=None;}
         if !self.expanded && !matches!(self.mode,Mode::Expanded(_)) && self.island.settled() && self.st.ai.canvas_height>240.0{self.st.ai.canvas_height=240.0;self.layout_surface();}
@@ -3414,6 +3479,7 @@ impl App {
         if let Some(text)=self.input.clipboard_write.take(){self.st.cmd(Command::CopyText(text));}
         self.run_commands(deferred);
         self.sync_search_suggestions();
+        let ai_web_changed=self.sync_ai_web();
         let web_changed=self.sync_search_web();
         self.draw_browser_window(deferred);
 
@@ -3429,6 +3495,7 @@ impl App {
         let drift_live = ambient_ok && ui_live;
         let moving = !self.island.settled()
             || web_changed
+            || ai_web_changed
             // Ranking can change the compact Search height during drawing.
             // Apply that geometry on the next frame before parking the clock.
             || (self.st.search.active && self.island.target()!=self.geom_for(&self.target_mode()))
@@ -3694,7 +3761,7 @@ impl App {
         self.refresh_time();
         if a == InlineAction::Hide {
             if self.st.notice.as_ref().is_some_and(|n|n.is_ai_reply()) {
-                crate::ai::clear_ready(&mut self.st);self.apply_fullscreen(self.st.now);return;
+                if matches!(self.st.notice.as_ref().and_then(|n|n.action.as_ref()),Some(NoticeAction::OpenAiSite(_))){crate::ai_sites::clear_ready(&mut self.st);}else{crate::ai::clear_ready(&mut self.st);}self.apply_fullscreen(self.st.now);return;
             }
             // Gone at once, the way a notice leaves when its time is up.
             if let Some(n) = self.st.notice.as_mut() {
@@ -3799,69 +3866,220 @@ impl App {
     }
 
     fn ai_drop_owner(&self,owner:HWND)->bool{
-        self.st.ai_on()&&!self.locked&&!self.display_off&&
+        self.st.ai_on()&&self.st.ai.sites.selected.is_none()&&!self.locked&&!self.display_off&&
             ((owner==self.hwnd&&self.expanded&&!self.st.search.active&&self.st.page==PageKind::Ai)||
              self.ai_window.as_ref().is_some_and(|w|w.hwnd==owner&&unsafe{IsWindowVisible(owner)}.as_bool()&&!unsafe{IsIconic(owner)}.as_bool()))
+    }
+    fn ai_site_visible(&self)->bool{
+        !self.locked&&!self.display_off&&!self.widgets_open&&!self.st.power.saver&&
+        ((self.expanded&&self.st.page==PageKind::Ai&&!self.st.search.active&&!self.fullscreen_hidden)||
+         self.ai_window.as_ref().is_some_and(|w|unsafe{IsWindowVisible(w.hwnd)}.as_bool()&&!unsafe{IsIconic(w.hwnd)}.as_bool()))
+    }
+    fn park_ai_parent(&mut self){
+        if let Some(web)=self.ai_web.as_mut(){if web.parent()!=self.hwnd{let _=web.reparent(self.hwnd);}}
+    }
+    fn close_ai_host(&mut self){
+        self.park_ai_parent();self.ai_window=None;self.st.ai.full_open=false;
+        if self.expanded&&self.st.page==PageKind::Ai{self.collapse();}
+        if self.st.ai.sites.selected.is_none(){self.st.ai.close_workspace(self.st.settings.ai.resume);}self.sync_ai_web();self.request_frame();
+    }
+    fn return_ai_host(&mut self){
+        self.park_ai_parent();self.ai_window=None;self.st.ai.full_open=false;self.open_ai(true);
+    }
+    fn refresh_web_blocking(&mut self) {
+        for web in [&self.ai_web,&self.search_web].into_iter().flatten() {web.set_blocking(self.st.settings.web.adblocking);}
+    }
+    fn select_ai_site(&mut self,site:Option<crate::ai_sites::Site>){
+        let site=site.filter(|s|s.configured(&self.st.settings).is_some());
+        if site.is_none()&&self.st.ai.fresh_on_open{let temporary=self.st.ai.temporary;crate::ai::local(&mut self.st,&crate::ai::Action::New(temporary));self.st.ai.fresh_on_open=false;}
+        self.ai_web=None;self.ai_web_resting=false;crate::ai_sites::clear_ready(&mut self.st);
+        self.st.ai.close_popovers();self.st.ai.sites=crate::ai_sites::State{selected:site,url:site.and_then(|s|s.configured(&self.st.settings)).map_or(String::new(),|s|s.url.clone()),..Default::default()};
+        self.input.focused=None;
+        if let Some(w)=self.ai_window.as_mut(){
+            if site.is_none(){let _=w.enable_file_drop(self.sink.clone());w.focus_prompt(self.st.ai.draft.chars().count());}
+            else{w.disable_file_drop();}w.invalidate();
+        }
+        self.sync_ai_web();self.request_frame();
+    }
+    fn sync_ai_web(&mut self)->bool{
+        let Some(site)=self.st.ai.sites.selected.filter(|_|self.st.ai_on())else{self.ai_web=None;self.st.ai.sites.web_visible=false;return false;};
+        let visible=self.ai_site_visible();
+        let rest=self.locked||self.display_off||self.widgets_open||self.st.power.saver||self.ai_window.as_ref().is_some_and(|w|unsafe{IsIconic(w.hwnd)}.as_bool());
+        if self.st.power.saver{self.st.ai.sites.error="AI websites are paused in battery saver.".into();}
+        if self.ai_web.as_ref().is_some_and(|web|web.discarded()){
+            self.ai_web=None;self.st.ai.sites.attempted=false;self.st.ai.sites.working=false;self.ai_web_resting=false;
+        }
+        if self.ai_web.is_none()&&visible&&!self.st.ai.sites.attempted{
+            self.st.ai.sites.attempted=true;
+            let url=if self.st.ai.sites.url.is_empty(){site.configured(&self.st.settings).map_or(site.url(),|s|s.url.as_str())}else{&self.st.ai.sites.url};
+            match crate::search_web::Browser::new_ai_filtered(self.hwnd,url,site,&self.st.settings.web){Ok(web)=>{self.ai_web=Some(web);self.ai_web_resting=false;self.st.ai.sites.error.clear();},Err(error)=>self.st.ai.sites.error=error}
+        }
+        let (parent,bounds,scale,area)=if let Some(window)=self.ai_window.as_ref(){
+            let(bounds,scale)=window.page_bounds();(window.hwnd,bounds,scale,Rect::new(0.0,0.0,bounds.right as f32/scale,bounds.bottom as f32/scale))
+        }else{
+            let scale=self.gfx.scale();let area=self.island.body_rect_at(self.cx);
+            (self.hwnd,RECT{left:(area.x*scale).round()as i32,top:(area.y*scale).round()as i32,right:(area.right()*scale).round()as i32,bottom:(area.bottom()*scale).round()as i32},scale,area)
+        };
+        let radius=if self.ai_window.is_some(){24.0}else{self.island.current().r};
+        let Some(web)=self.ai_web.as_mut()else{self.st.ai.sites.web_ready=false;self.st.ai.sites.web_visible=false;return false;};
+        if visible{web.clip_radius(radius);}
+        let(ready,error)=web.status();self.st.ai.sites.web_ready=ready;self.st.ai.sites.error=error;
+        if self.st.power.saver{self.st.ai.sites.error="AI websites are paused in battery saver.".into();}
+        let nav=web.navigation();self.st.ai.sites.url=nav.url.clone();
+        for event in web.take_site_events(){match event{
+            crate::ai_sites::Event::Working=>{self.st.ai.sites.working=true;crate::ai_sites::clear_ready(&mut self.st);},
+            crate::ai_sites::Event::Idle=>self.st.ai.sites.working=false,
+            crate::ai_sites::Event::DismissMenu=>{if self.st.ai.sites.menu{self.st.ai.sites.menu=false;if let Some(w)=self.ai_window.as_ref(){w.invalidate();}}},
+            crate::ai_sites::Event::Ready(preview)=>{
+                self.st.ai.sites.working=false;
+                if !visible{self.st.ai.sites.ready=Some(crate::ai_sites::Reply{site,url:nav.url.clone(),preview});crate::ai_sites::announce_ready(&mut self.st);}
+            },
+        }}
+        let reparented=web.parent()!=parent;
+        if reparented{if let Err(error)=web.reparent(parent){self.st.ai.sites.error=error;return false;}}
+        if visible{let covers=crate::ai_sites::covers(area,true,self.st.ai.sites.menu,self.st.ai.sites.hint.is_some()).into_iter().map(|r|RECT{
+            left:((r.x-area.x)*scale).floor()as i32,top:((r.y-area.y)*scale).floor()as i32,
+            right:((r.right()-area.x)*scale).ceil()as i32,bottom:((r.bottom()-area.y)*scale).ceil()as i32,
+        }).collect();web.overlays(covers);}
+        let show=visible&&ready&&(self.ai_window.is_some()||self.island.settled())&&self.st.ai.sites.error.is_empty();
+        let changed=self.st.ai.sites.web_visible!=show;self.st.ai.sites.web_visible=show;
+        if visible{web.place_scaled(bounds,show,scale);}else{web.hide();}
+        if rest||(!visible&&!self.st.ai.sites.working){
+            if !self.ai_web_resting{self.ai_web_resting=true;if !web.pause(){self.ai_web=None;self.st.ai.sites.attempted=false;self.st.ai.sites.working=false;}}
+        }else if self.ai_web_resting{self.ai_web_resting=false;let _=web.resume();}
+        if show&&(changed||reparented)&&!self.st.ai.sites.menu&&unsafe{GetForegroundWindow()}==parent{if let Some(web)=self.ai_web.as_ref(){web.focus();}}
+        if changed{if let Some(window)=self.ai_window.as_ref(){window.invalidate();}}
+        changed
     }
     fn open_ai(&mut self,preserve:bool) {
         if !self.st.ai_on()||self.locked||self.display_off{return;}
         if self.ai_window.is_some(){if let Some(w)=self.ai_window.as_ref(){w.show();}return;}
         if self.st.search.active{self.close_search();}self.park_search_view();
-        if !preserve&&self.st.ai.fresh_on_open {let temporary=self.st.ai.temporary;crate::ai::local(&mut self.st,&crate::ai::Action::New(temporary));}
-        self.st.closed_view=Default::default();self.st.ai.fresh_on_open=false;self.st.ai.close_popovers();self.st.ai.canvas_height=self.st.ai.island_height;
+        if self.st.ai.sites.selected.is_none()&&!preserve&&self.st.ai.fresh_on_open {let temporary=self.st.ai.temporary;crate::ai::local(&mut self.st,&crate::ai::Action::New(temporary));}
+        self.st.closed_view=Default::default();if self.st.ai.sites.selected.is_none(){self.st.ai.fresh_on_open=false;}self.st.ai.close_popovers();self.st.ai.canvas_height=self.st.ai.island_height;
         if self.st.page!=PageKind::Ai {self.st.ai.return_page=Some(self.st.page);}
         self.apply_page(PageKind::Ai,false);self.page_anim=None;self.ai_reply_peek=true;
         if self.st.ai.previews.is_empty()&&self.st.ai.current.messages.iter().any(|m|m.attachments.iter().any(|a|a.mime.starts_with("image/"))){self.st.cmd(Command::Ai(crate::ai::Action::Previews));}
         self.layout_surface();self.expand();self.collapse_due=false;unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}
-        self.input.focused=Some(wid("ai.prompt"));self.input.caret=self.st.ai.draft.chars().count();self.focus_workspace();self.sync_workspace_dismiss();self.apply_fullscreen(self.st.now);self.raise_topmost();self.request_frame();
+        self.input.focused=self.st.ai.sites.selected.is_none().then(||wid("ai.prompt"));self.input.caret=self.st.ai.draft.chars().count();self.focus_workspace();self.sync_workspace_dismiss();self.apply_fullscreen(self.st.now);self.raise_topmost();self.sync_ai_web();self.request_frame();
     }
     fn open_ai_window(&mut self) {
         if !self.st.ai_on() { return; }
         if self.ai_window.is_none(){match crate::ai_window::AiWindow::with_config(&self.st.settings.ai){Ok(mut w)=>{if let Err(e)=w.enable_file_drop(self.sink.clone()){pwarn!("AI file drop: {e}");}self.ai_window=Some(w);},Err(e)=>{self.st.ai.error=format!("Couldn't open full chat: {e}");return;}}}
-        self.st.ai.full_open=true;if let Some(w)=self.ai_window.as_mut(){w.focus_prompt(self.st.ai.draft.chars().count());w.show();}self.collapse();
+        self.st.ai.full_open=true;if let Some(w)=self.ai_window.as_mut(){if self.st.ai.sites.selected.is_none(){w.focus_prompt(self.st.ai.draft.chars().count());}else{w.disable_file_drop();}w.show();}self.collapse();self.sync_ai_web();
     }
     pub fn handle_ai_window(&mut self,hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->Option<LRESULT> {
         if !self.ai_window.as_ref().is_some_and(|w|w.hwnd==hwnd){return None;}
+        if msg==WM_KEYDOWN&&wp.0==VK_ESCAPE.0 as usize&&self.st.ai.sites.selected.is_some()&&self.st.ai.sites.menu{
+            self.st.ai.sites.menu=false;if let Some(web)=self.ai_web.as_ref(){web.focus();}if let Some(window)=self.ai_window.as_ref(){window.invalidate();}self.request_frame();return Some(LRESULT(0));
+        }
         if msg==crate::ai_window::CHECK_ACTIVATION {if !self.locked&&!self.display_off&&!self.st.power.saver&&!self.widgets_open{let next=unsafe{GetForegroundWindow()};if !next.is_invalid(){self.handle_ai_window(hwnd,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(next.0 as isize));}}return Some(LRESULT(0));}
-        if msg==WM_KEYDOWN{if let Some(field)=crate::ai::workspace_key(&mut self.st,wp.0 as u32,unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0,unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0){if let Some(w)=self.ai_window.as_mut(){w.focus_field(field,0);}self.request_frame();return Some(LRESULT(0));}}
-        if (msg==WM_PASTE || (msg==WM_KEYDOWN && wp.0==VK_V.0 as usize && unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0)) && crate::ai::paste_attachment(&mut self.st,self.ai_window.as_ref().is_some_and(|w|w.prompt_focused()),services::ai::clipboard_has_attachment) {
+        if msg==WM_KEYDOWN&&self.st.ai.sites.selected.is_none(){if let Some(field)=crate::ai::workspace_key(&mut self.st,wp.0 as u32,unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0,unsafe{GetKeyState(VK_SHIFT.0 as i32)}<0){if let Some(w)=self.ai_window.as_mut(){w.focus_field(field,0);}self.request_frame();return Some(LRESULT(0));}}
+        if self.st.ai.sites.selected.is_none() && (msg==WM_PASTE || (msg==WM_KEYDOWN && wp.0==VK_V.0 as usize && unsafe{GetKeyState(VK_CONTROL.0 as i32)}<0)) && crate::ai::paste_attachment(&mut self.st,self.ai_window.as_ref().is_some_and(|w|w.prompt_focused()),services::ai::clipboard_has_attachment) {
             self.request_frame();return Some(LRESULT(0));
         }
-        if msg==WM_KEYDOWN && wp.0==VK_ESCAPE.0 as usize && (self.st.ai.model_menu || self.st.ai.reasoning_menu || self.st.ai.attach_menu) {
+        if msg==WM_KEYDOWN && wp.0==VK_ESCAPE.0 as usize && (self.st.ai.model_menu || self.st.ai.reasoning_menu || self.st.ai.attach_menu || self.st.ai.sites.menu) {
             self.st.ai.dismiss_popup();if let Some(w)=self.ai_window.as_mut(){if self.st.ai.model_menu{w.focus_field(wid("ai.model-search"),0);}else{w.focus_prompt(self.st.ai.draft.chars().count());}}self.request_frame();return Some(LRESULT(0));
         }
         if msg==WM_KEYDOWN&&wp.0==VK_ESCAPE.0 as usize{self.handle_ai_window(hwnd,WM_CLOSE,WPARAM(0),LPARAM(0));return Some(LRESULT(0));}
-        let outside=msg==WM_ACTIVATE&&(wp.0&0xffff)as u32==WA_INACTIVE&&!self.st.settings.ai.keep_open&&!self.st.ai.attaching&&HWND(lp.0 as *mut _)!=hwnd&&!unsafe{IsChild(hwnd,HWND(lp.0 as *mut _))}.as_bool();
+        let next=HWND(lp.0 as *mut _);
+        let outside=msg==WM_ACTIVATE&&(wp.0&0xffff)as u32==WA_INACTIVE&&!self.st.settings.ai.keep_open&&!self.st.ai.attaching&&next!=hwnd&&!unsafe{IsChild(hwnd,next)}.as_bool()&&unsafe{GetAncestor(next,GA_ROOTOWNER)}!=hwnd;
         if msg==WM_CLOSE || outside {
-            self.ai_window=None;self.st.ai.full_open=false;self.st.ai.close_workspace(self.st.settings.ai.resume);self.request_frame();return Some(LRESULT(0));
+            self.close_ai_host();return Some(LRESULT(0));
         }
         if msg==WM_EXITSIZEMOVE {if let Some(w)=self.ai_window.as_ref(){let(width,height)=w.size();self.st.settings.ai.mini_width=width;self.st.settings.ai.mini_height=height;self.st.cmd(Command::SaveSettings);}}
         if msg==WM_PAINT {unsafe{let _=windows::Win32::Graphics::Gdi::ValidateRect(hwnd,None);}self.st.now=clock::mono();if !self.locked && !self.display_off && !self.st.power.saver && !self.widgets_open && !unsafe{IsIconic(hwnd)}.as_bool() {if let Some(w)=self.ai_window.as_mut(){if let Err(e)=w.draw(&mut self.st){pwarn!("AI window: {e}");}}let mut deferred=vec![];self.run_commands(&mut deferred);self.request_frame();}return Some(LRESULT(0));}
         self.ai_window.as_mut()?.message(msg,wp,lp)
     }
 
+    fn switch_search_browser(&mut self,browser:bool){
+        if self.locked || self.display_off{return;}
+        if self.st.search.detached {if browser{return;}self.toggle_mini_browser();}
+        if !self.st.search.active{return;}
+        if browser {
+            if !self.st.settings.search.web{return;}
+            self.st.search.launcher_mode=false;self.st.search.suggestions.cancel();self.st.search.address_suggestions.clear();self.st.search.address_editing=false;self.input.focused=None;
+            if crate::browser_home::is_home(&self.st){self.focus_home();}
+            else if let Some(web)=self.search_web.as_ref(){let _=web.resume();self.browser_resting=false;}
+            else{let target=self.st.search.web_url.clone().map(|url|lumo_core::search::Target::Web{query:String::new(),url}).unwrap_or_else(||crate::search::browser_target("",self.st.settings.search.engine));self.execute_search(target);}
+        }else{
+            self.st.search.launcher_mode=true;self.st.search.suggestions.cancel();self.st.search.address_suggestions.clear();self.st.search.address_editing=false;
+            if let Some(web)=self.search_web.as_mut(){self.st.search.navigation=web.navigation();self.st.search.web_url=Some(self.st.search.navigation.url.clone());web.hide();if !web.pause(){self.search_web=None;}}
+            self.browser_resting=true;self.st.search.web_visible=false;self.input.focused=Some(wid("search.query"));self.input.caret=self.st.search.view.as_ref().map_or(0,|v|v.query.chars().count());
+            self.input.selection_all=false;self.input.selection_anchor=None;self.focus_workspace();
+        }
+        self.layout_surface();self.request_frame();
+    }
+    fn focus_browser_field(&mut self,id:crate::ui::WidgetId,length:usize){
+        self.st.search.address_editing=id==wid("search.query");
+        if let Some(window)=self.browser_window.as_mut(){window.focus_field(id,length);}
+        else{self.input.focused=Some(id);self.input.caret=length;self.input.selection_all=false;self.input.selection_anchor=None;self.input.selection_owner=Some(id);self.focus_workspace();unsafe{let _=SetFocus(self.hwnd);}}
+    }
+    fn focus_home(&mut self){
+        self.st.search.address_editing=false;
+        if let Some(w)=self.browser_window.as_mut(){w.blur_address();w.focus();}
+        else{self.input.focused=None;self.focus_workspace();unsafe{let _=SetFocus(self.hwnd);}}
+    }
+    fn open_browser(&mut self){
+        if !self.st.settings.search.web||self.locked||self.display_off{return;}
+        if self.st.settings.search.resume_page&&self.st.search.web_url.is_some(){
+            if self.st.search.detached{self.close_search();if let Some(w)=self.browser_window.as_ref(){w.focus();}}
+            else{self.switch_search_browser(true);}
+        }else{self.search_web=None;self.st.search.home_return=None;self.open_browser_home(false);if self.st.search.detached{self.close_search();}}
+    }
+    fn open_browser_home(&mut self,remember:bool){
+        if !self.st.settings.search.web||self.locked||self.display_off{return;}
+        if remember&&!crate::browser_home::is_home(&self.st){self.st.search.home_return=self.st.search.web_url.clone();}
+        if !remember{self.st.search.home_return=None;}
+        if let Some(web)=self.search_web.as_mut(){web.hide();if !web.pause(){self.search_web=None;}}
+        self.browser_resting=false;self.st.search.launcher_mode=false;self.st.search.web_url=Some(crate::browser_home::URL.into());self.st.search.web_ready=true;self.st.search.web_visible=false;self.st.search.web_error.clear();
+        self.st.search.navigation=crate::search_web::Navigation{url:crate::browser_home::URL.into(),title:String::new(),back:self.st.search.home_return.is_some(),..Default::default()};
+        self.st.search.address.clear();self.st.search.address_dirty=false;self.st.search.address_suggestions.clear();self.st.search.suggestions.cancel();
+        self.focus_home();
+        if let Some(w)=self.browser_window.as_mut(){w.mark_dirty();}self.layout_surface();self.request_frame();
+    }
+    fn navigate_browser(&mut self,url:String){
+        if url==crate::browser_home::URL{self.open_browser_home(true);return;}
+        self.st.search.address_editing=false;self.st.search.address_suggestions.clear();self.st.search.suggestions.cancel();
+        if let Some(w)=self.browser_window.as_mut(){w.blur_address();}
+        if let Some(browser)=self.search_web.as_ref(){
+            let returning=crate::browser_home::is_home(&self.st)&&self.st.search.home_return.as_deref()==Some(url.as_str());
+            let _=browser.resume();self.browser_resting=false;if !returning{browser.navigate(&url);}
+            self.st.search.web_url=Some(url.clone());self.st.search.launcher_mode=false;self.st.search.address=url;self.st.search.address_dirty=false;self.input.focused=None;
+            self.st.search.navigation=browser.navigation();if let Some(w)=self.browser_window.as_mut(){w.mark_dirty();}
+        }else if self.st.search.detached{self.restart_mini_browser(url);}else{self.execute_search(lumo_core::search::Target::Web{query:String::new(),url});}
+        self.request_frame();
+    }
+    fn complete_address_suggestion(&mut self)->bool{
+        if !self.st.search.address_editing{return false;}
+        let index=self.st.search.address_selected.unwrap_or(0);
+        let Some(text)=self.st.search.address_suggestions.get(index).cloned()else{return false;};
+        self.st.search.address=text;self.st.search.address_dirty=true;self.st.search.address_selected=None;self.st.search.address_suggestions.clear();self.st.search.suggestions.cancel();
+        let length=self.st.search.address.chars().count();
+        if let Some(window)=self.browser_window.as_mut(){window.complete_address(length);}
+        else{self.input.focused=Some(wid("search.query"));self.input.caret=length;self.input.selection_all=false;self.input.selection_anchor=None;self.input.selection_owner=Some(wid("search.query"));}
+        self.request_frame();true
+    }
     fn open_search(&mut self) {
         if self.locked || self.display_off {return;}
         self.st.now=clock::mono();
         if self.expanded&&self.st.page==PageKind::Ai {self.collapse();}
         self.st.ai.close_popovers();
-        self.st.search.view=Some(if self.st.settings.search.resume_page{self.st.search.saved_view.take().or(self.st.search.view.take()).unwrap_or_else(||crate::search::View::new(&self.st))}else{crate::search::View::new(&self.st)});
-        self.st.search.active=true;
+        self.st.search.saved_view=None;self.st.search.view=Some(crate::search::View::new(&self.st));
+        self.st.search.active=true;self.st.search.launcher_mode=true;
         if !self.st.search.error.is_empty(){self.st.search.loaded_at=None;}
         self.page_anim=None;self.collapse_due=false;unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}
         self.layout_surface();self.expand();
         self.input.focused=Some(wid("search.query"));self.input.caret=self.st.search.view.as_ref().map_or(0,|v|v.query.chars().count());self.input.selection_all=false;self.input.selection_anchor=None;self.input.selection_owner=None;self.input.text_scroll=0.0;self.input.keys.clear();
         self.st.closed_view=Default::default();self.st.search.notice.clear();self.focus_workspace();self.sync_workspace_dismiss();self.start_search_catalog(false);self.start_search_integrations();
-        if let Some(url)=self.st.search.web_url.clone().filter(|_|!self.st.search.detached){
-            if self.search_web.as_ref().is_none_or(|browser|!browser.resume()){self.execute_search(lumo_core::search::Target::Web{query:String::new(),url});}
-            self.input.focused=None;
-        }
+
     }
     fn park_search_view(&mut self){
         if let Some(view)=self.st.search.view.take(){if self.st.settings.search.resume_page{self.st.search.saved_view=Some(view);}}
     }
     fn park_search_web(&mut self){
         if self.st.search.detached {return;}
+        if crate::browser_home::is_home(&self.st){if !self.st.settings.search.resume_page{self.close_search_web();}return;}
         if !self.st.settings.search.resume_page{self.close_search_web();return;}
         if let Some(browser)=self.search_web.as_mut(){let navigation=browser.navigation();self.st.search.web_url=Some(navigation.url.clone());self.st.search.address=navigation.url.clone();self.st.search.navigation=navigation;if !browser.pause(){self.search_web=None;}}
         self.st.search.web_visible=false;self.st.search.address_dirty=false;
@@ -3876,7 +4094,7 @@ impl App {
     /// focus back. WebView child windows belong to the same surface.
     fn search_lost_activation(&mut self,next:HWND) {
         let ai=self.expanded&&self.st.page==PageKind::Ai&&!self.st.search.active;
-        if !(self.st.search.active||ai) || self.st.search.context_menu || (ai&&(self.st.ai.attaching)) || next==self.hwnd || unsafe{IsChild(self.hwnd,next)}.as_bool(){return;}
+        if !(self.st.search.active||ai) || self.st.search.context_menu || (ai&&(self.st.ai.attaching)) || next==self.hwnd || unsafe{IsChild(self.hwnd,next)}.as_bool() || unsafe{GetAncestor(next,GA_ROOTOWNER)}==self.hwnd{return;}
         self.text_focus=false;self.input.focused=None;self.set_noactivate(true);
         if ai {if !self.st.settings.ai.keep_open{self.collapse();}}else if !self.st.settings.search.keep_open{self.close_search();}
         self.request_frame();
@@ -3889,7 +4107,7 @@ impl App {
     }
     fn start_search_icons(&mut self, items:Vec<(String,lumo_core::search::Target)>) {
         if !self.st.search.active || !(self.st.settings.search.apps||self.st.settings.search.powertoys) || self.locked || self.display_off || self.st.power.saver || self.st.search.icon_pending.is_some() || self.selftest.is_some(){return;}
-        let items:Vec<_>=items.into_iter().filter(|(id,_)|!self.st.search.icons.contains_key(id)).take(6).collect();
+        let items:Vec<_>=items.into_iter().filter(|(id,_)|!self.st.search.icons.contains_key(id)).take(16).collect();
         if items.is_empty(){return;}
         // Bounded 48px icon cache: under 576 KiB of pixels, no persistent worker.
         if self.st.search.icons.len()+items.len()>64 {self.st.search.icons.clear();}
@@ -3961,6 +4179,7 @@ impl App {
         }
         if let Target::Web{url,..}=&target{
             if !self.st.settings.search.web{return;}
+            if url==crate::browser_home::URL{self.open_browser();return;}
             if self.st.search.detached {
                 if let Some(browser)=self.search_web.as_ref(){browser.navigate(url);self.st.search.address=url.clone();self.st.search.address_dirty=false;}
                 else {self.restart_mini_browser(url.clone());}
@@ -3969,9 +4188,10 @@ impl App {
             let transition=self.st.search.view.as_ref().map(|v|v.query.clone()).unwrap_or_default();
             self.st.search.suggestions.cancel();
             self.close_search_web();self.st.search.browser_transition=Some(self.st.now);self.st.search.transition_query=transition;
+            self.st.search.launcher_mode=false;
             self.st.search.web_url=Some(url.clone());self.st.search.address=url.clone();self.st.search.navigation=crate::search_web::Navigation{url:url.clone(),loading:true,progress:0.08,..Default::default()};self.input.focused=None;self.st.search.web_ready=false;
             if self.st.power.saver{self.st.search.web_error="Web search is paused in battery saver.".into();self.st.search.navigation.loading=false;self.st.search.navigation.progress=0.0;}
-            else{match crate::search_web::Browser::new(self.hwnd,url){Ok(browser)=>self.search_web=Some(browser),Err(error)=>{self.st.search.web_error=error;self.st.search.navigation.loading=false;self.st.search.navigation.progress=0.0;}}}
+            else{match crate::search_web::Browser::new_filtered(self.hwnd,url,&self.st.settings.web){Ok(browser)=>self.search_web=Some(browser),Err(error)=>{self.st.search.web_error=error;self.st.search.navigation.loading=false;self.st.search.navigation.progress=0.0;}}}
             self.layout_surface_for(if self.st.settings.search.browser_wide{960.0}else{crate::search::WIDTH+60.0},f32::from(self.st.settings.search.browser_height)+60.0);self.request_frame();return;
         }
         if let Some(entry)=crate::search::entries(&self.st).into_iter().find(|e|e.target==target){self.record_search(&entry);}
@@ -3996,10 +4216,19 @@ impl App {
     fn search_web_action(&mut self,action:crate::search_web::Action){
         use crate::search_web::Action;
         if (!self.st.search.active && !self.st.search.detached) || self.st.search.web_url.is_none(){return;}
+        if crate::browser_home::is_home(&self.st) {
+            match action {
+                Action::Address=>{self.st.search.address.clear();self.focus_browser_field(wid("search.query"),0);self.st.search.address_editing=true;},
+                Action::Back=>{if let Some(url)=self.st.search.home_return.clone(){self.navigate_browser(url);self.st.search.home_return=None;}else{let detached=self.st.search.detached;self.close_search_web();if detached{self.open_search();}self.focus_browser_field(wid("search.query"),0);}},
+                Action::Reload=>self.focus_home(),
+                _=>{},
+            }
+            self.request_frame();return;
+        }
         if matches!(action,Action::Back|Action::Forward|Action::Reload){self.st.search.address_dirty=false;self.st.search.address=self.st.search.navigation.url.clone();self.input.focused=None;}
         match action {
             Action::Address=>{self.st.search.address_editing=true;if let Some(window)=self.browser_window.as_mut(){window.focus_address(self.st.search.address.chars().count());}else{self.focus_text();unsafe{let _=SetFocus(self.hwnd);}self.input.focused=Some(wid("search.query"));self.input.caret=self.st.search.address.chars().count();self.input.selection_all=true;self.input.selection_anchor=Some(0);}},
-            Action::Back if !self.st.search.navigation.back=>{let detached=self.st.search.detached;self.close_search_web();if detached{self.open_search();}self.input.focused=Some(wid("search.query"));unsafe{let _=SetFocus(self.hwnd);}},
+            Action::Back if !self.st.search.navigation.back=>self.open_browser_home(false),
             Action::Reload if self.search_web.is_none() || (!self.st.search.web_ready && !self.st.search.web_error.is_empty())=>{if let Some(url)=self.st.search.web_url.clone(){if self.st.search.detached{self.restart_mini_browser(url);}else{self.execute_search(lumo_core::search::Target::Web{query:String::new(),url});}}},
             _=>{if let Some(browser)=self.search_web.as_ref(){browser.action(action);}},
         }
@@ -4010,6 +4239,16 @@ impl App {
         let settled=self.island.settled() && self.island.target()==self.geom_for(&self.target_mode());
         if self.search_web.as_ref().is_some_and(|b|b.discarded()){self.search_web=None;self.st.search.web_ready=false;}
         if !self.st.search.active && !self.st.search.detached{return false;}
+        if self.st.search.launcher_mode&&!self.st.search.detached {
+            if !self.browser_resting{if let Some(browser)=self.search_web.as_mut(){browser.hide();if !browser.pause(){self.search_web=None;}}self.browser_resting=true;}
+            let changed=self.st.search.web_visible;self.st.search.web_visible=false;return changed;
+        }
+        if crate::browser_home::is_home(&self.st){
+            let away=self.locked||self.display_off||self.widgets_open||self.st.power.saver||self.browser_window.as_ref().is_some_and(|w|unsafe{IsIconic(w.hwnd)}.as_bool());
+            if let Some(window)=self.browser_window.as_mut(){if away{window.hide();}else if self.browser_resting{window.mark_dirty();}}
+            self.browser_resting=away;let changed=self.st.search.web_visible;self.st.search.web_visible=false;self.st.search.web_ready=true;return changed;
+        }
+        if !self.st.search.detached&&self.browser_resting {self.browser_resting=false;if let Some(browser)=self.search_web.as_ref(){let _=browser.resume();}}
         if self.st.search.detached {
             let away=self.locked || self.display_off || self.widgets_open || self.st.power.saver || self.browser_window.as_ref().is_some_and(|w|unsafe{IsIconic(w.hwnd)}.as_bool());
             if away {
@@ -4020,7 +4259,7 @@ impl App {
             if self.browser_resting {
                 self.browser_resting=false;
                 if let Some(browser)=self.search_web.as_ref(){let _=browser.resume();}
-                else if let Some(url)=self.st.search.web_url.as_deref(){match crate::search_web::Browser::new(self.hwnd,url){Ok(mut b)=>{if let Some(w)=self.browser_window.as_ref(){let _=b.reparent(w.hwnd);}self.search_web=Some(b);self.st.search.web_error.clear();},Err(e)=>self.st.search.web_error=e}}
+                else if let Some(url)=self.st.search.web_url.as_deref(){match crate::search_web::Browser::new_filtered(self.hwnd,url,&self.st.settings.web){Ok(mut b)=>{if let Some(w)=self.browser_window.as_ref(){let _=b.reparent(w.hwnd);}self.search_web=Some(b);self.st.search.web_error.clear();},Err(e)=>self.st.search.web_error=e}}
                 if let Some(w)=self.browser_window.as_mut(){w.mark_dirty();}
             }
         }
@@ -4034,6 +4273,7 @@ impl App {
         let visible=(self.st.search.active || self.st.search.detached) && ready && transition_ready && (settled || self.st.search.detached) && self.st.search.web_error.is_empty() && !self.locked && !self.display_off && !self.st.power.saver;
         let scale=self.browser_window.as_ref().map_or(self.gfx.scale(),|w|w.page_bounds().1);
         let body=if let Some(window)=self.browser_window.as_ref(){let mut r=RECT::default();unsafe{let _=GetClientRect(window.hwnd,&mut r);}Rect::new(0.0,0.0,r.right as f32/scale,r.bottom as f32/scale)}else{self.island.body_rect_at(self.cx)};
+        browser.clip_radius(crate::search::web_radius(&self.st));
         browser.cover_top(crate::search::address_cover(&self.st,body,scale));
         let changed=self.st.search.web_visible!=visible;self.st.search.web_visible=visible;browser.place_scaled(bounds,visible,scale);
         if let Some(window)=self.browser_window.as_mut(){if changed || updated{window.mark_dirty();}}
@@ -4044,7 +4284,7 @@ impl App {
         if self.st.search.detached {
             if let Some(browser)=self.search_web.as_mut(){if let Err(e)=browser.reparent(self.hwnd){pwarn!("browser return: {e}");return;}}
             self.browser_window=None;self.st.search.detached=false;self.st.search.web_visible=false;
-            self.open_search();
+            self.open_search();self.switch_search_browser(true);
         } else {
             if self.st.search.web_url.is_none() || self.locked || self.display_off || self.st.power.saver{return;}
             let window=match crate::browser_window::BrowserWindow::new(self.hwnd,&self.st.settings.search){Ok(w)=>w,Err(e)=>{pwarn!("mini browser: {e}");return;}};
@@ -4058,7 +4298,7 @@ impl App {
         self.search_web=None;self.st.search.web_url=Some(url.clone());self.st.search.address=url.clone();self.st.search.address_dirty=false;
         self.st.search.web_ready=false;self.st.search.web_visible=false;self.st.search.web_error.clear();
         self.st.search.navigation=crate::search_web::Navigation{url:url.clone(),loading:true,progress:0.08,..Default::default()};
-        match crate::search_web::Browser::new(self.hwnd,&url){
+        match crate::search_web::Browser::new_filtered(self.hwnd,&url,&self.st.settings.web){
             Ok(mut browser)=>{if let Some(w)=self.browser_window.as_ref(){if let Err(e)=browser.reparent(w.hwnd){self.st.search.web_error=e;return;}}self.search_web=Some(browser);},
             Err(e)=>{self.st.search.web_error=e;self.st.search.navigation.loading=false;self.st.search.navigation.progress=0.0;}
         }
@@ -4071,7 +4311,7 @@ impl App {
     }
     pub fn handle_browser_window(&mut self,hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->Option<LRESULT>{
         if !self.browser_window.as_ref().is_some_and(|w|w.hwnd==hwnd){return None;}
-        if msg==WM_KEYDOWN && wp.0==VK_TAB.0 as usize{if let Some(browser)=self.search_web.as_ref(){browser.focus();}return Some(LRESULT(0));}
+        if msg==WM_KEYDOWN && wp.0==VK_TAB.0 as usize{if self.complete_address_suggestion(){return Some(LRESULT(0));}if let Some(browser)=self.search_web.as_ref(){browser.focus();}return Some(LRESULT(0));}
         let result=self.browser_window.as_mut()?.message(&mut self.st,msg,wp,lp);
         if matches!(msg,WM_MOVE|WM_EXITSIZEMOVE|WM_DPICHANGED){if let Some(browser)=self.search_web.as_ref(){browser.parent_moved();}}
         if result.is_some(){self.request_frame();}
@@ -4131,7 +4371,7 @@ impl App {
     fn apply_page(&mut self, p: PageKind, remember: bool) {
         if self.st.search.view.is_some() {self.st.search.active=false;self.st.search.cancel();self.park_search_web();self.park_search_view();self.blur_text();self.layout_surface();}
         let p = if p == PageKind::Ai && !self.st.ai_on() { PageKind::Media } else { p };
-        if p==PageKind::Ai {crate::ai::ensure(&mut self.st);}
+        if p==PageKind::Ai && self.st.ai.sites.selected.is_none(){crate::ai::ensure(&mut self.st);}
         if p != self.st.page {
             self.st.ai.close_popovers();
             self.ai_resize_hold=None;
@@ -4159,7 +4399,7 @@ impl App {
     fn run_commands(&mut self, deferred: &mut Vec<Deferred>) {
         let cmds = std::mem::take(&mut self.st.cmds);
         for c in cmds {
-            if !self.st.ai_on() && matches!(c, Command::Ai(_) | Command::OpenAiWindow | Command::ReturnAiToIsland | Command::CloseAi | Command::ToggleAiKeepOpen | Command::ToggleAiResume | Command::AiHeight(_)) { continue; }
+            if !self.st.ai_on() && matches!(c, Command::Ai(_) | Command::SelectAiSite(_) | Command::OpenAiWindow | Command::ReturnAiToIsland | Command::CloseAi | Command::ToggleAiKeepOpen | Command::ToggleAiResume | Command::AiHeight(_)) { continue; }
             match c {
                 Command::OpenSearch => self.open_search(),
                 Command::ExecuteSearch(target) => self.execute_search(target),
@@ -4172,12 +4412,18 @@ impl App {
                 Command::ToggleSearchKeepOpen=>{self.st.settings.search.keep_open=!self.st.settings.search.keep_open;self.collapse_due=false;unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}if !self.st.settings.search.keep_open{self.maybe_schedule_collapse();}self.st.cmd(Command::SaveSettings);},
                 Command::ToggleSearchResume=>{self.st.settings.search.resume_page=!self.st.settings.search.resume_page;if !self.st.settings.search.resume_page{self.st.search.saved_view=None;if !self.st.search.active && !self.st.search.detached{self.close_search_web();}}self.st.cmd(Command::SaveSettings);},
                 Command::SearchWeb(action)=>self.search_web_action(action),
-                Command::NavigateSearchWeb(url)=>{self.st.search.address_editing=false;self.st.search.address_suggestions.clear();self.st.search.suggestions.cancel();if let Some(w)=self.browser_window.as_mut(){w.blur_address();}if self.search_web.is_some(){self.st.search.address=url.clone();self.st.search.address_dirty=false;if let Some(browser)=self.search_web.as_ref(){browser.navigate(&url);}self.input.focused=None;}else if self.st.search.detached{self.restart_mini_browser(url);}else{self.execute_search(lumo_core::search::Target::Web{query:String::new(),url});}},
+                Command::NavigateSearchWeb(url)=>self.navigate_browser(url),
                 Command::RefreshSearchApps => {if let Some(p)=self.st.search.icon_pending.take(){p.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}self.st.search.icons.clear();self.start_search_catalog(true);if let Some(p)=self.st.search.integrations_pending.take(){p.cancel.store(true,std::sync::atomic::Ordering::Relaxed);}self.start_search_integrations();},
                 Command::AiHeight(height) => {let dragging=self.input.pressed_id==Some(wid("ai.resize-grip"));self.resize_ai_chat(height,dragging);},
                 Command::OpenAiWindow => self.open_ai_window(),
-                Command::ReturnAiToIsland=>{self.ai_window=None;self.st.ai.full_open=false;self.open_ai(true);},
-                Command::CloseAi=>{self.ai_window=None;self.st.ai.full_open=false;if self.expanded&&self.st.page==PageKind::Ai{self.collapse();}self.st.ai.close_workspace(self.st.settings.ai.resume);},
+                Command::ReturnAiToIsland=>self.return_ai_host(),
+                Command::CloseAi=>self.close_ai_host(),
+                Command::OpenAdBlocking => {
+                    let key="browser";
+                    self.open_settings();if let Some(w)=self.settings_window.as_mut(){w.show_section(key);}
+                },
+                Command::PrepareAdBlocking=>{if !self.locked&&!self.display_off&&!self.st.power.saver{crate::web_blocking::ensure(&mut self.st,self.sink.clone());}},
+                Command::SelectAiSite(site)=>self.select_ai_site(site),
                 Command::ToggleAiKeepOpen=>{self.st.settings.ai.keep_open=!self.st.settings.ai.keep_open;self.collapse_due=false;unsafe{let _=KillTimer(self.hwnd,TIMER_COLLAPSE);}if !self.st.settings.ai.keep_open{let next=unsafe{GetForegroundWindow()};if let Some(hwnd)=self.ai_window.as_ref().map(|w|w.hwnd){self.handle_ai_window(hwnd,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(next.0 as isize));}else{self.search_lost_activation(next);}}self.st.cmd(Command::SaveSettings);},
                 Command::ToggleAiResume=>{self.st.settings.ai.resume=!self.st.settings.ai.resume;if self.st.settings.ai.resume{self.st.ai.fresh_on_open=false;}self.st.cmd(Command::SaveSettings);},
                 Command::Ai(a) => {
@@ -6026,6 +6272,81 @@ mod tests {
         assert!(!app.st.cmds.iter().any(|c|matches!(c,Command::ExecuteSearch(_))));app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
     }
 
+    #[test]#[ignore="native blank browser document in both hosts"]
+    fn browser_opens_blank_without_page_content_or_a_web_renderer(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));
+        let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.st.settings.search.web=true;let mut deferred=vec![];
+        for (index,theme)in [Theme::Classic,Theme::Pill].into_iter().enumerate(){
+            clock::hold(Some(100.0+index as f64*100.0));app.st.now=clock::mono();app.st.settings.theme=theme;app.open_search();app.execute_search(crate::search::browser_target("",app.st.settings.search.engine));
+            app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+            assert!(crate::browser_home::is_home(&app.st)&&app.search_web.is_none(),"a blank document must not start WebView2 or load an external website");
+            let body=app.island.body_rect_at(app.cx);let bar=crate::search::browser_toolbar(body,false).bar;let page=crate::search::web_rect(body);
+            assert_eq!(bar.h,34.0);assert_eq!(bar.x-body.x,8.0);assert_eq!(page.y-bar.bottom(),6.0);assert_eq!(body.bottom()-page.bottom(),8.0);
+            assert!(app.st.search.address.is_empty()&&app.st.search.navigation.title.is_empty());
+            assert!(!app.hits.iter().any(|h|page.contains(h.rect.center())),"blank content must not expose page widgets");
+            // Reproduce clicking the address, typing, clearing it, then clicking
+            // the native background. The toolbar must leave editing immediately.
+            let address=app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.center();
+            for msg in [WM_LBUTTONDOWN,WM_LBUTTONUP]{let scale=app.gfx.scale();let at=LPARAM((((address.y*scale).round()as u16 as u32)<<16|(address.x*scale).round()as u16 as u32)as isize);app.handle_island(msg,WPARAM(0),at,&mut deferred);app.frame(&mut deferred,None);}
+            app.frame(&mut deferred,None);assert!(app.st.search.address_editing&&app.st.search.address.is_empty(),"the idle prompt must never become editable text");
+            assert!(!app.hits.iter().any(|h|h.id==wid("search.reload")));
+            app.input.keys="example.com".chars().map(KeyInput::Char).collect();app.frame(&mut deferred,None);assert_eq!(app.st.search.address,"example.com");
+            app.input.keys=vec![KeyInput::SelectAll,KeyInput::Backspace];app.frame(&mut deferred,None);assert!(app.st.search.address.is_empty()&&app.st.search.address_editing);
+            assert!(app.input.caret_wake.is_some(),"an empty focused address still needs a visible caret");
+            let background=page.center();for msg in [WM_LBUTTONDOWN,WM_LBUTTONUP]{let scale=app.gfx.scale();let at=LPARAM((((background.y*scale).round()as u16 as u32)<<16|(background.x*scale).round()as u16 as u32)as isize);app.handle_island(msg,WPARAM(0),at,&mut deferred);app.frame(&mut deferred,None);}
+            assert!(!app.st.search.address_editing&&app.input.focused.is_none());assert!(app.st.search.address.is_empty());assert!(app.hits.iter().any(|h|h.id==wid("search.reload")),"background clicks must restore browser controls");
+            if let Some(dir)=std::env::var_os("LUMO_BROWSER_HOME_QA"){let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(dir.join(format!("blank-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            app.toggle_mini_browser();app.frame(&mut deferred,None);assert!(app.st.search.detached&&app.search_web.is_none());
+            app.st.settings.search.mini_width=280;app.st.settings.search.mini_height=200;app.browser_window.as_mut().unwrap().apply_size(&app.st.settings.search);app.browser_window.as_mut().unwrap().mark_dirty();app.frame(&mut deferred,None);
+            assert!(app.browser_window.as_ref().unwrap().test_hit(wid("search.query")).is_some());
+            let mini=app.browser_window.as_ref().unwrap().hwnd;let scale=app.browser_window.as_ref().unwrap().page_bounds().1;
+            let address=app.browser_window.as_ref().unwrap().test_hit(wid("search.query")).unwrap().center();
+            for msg in [WM_LBUTTONDOWN,WM_LBUTTONUP]{let at=LPARAM((((address.y*scale).round()as u16 as u32)<<16|(address.x*scale).round()as u16 as u32)as isize);app.handle_browser_window(mini,msg,WPARAM(0),at);app.frame(&mut deferred,None);}
+            assert!(app.st.search.address_editing&&app.st.search.address.is_empty());
+            for c in "test".chars(){app.handle_browser_window(mini,WM_CHAR,WPARAM(c as usize),LPARAM(0));}app.frame(&mut deferred,None);assert_eq!(app.st.search.address,"test");
+            for _ in 0..4{app.handle_browser_window(mini,WM_KEYDOWN,WPARAM(VK_BACK.0 as usize),LPARAM(0));}app.frame(&mut deferred,None);assert!(app.st.search.address.is_empty()&&app.st.search.address_editing);
+            let background=crate::search::web_rect(lumo_core::geom::Rect::new(0.0,0.0,280.0,200.0)).center();for msg in [WM_LBUTTONDOWN,WM_LBUTTONUP]{let at=LPARAM((((background.y*scale).round()as u16 as u32)<<16|(background.x*scale).round()as u16 as u32)as isize);app.handle_browser_window(mini,msg,WPARAM(0),at);app.frame(&mut deferred,None);}
+            assert!(!app.st.search.address_editing&&app.st.search.address.is_empty());assert!(app.browser_window.as_ref().unwrap().test_hit(wid("search.reload")).is_some());
+            app.toggle_mini_browser();app.frame(&mut deferred,None);assert!(app.st.search.embedded()&&crate::browser_home::is_home(&app.st));app.close_search();
+        }
+        clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
+
+    #[test]#[ignore="native launcher layout, with isolated offline app icons"]
+    fn search_opens_as_a_bar_and_recent_icons_then_expands_only_for_text(){
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));
+        let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;
+        app.st.settings.search.web=true;app.st.settings.search.show_browser_icon=true;
+        let all=services::search::scan(&std::sync::atomic::AtomicBool::new(false)).unwrap();app.st.search.apps=all.into_iter().take(20).collect();assert!(!app.st.search.apps.is_empty());
+        let images=services::imaging::search_icons(app.st.search.apps.iter().rev().take(16).map(|e|(e.id.clone(),e.target.clone())).collect(),&std::sync::atomic::AtomicBool::new(false));app.st.search.icons.extend(images);
+        for(i,e)in app.st.search.apps.iter().enumerate(){app.st.store.search_usage.insert(e.id.clone(),lumo_core::search::Usage{count:1,last:i as u64+1});}
+        let mut deferred=vec![];
+        for(index,theme)in [Theme::Classic,Theme::Pill].into_iter().enumerate(){
+            let base=100.0+index as f64*100.0;clock::hold(Some(base));app.st.now=base;app.st.settings.theme=theme;app.st.settings.search.show_browser_icon=true;app.open_search();
+            app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+            let body=app.island.body_rect_at(app.cx);let width=app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.w;
+            let expected=crate::search::recent_capacity(body.w).min(app.st.search.apps.len());
+            assert_eq!(app.hits.iter().filter(|h|app.st.search.apps.iter().any(|e|h.id==crate::ui::wid_n("search.recent",wid(&e.id)))).count(),expected);
+            assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",0)||h.id==wid("search.web")));
+            assert!(app.hits.iter().any(|h|h.id==wid("search.browser")));assert_eq!(app.st.search.view.as_ref().unwrap().selected().unwrap().id,app.st.search.apps.last().unwrap().id);
+            assert!((body.h-112.0).abs()<1.0);
+            if let Some(dir)=std::env::var_os("LUMO_SEARCH_REWORK_QA"){let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(dir.join(format!("empty-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            app.input.keys="sound".chars().map(KeyInput::Char).collect();app.frame(&mut deferred,None);clock::hold(Some(base+0.25));app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+            assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")));let wide=app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.w;assert!((wide-width-48.0).abs()<1.0);
+            assert!(app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",0)));
+            if let Some(dir)=std::env::var_os("LUMO_SEARCH_REWORK_QA"){let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(std::path::PathBuf::from(dir).join(format!("typed-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
+            app.input.keys=vec![KeyInput::SelectAll,KeyInput::Backspace];app.frame(&mut deferred,None);clock::hold(Some(base+0.5));app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+            assert!(app.st.search.view.as_ref().unwrap().query.is_empty());assert!(app.hits.iter().any(|h|h.id==wid("search.browser")));assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",0)));
+            app.st.settings.search.show_browser_icon=false;app.frame(&mut deferred,None);clock::hold(Some(base+0.75));app.frame(&mut deferred,None);
+            assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")));assert!((app.hits.iter().find(|h|h.id==wid("search.query")).unwrap().rect.w-wide).abs()<1.0);
+            assert!(app.st.search.web_url.is_none(),"no browser opens just from showing Search");
+            app.close_search();
+        }
+        clock::hold(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();}
+    }
+
     #[test]#[ignore="requires a Windows desktop and installed apps"]
     fn inline_search_renders_icons_keyboard_filters_and_collapses_in_both_themes() {
         unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
@@ -6049,14 +6370,16 @@ mod tests {
             assert!(!app.hits.iter().any(|h|h.id==wid("search.close")),"local search has no close control");
             assert!(!app.hits.iter().any(|h|h.id==wid("search.keep_open")||h.id==wid("search.resume")),"page controls belong only to the browser");
             assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")),"web search off must not expose an active browser button");
-            assert!(app.hits.iter().filter(|h|h.id==crate::ui::wid_n("search.result",0)).all(|h|h.rect.h<=38.0),"compact result rows");
+            assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",0)),"empty Search has no full result rows");
+            assert!(app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.recent",crate::ui::wid(&app.st.search.apps[0].id))));
             if let Some(root)=std::env::var_os("LUMO_SEARCH_QA"){let root=std::path::PathBuf::from(root);std::fs::create_dir_all(&root).unwrap();let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(root.join(format!("island-search-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
             app.handle_island(WM_KEYDOWN,WPARAM(VK_DOWN.0 as usize),LPARAM(0),&mut deferred);app.frame(&mut deferred,None);assert_eq!(app.st.search.view.as_ref().unwrap().selected,1);
-            let hit=app.hits.iter().find(|h|h.id==crate::ui::wid_n("search.result",1)).unwrap().rect.center();app.search_context_menu(Some(hit),&mut deferred);assert!(matches!(deferred.last(),Some(Deferred::SearchMenu(entry,_))if matches!(entry.target,lumo_core::search::Target::App(_))));app.st.search.context_menu=false;deferred.clear();
+            let id=app.st.search.view.as_ref().unwrap().selected().unwrap().id;let hit=app.hits.iter().find(|h|h.id==crate::ui::wid_n("search.recent",crate::ui::wid(&id))).unwrap().rect.center();app.search_context_menu(Some(hit),&mut deferred);assert!(matches!(deferred.last(),Some(Deferred::SearchMenu(entry,_))if matches!(entry.target,lumo_core::search::Target::App(_))));app.st.search.context_menu=false;deferred.clear();
             for c in "no-app-has-this-name-987".chars(){app.handle_island(WM_CHAR,WPARAM(c as usize),LPARAM(0),&mut deferred);}app.frame(&mut deferred,None);
             assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",0)),"no stale result after a query change");
             app.handle_island(WM_KEYDOWN,WPARAM(VK_RETURN.0 as usize),LPARAM(0),&mut deferred);app.frame(&mut deferred,None);assert!(app.st.search.active&&app.text_focus);
             app.st.settings.search.web=true;app.frame(&mut deferred,None);assert!(app.hits.iter().any(|h|h.id==wid("search.web")));
+            assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")),"typing hides the browser icon");
             for step in 1..=65{clock::hold(Some(now+1.3+step as f64/60.0));app.frame(&mut deferred,None);}
             assert!(app.island.settled());let empty_body=app.island.body_rect_at(app.cx);assert!((empty_body.h-204.0).abs()<1.0,"empty search shrinks to its content");let action=app.hits.iter().find(|h|h.id==wid("search.web")).unwrap().rect;assert!(action.bottom()<=empty_body.bottom()-16.0,"the whole web action remains clickable inside the island");
             if let Some(root)=std::env::var_os("LUMO_SEARCH_QA"){let root=std::path::PathBuf::from(root);let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(root.join(format!("search-empty-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
@@ -6075,7 +6398,7 @@ mod tests {
             // A single exact match must use one compact row, with no tall empty list.
             app.input.keys=vec![KeyInput::SelectAll];app.input.keys.extend("About your PC".chars().map(KeyInput::Char));app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
             assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("search.result",1)));assert!(app.island.body_rect_at(app.cx).h<130.0);
-            assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")));
+            assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")),"nonempty query uses the whole field");
             if let Some(root)=std::env::var_os("LUMO_SEARCH_QA"){let root=std::path::PathBuf::from(root);let(w,h,p,_)=app.selftest_capture();crate::png::save_rgba(root.join(format!("search-single-{theme:?}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
             // Ctrl+Enter explicitly searches even with a local app/settings match.
             {let body=app.island.body_rect_at(app.cx);let dirty=RECT{left:0,top:0,right:app.surface.w,bottom:app.surface.h};let mut canvas=app.gfx.begin(dirty).unwrap();let mut input=crate::ui::Input::default();input.ctrl=true;input.focused=Some(wid("search.query"));input.keys.push(KeyInput::Enter);let mut hits=vec![];let mut ui=crate::ui::Ui::new(&mut canvas,&mut input,&mut hits,app.st.now);crate::search::draw(&mut ui,&mut app.st,body);drop(ui);drop(canvas);app.gfx.end().unwrap();}
@@ -6116,6 +6439,99 @@ mod tests {
     }
 
     #[test]#[ignore="requires a Windows desktop and installed WebView2"]
+    fn ai_site_menu_handoffs_ready_notices_and_rest_are_offline(){
+        use std::time::{Duration,Instant};
+        unsafe extern "system" fn test_proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{DefWindowProcW(hwnd,msg,wp,lp)}
+        unsafe{OleInitialize(None).unwrap();}
+        let home=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.tools/ai-sites-app-qa-home");
+        std::fs::create_dir_all(&home).unwrap();std::env::set_var("LUMO_HOME",home);
+        window::register_classes(test_proc,test_proc).unwrap();let hwnd=window::create_island_window().unwrap();let helper=window::create_helper_window().unwrap();
+        let(tx,rx)=mpsc::channel();let sink=EventSink::new(tx,SendHwnd::new(hwnd));
+        let mut app=App::new(hwnd,helper,sink,rx,Settings::default(),Store::default(),Some("unused".into()),false,false).unwrap();app.settings_writable=false;
+        let sample=crate::ai_window::sample_state_for_selftest();app.st.ai=sample.ai;app.st.settings.ai=sample.settings.ai;app.st.settings.set_addon("ai",true);
+        app.monitor.rect.top+=80;app.monitor.work.top+=80;
+        app.st.settings.ai.keep_open=true;app.st.settings.ai.resume=true;app.st.settings.ai.models_url.clear();app.st.ai.key_present=false;app.st.ai.loaded=true;app.st.ai.draft="Unsent native draft".into();clock::hold(None);
+        let mut deferred=vec![];app.open_ai(true);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+        app.input.clicked=Some((wid("ai.providers"),MouseButton::Left));app.frame(&mut deferred,None);app.frame(&mut deferred,None);
+        assert!(app.st.ai.sites.menu);
+        for i in 0..5{assert!(app.hits.iter().any(|h|h.id==crate::ui::wid_n("ai.provider",i)));}
+        for i in [5,6,7]{assert!(!app.hits.iter().any(|h|h.id==crate::ui::wid_n("ai.provider",i)),"the AI picker must contain the remaining providers only, without Perplexity or settings entries");}
+        // Render the real picker with Enter while withholding side effects;
+        // choosing a website must not send the native composer's draft.
+        {
+            let dirty=RECT{left:0,top:0,right:app.surface.w,bottom:app.surface.h};let body=app.island.body_rect_at(app.cx);
+            let mut canvas=app.gfx.begin(dirty).unwrap();let mut input=crate::ui::Input::default();input.keys=vec![KeyInput::Down,KeyInput::Enter];let mut hits=vec![];
+            let mut ui=crate::ui::Ui::new(&mut canvas,&mut input,&mut hits,app.st.now);crate::pages::ai::draw_chat(&mut ui,&mut app.st,crate::pages::ai::workspace_area(body),false);drop(ui);drop(canvas);app.gfx.end().unwrap();
+            assert!(app.st.cmds.contains(&Command::SelectAiSite(Some(crate::ai_sites::Site::ChatGpt))));
+            assert!(!app.st.cmds.contains(&Command::Ai(crate::ai::Action::Send)));app.st.cmds.clear();app.st.ai.sites.menu=true;
+        }
+        if let Some(dir)=std::env::var_os("LUMO_AI_SITES_QA"){
+            // Let the existing finite opening fade settle before visual QA.
+            std::thread::sleep(Duration::from_millis(350));app.frame(&mut deferred,None);
+            let dir=std::path::PathBuf::from(dir);std::fs::create_dir_all(&dir).unwrap();let(w,h,p,_)=app.selftest_capture();
+            crate::png::save_rgba(dir.join("ai-provider-menu.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();
+        }
+        app.st.ai.sites=crate::ai_sites::State{selected:Some(crate::ai_sites::Site::ChatGpt),url:"about:blank".into(),..Default::default()};
+        app.sync_ai_web();
+        let pump=|app:&mut App,predicate:&dyn Fn(&App)->bool|{
+            let end=Instant::now()+Duration::from_secs(20);
+            while !predicate(app){assert!(Instant::now()<end,"AI website fixture timed out");unsafe{let mut msg=MSG::default();while PeekMessageW(&mut msg,None,0,0,PM_REMOVE).as_bool(){let _=TranslateMessage(&msg);DispatchMessageW(&msg);}}app.sync_ai_web();std::thread::sleep(Duration::from_millis(10));}
+        };
+        pump(&mut app,&|app|app.ai_web.as_ref().is_some_and(|web|web.status().0));
+        let web=app.ai_web.as_ref().unwrap().test_web().unwrap();
+        unsafe{web.NavigateToString(w!("<!doctype html><body style='margin:0;background:#18314a;color:white'><h1>Local website fixture</h1><p>Full client area; no address bar.</p></body>")).unwrap();}
+        app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+        let capture=|app:&mut App,name:&str|{
+            let Some(dir)=std::env::var_os("LUMO_AI_SITES_QA")else{return;};
+            for _ in 0..8{unsafe{let mut msg=MSG::default();while PeekMessageW(&mut msg,None,0,0,PM_REMOVE).as_bool(){let _=TranslateMessage(&msg);DispatchMessageW(&msg);}}app.frame(&mut deferred,None);unsafe{let _=windows::Win32::Graphics::Dwm::DwmFlush();}std::thread::sleep(Duration::from_millis(30));}
+            let(x,y,w,h,radius)=if let Some(window)=app.ai_window.as_mut(){window.draw(&mut app.st).unwrap();let mut r=RECT::default();unsafe{GetWindowRect(window.hwnd,&mut r).unwrap();}(r.left,r.top,r.right-r.left,r.bottom-r.top,24.0*window.page_bounds().1)}else{let b=app.island.body_rect_at(app.cx);let s=app.gfx.scale();(app.surface.x+(b.x*s).round()as i32,app.surface.y+(b.y*s).round()as i32,(b.w*s).round()as i32,(b.h*s).round()as i32,app.island.current().r*s)};
+            unsafe{
+                use windows::Win32::Graphics::Gdi::*;
+                let dc=GetDC(None);let mem=CreateCompatibleDC(dc);let mut bits=std::ptr::null_mut();let info=BITMAPINFO{bmiHeader:BITMAPINFOHEADER{biSize:std::mem::size_of::<BITMAPINFOHEADER>()as u32,biWidth:w,biHeight:-h,biPlanes:1,biBitCount:32,biCompression:BI_RGB.0,..Default::default()},..Default::default()};
+                let bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&mut bits,None,0).unwrap();let old=SelectObject(mem,bitmap);BitBlt(mem,0,0,w,h,dc,x,y,SRCCOPY|CAPTUREBLT).unwrap();let mut pixels=std::slice::from_raw_parts(bits.cast::<u8>(),(w*h*4)as usize).to_vec();
+                for(px,py)in[(w/2,h/2),(6,h/2),(w-6,h/2),(w/2,h-6)]{
+                    let offset=((py*w+px)*4)as usize;
+                    for(channel,expected)in [0x4a_u8,0x31,0x18].into_iter().enumerate(){assert!(pixels[offset+channel].abs_diff(expected)<=3,"{name}: the actual page must fill pixel ({px},{py}), got {:?}",&pixels[offset..offset+3]);}
+                }
+                for(i,p)in pixels.chunks_exact_mut(4).enumerate(){let px=(i%w as usize)as f32+0.5;let py=(i/w as usize)as f32+0.5;let dx=(radius-px).max(px-(w as f32-radius)).max(0.0);let dy=(radius-py).max(py-(h as f32-radius)).max(0.0);if dx*dx+dy*dy>radius*radius{p.fill(0);}else{p[3]=255;}}
+                crate::png::save_rgba(std::path::PathBuf::from(dir).join(format!("{name}.png")),w as u32,h as u32,&crate::png::pbgra_to_rgba(&pixels)).unwrap();SelectObject(mem,old);let _=DeleteObject(bitmap);let _=DeleteDC(mem);ReleaseDC(None,dc);
+            }
+        };
+        let mut capture=capture;capture(&mut app,"ai-website-island-offline");
+        for id in ["ai.keep-open","ai.open-full","ai.close","ai.providers"]{assert!(app.hits.iter().any(|h|h.id==wid(id)));}
+        let close=app.hits.iter().find(|h|h.id==wid("ai.close")).unwrap().rect;let popup=crate::ai_sites::toolbar(app.island.body_rect_at(app.cx));assert!((popup.right()-close.right()-8.0).abs()<0.1,"close has the same small right inset as the overlay");
+
+        for id in ["ai.history","ai.new","ai.temporary","ai.prompt","search.query"]{assert!(!app.hits.iter().any(|h|h.id==wid(id)));}
+        assert_eq!(app.ai_web.as_ref().unwrap().parent(),hwnd);
+        app.open_ai_window();let mini=app.ai_window.as_ref().unwrap().hwnd;
+        {let(client,_)=app.ai_window.as_ref().unwrap().page_bounds();let mut outer=RECT::default();unsafe{GetWindowRect(mini,&mut outer).unwrap();}assert_eq!((client.right,client.bottom),(outer.right-outer.left,outer.bottom-outer.top),"the website gets the entire frameless client area");}
+        assert_eq!(app.ai_web.as_ref().unwrap().parent(),mini);assert_eq!(app.ai_web.as_ref().unwrap().test_web().unwrap(),web);
+        app.ai_window.as_mut().unwrap().draw(&mut app.st).unwrap();
+        app.st.settings.ai.keep_open=false;
+        let dialog=unsafe{CreateWindowExW(WINDOW_EX_STYLE(0),w!("STATIC"),w!("Owned website dialog fixture"),WS_POPUP,0,0,80,80,mini,None,windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap(),None).unwrap()};
+        app.handle_ai_window(mini,WM_ACTIVATE,WPARAM(WA_INACTIVE as usize),LPARAM(dialog.0 as isize));assert!(app.ai_window.is_some(),"website-owned dialogs must not dismiss the mini window");unsafe{DestroyWindow(dialog).unwrap();}app.st.settings.ai.keep_open=true;
+        capture(&mut app,"ai-website-mini-offline");
+        app.return_ai_host();app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
+        app.st.settings.ai.keep_open=false;
+        let dialog=unsafe{CreateWindowExW(WINDOW_EX_STYLE(0),w!("STATIC"),w!("Owned website dialog fixture"),WS_POPUP,0,0,80,80,hwnd,None,windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap(),None).unwrap()};
+        app.search_lost_activation(dialog);assert!(app.expanded,"website-owned dialogs must not dismiss the island");unsafe{DestroyWindow(dialog).unwrap();}app.st.settings.ai.keep_open=true;
+        assert!(!unsafe{IsWindow(mini)}.as_bool());assert_eq!(app.ai_web.as_ref().unwrap().parent(),hwnd);assert_eq!(app.ai_web.as_ref().unwrap().test_web().unwrap(),web);
+        for reason in 0..3{
+            app.locked=reason==0;app.display_off=reason==1;app.st.power.saver=reason==2;app.sync_ai_web();assert!(app.ai_web_resting);
+            app.locked=false;app.display_off=false;app.st.power.saver=false;app.sync_ai_web();assert!(!app.ai_web_resting);
+        }
+        unsafe{web.ExecuteScript(w!("chrome.webview.postMessage({channel:'lumo.ai-site',kind:'working'})"),&webview2_com::ExecuteScriptCompletedHandler::create(Box::new(|r,_|r))).unwrap();}
+        pump(&mut app,&|app|app.st.ai.sites.working);let viewport=app.ai_web.as_ref().unwrap().test_viewport();app.collapse();app.island.snap(app.geom_for(&app.target_mode()));app.sync_ai_web();assert!(app.ai_web.is_some()&&!app.ai_web_resting,"an explicitly submitted reply can finish when the island closes");
+        assert_eq!(app.ai_web.as_ref().unwrap().test_viewport(),viewport,"closing the island must not resize an in-flight website into a compact viewport");
+        unsafe{web.ExecuteScript(w!("chrome.webview.postMessage({channel:'lumo.ai-site',kind:'ready',text:'Offline completed answer'})"),&webview2_com::ExecuteScriptCompletedHandler::create(Box::new(|r,_|r))).unwrap();}
+        pump(&mut app,&|app|app.st.ai.sites.ready.is_some());assert!(app.st.notice.as_ref().unwrap().is_ai_reply());assert!(app.ai_web_resting);
+        app.run_inline_action(InlineAction::Hide);assert!(app.st.ai.sites.ready.is_none()&&app.st.notice.is_none());
+        app.st.settings.ai.resume=false;app.sync_ai_web();assert_eq!(app.ai_web.as_ref().unwrap().test_web().unwrap(),web,"closing websites retains the exact page even when local-chat Resume is off");
+        assert_eq!(app.st.ai.draft,"Unsent native draft","website lifetime must not discard the native chat draft");
+        app.select_ai_site(None);app.clock.set_active(false);app.gfx.set_shown(false);unsafe{DestroyWindow(hwnd).unwrap();DestroyWindow(helper).unwrap();OleUninitialize();}
+    }
+
+    #[test]#[ignore="requires a Windows desktop and installed WebView2"]
     fn web_results_render_inside_the_layered_island_and_close_with_it(){
         use std::{rc::Rc,cell::Cell,time::{Duration,Instant}};
         use windows::core::Interface;
@@ -6149,7 +6565,7 @@ mod tests {
             let deadline=Instant::now()+Duration::from_secs(5);while result.borrow().is_none(){assert!(Instant::now()<deadline);unsafe{let mut msg=MSG::default();while PeekMessageW(&mut msg,None,0,0,PM_REMOVE).as_bool(){let _=TranslateMessage(&msg);DispatchMessageW(&msg);}}std::thread::sleep(Duration::from_millis(10));}
             assert_eq!(result.borrow().as_deref(),Some("true"),"narrow window renders at normal scale with a desktop user agent");
         }
-        assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")),"browser entry button is removed");
+        assert!(!app.hits.iter().any(|h|h.id==wid("search.browser")),"the webpage uses its address toolbar instead of the local Search browser button");
         // Typing in the omnibox must preserve the current page/controller.
         let original=app.st.search.navigation.url.clone();
         app.search_web_action(crate::search_web::Action::Address);
@@ -6193,10 +6609,16 @@ mod tests {
             let pixels=app.gfx.take_capture();let s=app.gfx.scale();let page=crate::search::snapped_web_rect(app.island.body_rect_at(app.cx),s);
             let(left,top,right,bottom)=((page.x*s).round() as i32,(page.y*s).round() as i32,(page.right()*s).round() as i32,(page.bottom()*s).round() as i32);
             unsafe{use windows::Win32::Graphics::Gdi::*;let region=CreateRectRgn(0,0,0,0);GetWindowRgn(app.search_web.as_ref().unwrap().test_host(),region);
-                for y in top..bottom{for x in left..right{if pixels[((y*app.surface.w+x)*4+3) as usize]<250{assert!(PtInRegion(region,x-left,y-top).as_bool(),"uncovered island pixel ({x},{y})");}}}let _=DeleteObject(region);}
+                // An 8-DIP inset puts the page bounding box across the outer
+                // rounded corners. Exclude the island's own transparent/AA
+                // edge, and also ensure the child cannot bleed outside it.
+                let body=app.island.body_rect_at(app.cx);let mask=HitMask{rect:None,notch:None,pill:Some((body.inset(2.0/s,2.0/s),app.island.current().r-2.0/s))};
+                for y in top..bottom{for x in left..right{let inside=mask.contains(Point::new((x as f32+0.5)/s,(y as f32+0.5)/s));let child=PtInRegion(region,x-left,y-top).as_bool();if inside&&pixels[((y*app.surface.w+x)*4+3) as usize]<250{assert!(child,"uncovered island pixel ({x},{y})");}if child{assert!(inside,"web content outside island at ({x},{y})");}}}let _=DeleteObject(region);}
         }
         // Detach the live controller, rather than creating a second page.
         let kept=app.search_web.as_ref().unwrap().test_web().unwrap();
+        app.switch_search_browser(false);app.sync_search_web();assert!(!app.st.search.embedded()&&!app.st.search.web_visible);assert_eq!(app.search_web.as_ref().unwrap().test_web().unwrap(),kept);
+        app.switch_search_browser(true);app.frame(&mut deferred,None);app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);assert!(app.st.search.embedded());assert_eq!(app.search_web.as_ref().unwrap().test_web().unwrap(),kept);
         app.toggle_mini_browser();app.frame(&mut deferred,None);
         app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
         let mini=app.browser_window.as_ref().unwrap().hwnd;
@@ -6256,8 +6678,21 @@ mod tests {
         unsafe{use windows::Win32::Graphics::Gdi::*;let region=CreateRectRgn(0,0,0,0);GetWindowRgn(app.search_web.as_ref().unwrap().test_host(),region);assert!(!PtInRegion(region,30,2).as_bool(),"suggestions occlude native page pixels");let _=DeleteObject(region);}assert!(cover>0);
         if let Some(root)=std::env::var_os("LUMO_SEARCH_QA"){let root=std::path::PathBuf::from(root);let(w,h,p)=app.browser_window.as_mut().unwrap().capture(&mut app.st);crate::png::save_rgba(root.join("address-suggestions.png"),w as u32,h as u32,&crate::png::pbgra_to_rgba(&p)).unwrap();}
         app.handle_browser_window(mini,WM_KEYDOWN,WPARAM(VK_DOWN.0 as usize),LPARAM(0));app.frame(&mut deferred,None);assert_eq!(app.st.search.address_selected,Some(0));
+        let page_before=app.st.search.navigation.url.clone();
+        app.handle_browser_window(mini,WM_KEYDOWN,WPARAM(VK_TAB.0 as usize),LPARAM(0));
+        assert_eq!(app.st.search.address,"Lumo Windows");assert!(app.st.search.address_suggestions.is_empty());assert_eq!(app.st.search.navigation.url,page_before);
         app.handle_browser_window(mini,WM_KEYDOWN,WPARAM(VK_ESCAPE.0 as usize),LPARAM(0));app.frame(&mut deferred,None);
         assert!(app.browser_window.is_some()&&!app.st.search.address_editing&&app.st.search.address_suggestions.is_empty(),"Escape cancels address editing before closing the mini browser");
+        app.search_web_action(crate::search_web::Action::Address);app.st.search.address="mouse query".into();app.st.search.address_dirty=true;
+        app.st.search.suggestions.query="mouse query".into();app.st.search.suggestions.address=true;let request=app.st.search.suggestions.serial;
+        app.st.search.suggestions.pending=Some((request,std::sync::Arc::new(services::http::Cancel::default())));
+        crate::search::apply_suggestions(&mut app.st,crate::search::SuggestionsEvent{request,query:"mouse query".into(),items:vec!["mouse chosen".into()]});app.browser_window.as_mut().unwrap().mark_dirty();app.frame(&mut deferred,None);
+        let rect=app.browser_window.as_ref().unwrap().test_hit(crate::ui::wid_n("search.address-suggestion",0)).unwrap();let scale=app.browser_window.as_ref().unwrap().page_bounds().1;
+        let x=(rect.center().x*scale).round()as u16;let y=(rect.center().y*scale).round()as u16;let at=LPARAM((u32::from(x)|(u32::from(y)<<16))as isize);
+        app.handle_browser_window(mini,WM_LBUTTONDOWN,WPARAM(1),at);app.frame(&mut deferred,None);assert!(app.st.search.address_editing&&!app.st.search.address_suggestions.is_empty());
+        app.handle_browser_window(mini,WM_LBUTTONUP,WPARAM(0),at);app.browser_window.as_mut().unwrap().draw(&mut app.st).unwrap();
+        assert!(app.st.cmds.contains(&Command::NavigateSearchWeb(app.st.settings.search.engine.url("mouse chosen").unwrap())),"a suggestion mouse click applies the chosen query");app.st.cmds.clear();
+        app.browser_window.as_mut().unwrap().blur_address();app.st.search.address_dirty=false;app.st.search.suggestions.cancel();
         app.st.settings.search.google_suggestions=suggestions_before;app.sync_search_web();
         app.frame(&mut deferred,None);app.frame(&mut deferred,None);
         // A real screen pixel and HWND hit must both come from the detached
@@ -6284,7 +6719,7 @@ mod tests {
         assert_eq!((app.st.settings.search.mini_width,app.st.settings.search.mini_height),(389,317),"arbitrary mini dimensions are saved");
         app.open_search();app.island.snap(app.geom_for(&app.target_mode()));app.frame(&mut deferred,None);
         assert!(app.st.search.active && app.st.search.detached && !app.st.search.embedded());
-        assert!(app.hits.iter().any(|h|h.id==wid("search.query")) && !app.hits.iter().any(|h|h.id==wid("search.browser")||h.id==wid("search.mini")),"local app search stays available beside the mini browser without a browser button");
+        assert!(app.hits.iter().any(|h|h.id==wid("search.query")) && app.hits.iter().any(|h|h.id==wid("search.browser")) && !app.hits.iter().any(|h|h.id==wid("search.mini")),"local app search and its browser action stay available beside the mini browser");
         app.close_search();assert!(app.search_web.is_some() && app.browser_window.is_some());
         app.toggle_mini_browser();assert!(app.browser_window.is_none() && !app.st.search.detached && app.st.search.active);
         assert_eq!(app.search_web.as_ref().unwrap().test_web().unwrap(),kept);
@@ -6354,7 +6789,7 @@ mod tests {
         loop{unsafe{let mut msg=MSG::default();while PeekMessageW(&mut msg,None,0,0,PM_REMOVE).as_bool(){let _=TranslateMessage(&msg);DispatchMessageW(&msg);}}let mut asleep=BOOL(0);unsafe{suspended.IsSuspended(&mut asleep).unwrap();}if asleep.as_bool(){break;}assert!(Instant::now()<deadline,"retained page must suspend while collapsed");std::thread::sleep(Duration::from_millis(10));}
         let deadline=Instant::now()+Duration::from_secs(4);while app.st.search.view.is_some(){app.frame(&mut deferred,None);assert!(Instant::now()<deadline,"search closing animation did not release the active view");std::thread::sleep(Duration::from_millis(15));}
         assert!(app.st.search.view.is_none()&&app.st.search.saved_view.is_some(),"retained view must not keep the closed frame clock running");
-        app.open_search();assert_eq!(app.search_web.as_ref().unwrap().test_web().unwrap(),retained,"reopen reuses the same page and history");
+        app.open_search();assert!(!app.st.search.embedded(),"Search always opens as an empty launcher");app.open_browser();assert_eq!(app.search_web.as_ref().unwrap().test_web().unwrap(),retained,"explicit browser mode reuses the same page and history");
         let checked=Rc::new(RefCell::new(None));let checked_done=checked.clone();
         unsafe{retained.ExecuteScript(w!("window.lumoRetainedPage + ':' + window.scrollY"),&webview2_com::ExecuteScriptCompletedHandler::create(Box::new(move|code,value|{code?;*checked_done.borrow_mut()=Some(value);Ok(())}))).unwrap();}
         let deadline=Instant::now()+Duration::from_secs(5);while checked.borrow().is_none(){assert!(Instant::now()<deadline);unsafe{let mut msg=MSG::default();while PeekMessageW(&mut msg,None,0,0,PM_REMOVE).as_bool(){let _=TranslateMessage(&msg);DispatchMessageW(&msg);}}std::thread::sleep(Duration::from_millis(10));}
@@ -6366,7 +6801,7 @@ mod tests {
         let mut packet=MSG::default();assert!(unsafe{PeekMessageW(&mut packet,hwnd,crate::search_web::SWIPE,crate::search_web::SWIPE,PM_REMOVE)}.as_bool());app.handle_island(packet.message,packet.wParam,packet.lParam,&mut deferred);assert!(!app.st.search.active && app.search_web.is_none(),"a browser swipe closes the same island and destroys its controller");
         app.open_search();app.execute_search(lumo_core::search::Target::Web{query:"fixture".into(),url:"about:blank".into()});
         app.handle_island(WM_SYSKEYDOWN,WPARAM(VK_LEFT.0 as usize),LPARAM(1<<29),&mut deferred);
-        assert!(app.st.search.active&&app.search_web.is_none()&&app.st.search.web_url.is_none(),"Alt+Left from the first page returns to local search");app.close_search();
+        assert!(app.st.search.active&&crate::browser_home::is_home(&app.st),"Alt+Left from the first page returns to Home");app.close_search();
         // Route a real native close-button click through the app-owned popup
         // procedure, including a controller that is still being created.
         app.open_search();app.execute_search(lumo_core::search::Target::Web{query:"fixture".into(),url:"about:blank".into()});

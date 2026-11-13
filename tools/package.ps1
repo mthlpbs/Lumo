@@ -25,7 +25,7 @@ if (@($Version, $KeepVersion.IsPresent, $BumpVersion.IsPresent | Where-Object { 
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $oldLocation = Get-Location
 $savedEnvironment = @{}
-foreach ($name in @('PATH','CARGO_HOME','RUSTUP_HOME','LIBRARY_PATH')) {
+foreach ($name in @('PATH','CARGO_HOME','RUSTUP_HOME','RUSTUP_TOOLCHAIN','LIBRARY_PATH','NSISDIR')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name,'Process')
 }
 $packageLock = $null
@@ -48,15 +48,27 @@ try {
     $python = Find-Tool 'python' @((Join-Path $localTools 'python/python.exe'))
     if (-not $python) { $python = Find-Tool 'python3' }
     if (-not $python) { throw 'Python 3.11 or newer is required' }
-    $cargo = Find-Tool 'cargo'
-    if (-not $cargo) {
-        $cargo = Find-Tool 'cargo' @((Join-Path $localTools 'cargo/bin/cargo.exe'))
-        if (-not $cargo) { throw 'Install Rust/Cargo or provide the local .tools Rust toolchain' }
+    # A global Cargo can use MSVC even when the requested output is GNU:
+    # build scripts still use the host compiler. Prefer the complete bundled
+    # GNU toolchain, not just its target, unless MSVC was explicitly requested.
+    $localCargo = Join-Path $localTools 'cargo/bin/cargo.exe'
+    $localRust = Join-Path $localTools 'rustup/toolchains/stable-x86_64-pc-windows-gnu'
+    $localLinker = Join-Path $localTools 'llvm-mingw-20261020-ucrt-x86_64/bin/x86_64-w64-mingw32-gcc.exe'
+    $useLocalRust = ($Target -ne 'x86_64-pc-windows-msvc') -and
+        (Test-Path -LiteralPath $localCargo -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $localRust 'bin/rustc.exe') -PathType Leaf) -and
+        (Test-Path -LiteralPath $localLinker -PathType Leaf)
+    if ($useLocalRust) {
+        $cargo = $localCargo
         $env:CARGO_HOME = Join-Path $localTools 'cargo'
         $env:RUSTUP_HOME = Join-Path $localTools 'rustup'
+        $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-gnu'
         $env:PATH = "$(Join-Path $localTools 'cargo/bin');$(Join-Path $localTools 'llvm-mingw-20261020-ucrt-x86_64/bin');$env:PATH"
-        $env:LIBRARY_PATH = Join-Path $localTools 'rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/lib/self-contained'
-        if (-not $Target) { $Target = 'x86_64-pc-windows-gnu' }
+        $env:LIBRARY_PATH = Join-Path $localRust 'lib/rustlib/x86_64-pc-windows-gnu/lib/self-contained'
+        $Target = 'x86_64-pc-windows-gnu'
+    } else {
+        $cargo = Find-Tool 'cargo'
+        if (-not $cargo) { throw 'Install Rust/Cargo or provide the complete local .tools Rust and MinGW toolchain' }
     }
     if (-not $Target) {
         $hostInfo = & rustc -vV
@@ -64,10 +76,16 @@ try {
         $Target = if ($hostInfo -match 'host: x86_64-pc-windows-gnu') { 'x86_64-pc-windows-gnu' } else { 'x86_64-pc-windows-msvc' }
     }
     $inno = Find-Tool 'iscc'
-    $nsis = Find-Tool 'makensis'
+    $nsisCandidates = @(Get-ChildItem -LiteralPath $localTools -Directory -Filter 'nsis*' |
+        Sort-Object Name -Descending | ForEach-Object { Join-Path $_.FullName 'compiler/makensis.exe' })
+    $nsis = Find-Tool 'makensis' $nsisCandidates
     if ($Installer -eq 'Auto') { $Installer = if ($inno) { 'Inno' } elseif ($nsis) { 'NSIS' } else { throw 'Install Inno Setup 6.5.2+ or NSIS with native amd64 support' } }
     if ($Installer -eq 'Inno' -and -not $inno) { throw 'Inno Setup compiler (iscc) was not found' }
     if ($Installer -eq 'NSIS' -and -not $nsis) { throw 'NSIS compiler (makensis) was not found' }
+    if ($Installer -eq 'NSIS') {
+        $nsisDirectory = Split-Path -Parent $nsis
+        if (Test-Path -LiteralPath (Join-Path $nsisDirectory 'Include/MUI2.nsh')) { $env:NSISDIR = $nsisDirectory }
+    }
     $versionTool = Join-Path $PSScriptRoot 'version.py'
     $planArgs = @($versionTool,'plan')
     if ($Version) { $planArgs += @('--version',$Version) }

@@ -1,53 +1,59 @@
 # Search
 
-With a mouse wheel, scroll down over the closed island for Search or up for AI
-when enabled. With a touchpad, scroll right for Search or left for AI. Swipe
-again anywhere over Search, including the embedded web page, to collapse it.
-Esc also closes it. The launcher and embedded browser have no close button.
-Clicking outside closes Search unless its **Keep open** pin is on, including
-when the address editor is unfocused or the click dismisses a native result
-menu. Clicking inside the embedded webpage keeps Search open. The ordinary
-island pin does not override Search's own Keep open preference.
-Regular open island pages and
-Settings retain their normal horizontal navigation.
+Scroll right with a touchpad or down with a mouse wheel over the closed island
+to open Search. A fresh horizontal swipe or Escape closes it. Clicking outside
+also closes it unless Keep open is enabled.
 
-Hover over browser controls to see their actions and current state. Hints stay
-inside the browser chrome so the webpage cannot cover them. Hovering does not
-navigate, change focus or toggle a preference.
+Search always opens with an empty search bar. The optional browser icon appears
+beside it. Below the field, only small icons for applications last opened through
+Search are shown, newest first. Their number follows the actual window width and
+spacing, capped at 16. Services, Windows settings, tools and web results never
+appear in this recent-app strip. A new profile with no recent apps shows only the
+field and browser icon. Hovering an icon identifies its application; clicking it
+opens the app. Up/Down or Tab can select a recent app, with a visible focus outline.
+Only result identifiers and last-opened times are stored, not typed queries.
 
-Search contains registered desktop and Microsoft Store apps, Windows Settings
-destinations, and optional local service, PowerToys and VS Code command
-sources. General file/folder search has been removed. Lumo actions and
-Lumo preference pages are not search results. There are no source chips,
-repeated app subtitles, result-count footer, footer gear or selected-row Open label.
-Service state and VS Code window context appear only where they identify a result.
-App icons use Windows' system image list with native transparency.
+Typing hides the browser icon and expands the field into its space. Full result
+rows appear only for a nonempty query. Clearing the field fades the old rows away,
+shrinks the panel and restores the browser icon and recent apps. These finite
+160 ms fades share the existing island height spring and stop after settling;
+battery saver snaps to the new state. **Settings > Search > Show browser icon**
+can hide the icon entirely. Ctrl+Enter remains available with the icon hidden.
 
-The local launcher uses a 560-DIP-wide surface with 40-DIP row spacing,
-24-DIP icons and a subtle selection highlight with an inset accent marker.
-Rows respond to hover and press without adding animation. Its
-height follows the result count, so a single match takes only one compact row.
-The search field has a neutral border and no browser button. **Ctrl+Enter**
-searches the current query even when local matches exist, visits a URL or bare
-domain directly, or opens the chosen engine's home page for an empty field.
-Enable web search in Settings first. No browser starts until an explicit web
-action is selected.
+Registered desktop/Store apps, Windows settings and enabled local integrations
+use strict name/source matching. General file/folder search and Lumo commands are
+excluded. Up/Down or Tab selects results, Page Up/Down moves five rows, and Enter
+opens the selection. Ctrl+Enter explicitly opens a web search even with local
+matches; an empty query opens a blank browser page.
 
-![Single compact search match](brand/readme/lumo/search-single-6045b9e9789c.png)
+The search/address field does not switch between Search and Browser when
+scrolled vertically, including right-button + wheel gestures. Open Browser with
+the browser icon or Ctrl+Enter.
 
-Names and explicit source keywords must match. Loose character
-subsequences and generic app metadata are not matches. Up/Down or Tab selects
-results, Page Up/Down moves five rows, Enter opens, and the vertical wheel
-scrolls results. A missing match shows a clear empty state; failed or partial
-sources are reported rather than presented as a successful complete search.
+## Blank browser pages
 
-## Frequent results and context menus
+Browser opens to a quiet native starting hint: **Start browsing**, with a short
+instruction to use the address bar. It has no homepage, pinned-site icons, add
+controls, branding or page search field. The idle address bar reads **Search or
+enter a web address**. Clicking it shows an empty editor and hides the page hint;
+the prompt is never inserted into typed text. Clicking the background or pressing
+Escape discards the address edit and immediately restores the toolbar icons,
+even after clearing all text. Clicks on suggestions still select them normally.
+The starting hint starts no WebView, network request, background worker or
+repeating timer. The compact navigation bar has no Home or
+bookmark/star action.
 
-On opening Search, the list contains results you have opened most frequently,
-with recency breaking ties. A fresh profile has no invented suggestions.
-Only result identifiers, counts and last-use times are saved in data.json;
-query text is not saved. Retired file-result identifiers are removed from
-the loaded history; old file-search preferences are ignored.
+Settings now separates **Search** (sources, suggestions, recent apps and icon
+visibility) from **Browser** (web enablement, engine, layout and ad blocking).
+**Settings > Shortcut guide** lists keyboard and gesture controls by context.
+
+## Recent applications and context menus
+
+Only previously opened applications are shown as recent icons on opening Search.
+The most recently opened app comes first, independently of its old usage count.
+A fresh profile has no invented history. **Settings > Search > Clear recent apps**
+clears the stored usage. Query text is not saved. Retired file identifiers are
+removed when loading older data.
 
 Right-click a result for a dark, rounded native Windows menu, with keyboard
 navigation, accessible item names and commands specific to the result. Apps
@@ -57,8 +63,8 @@ file path offer Copy app link instead. Administrator activation uses Windows'
 own Shell verb and UAC prompt. Windows Settings results offer Open and Copy
 settings link. Service menus offer only supported Start/Stop actions. VS Code
 and PowerToys menus run the selected command or tool. Web results offer Open,
-Copy link and Open in default browser. A frequent result can be removed individually;
-**Settings > Search > Clear frequent results** clears all saved counts.
+Copy link and Open in default browser. A recent application can be removed individually;
+**Settings > Search > Clear recent apps** clears all saved counts.
 Shift+F10 or the keyboard Menu key opens the selected result's menu.
 
 ![Native application result menu](brand/readme/lumo/native-context-menu-e5493623e2f2.png)
@@ -127,8 +133,7 @@ the card still offers its context menu.
 
 With web search off, the compact empty state suggests trying another name.
 Loading, unavailable applications and battery-saver states have their own
-status; they are not described as a successful no-match search. A fresh profile
-with no frequent results also uses a compact panel. Matching result lists grow
+status; they are not described as a successful no-match search. An empty query uses the search bar and recent-app strip described above. Matching result lists grow
 to fit up to five visible rows.
 
 ![Compact web-search action](brand/readme/lumo/search-empty-dbb7ccf50536.png)
@@ -139,7 +144,7 @@ to fit up to five visible rows.
 
 ## Optional web search
 
-Enable **Web search** in **Settings > Search**, and choose Bing, Google,
+Enable **Web search** in **Settings > Browser**, and choose Bing, Google,
 DuckDuckGo or Brave. It is off by default. When local search finds nothing,
 choose the explicit Search provider action to send the query to that engine.
 Typing alone never sends a query to a web service unless optional Google
@@ -160,7 +165,7 @@ space for the title and exposes additional commands. Standard chevrons move back
 through page history; Back returns to local results when there is no earlier
 page. Forward is disabled when no forward history exists.
 
-**Settings > Search > Browser** offers Tall or Wide layout and Short, Tall or
+**Settings > Browser** offers Tall or Wide layout and Short, Tall or
 Extra tall height presets (480, 680 or 840 DIPs, limited to available space).
 Tall is the default; Wide uses a 900-DIP browser. Pages render at normal size
 (100% zoom) with the normal Windows desktop user agent. Lumo does not fit,
@@ -220,16 +225,17 @@ restores the last address. The extra window renderer exists only while detached.
 ## Keep open and resume
 
 Two independent toggles live inside the browser address bar (or its overflow
-menu at narrow sizes). Local Search has no browser button. Their accent background
+menu at narrow sizes). These toggles are separate from Local Search's browser button. Their accent background
 indicates when they are on; hover shows the name and current behavior. Both
 are off by default, and their preferences stay on until you turn them off.
 
 - **Pin / Keep Search open:** prevents automatic closing when leaving the island
   or switching apps. Escape and a horizontal swipe still
   close it explicitly. This does not change the ordinary island's pin setting.
-- **Resume page:** preserves the current query/results and web page across
-  collapse/reopen during this app session, including browser history, page state
-  and scroll position. Turning it off restores the usual fresh Search on close.
+- **Resume page:** preserves the browser page across collapse/reopen during this
+  app session, including history, page state and scroll position. Search still
+  opens with an empty field; explicitly open Browser to return to the retained page.
+  Turning Resume off releases its page on closing Browser.
 
 The retained browser is hidden and suspended when Search closes. It has no
 mouse hook while hidden and adds no polling or loading-animation timer. If the
@@ -244,13 +250,13 @@ Local packages include the compact launcher, unified address bar and native resu
 
 ## Local, bounded and on demand
 
-**Google suggestions** is a separate opt-in under Settings > Search. It needs
+**Search suggestions** is a separate opt-in under Settings > Search. It needs
 web search enabled and at least two characters. Suggestions appear for local
 queries without matches and search text typed in the focused address editor.
 Website addresses are excluded. One 350-ms debounce wake starts a cancelable
 request to Google's suggestion service. At most four suggestions are shown.
 Up/Down selects address suggestions and Enter opens one using your chosen
-engine; Esc cancels editing. Local suggestion results search Google. Native
+engine; Tab fills the selected suggestion without navigating, and Esc cancels editing. Local suggestion results search Google. Native
 webpage pixels are occluded behind the dropdown without resizing the page.
 
 Responses are capped at 32 KiB with an eight-second request limit. Stale,
@@ -357,3 +363,5 @@ The short scroll animation stops when settled and snaps in battery saver.
 Empty Search fields hide the text caret. Typing shows the focused caret with
 Windows' normal blink timing, and clearing the text hides it and stops blink
 redraws. Keyboard focus stays ready for input.
+
+See [local cost and validation notes](search-rework-cost.md).

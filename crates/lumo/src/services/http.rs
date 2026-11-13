@@ -24,7 +24,7 @@ use pure::{decode_body, network_detail};
 
 /// An explicit stop wakes the existing request worker. There is no cancel poll,
 /// auxiliary thread or periodic wake while a request waits for its response.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Cancel {cancelled:std::sync::atomic::AtomicBool,wake:std::sync::Mutex<Option<mpsc::Sender<()>>>}
 impl Cancel {
     pub fn cancel(&self){self.cancelled.store(true,std::sync::atomic::Ordering::Relaxed);if let Some(tx)=self.wake.lock().unwrap_or_else(|e|e.into_inner()).as_ref(){let _=tx.send(());}}
