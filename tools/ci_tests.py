@@ -16,7 +16,9 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
-PASSED = re.compile(r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", re.MULTILINE)
+TEST_RESULT = re.compile(
+    r"^test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored;", re.MULTILINE,
+)
 
 
 def invoke(command, timeout, cwd=ROOT):
@@ -63,16 +65,20 @@ def run_binary(command, out, timeout=60):
         code, output = invoke(
             [*command, name, "--exact", "--nocapture", "--test-threads=1"], timeout,
         )
-        status = "passed" if code == 0 and PASSED.search(output) else "failed"
+        summaries = TEST_RESULT.findall(output)
+        passed = code == 0 and summaries and summaries[-1] == ("ok", "1", "0", "0")
+        status = "passed" if passed else "failed"
+        hex_code = f"0x{code & 0xffffffff:08X}" if code is not None else None
+        exit_detail = f"{code} ({hex_code})" if code is not None else "timeout"
         log = out / (hashlib.sha256(name.encode()).hexdigest()[:16] + ".log")
-        log.write_text(f"Test: {name}\nExit: {code}\n{output}", encoding="utf-8")
+        log.write_text(f"Test: {name}\nExit: {exit_detail}\n{output}", encoding="utf-8")
         results.append({
-            "name": name, "status": status, "exit_code": code,
+            "name": name, "status": status, "exit_code": code, "exit_code_hex": hex_code,
             "seconds": round(time.monotonic() - started, 3), "log": str(log),
         })
         print(f"{status.upper()}: {name}", flush=True)
         if status == "failed":
-            print(f"exit {code}\n{output}", flush=True)
+            print(f"exit {exit_detail}\n{output}", flush=True)
     return results
 
 

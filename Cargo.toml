@@ -55,3 +55,27 @@ opt-level = "s"
 # Ad blocking runs on page/network events, never in an island frame.
 [profile.release.package.adblock]
 opt-level = "s"
+
+# The blocking engine's parsers, domain lookup and regex machinery are used
+# only for opted-in web requests/list loading, never for rendering frames.
+# Apply the same size policy to its dependencies as to the engine itself.
+[profile.release.package.psl]
+opt-level = "s"
+[profile.release.package.regex]
+opt-level = "s"
+[profile.release.package.regex-automata]
+opt-level = "s"
+[profile.release.package.regex-syntax]
+opt-level = "s"
+[profile.release.package.aho-corasick]
+opt-level = "s"
+[profile.release.package.cssparser]
+opt-level = "s"
+[profile.release.package.selectors]
+opt-level = "s"
+[profile.release.package.idna]
+opt-level = "s"
+[profile.release.package.icu_normalizer]
+opt-level = "s"
+[profile.release.package.icu_properties]
+opt-level = "s"

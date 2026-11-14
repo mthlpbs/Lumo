@@ -51,6 +51,7 @@ else:
 ''')
         self.assertEqual(results[0]["status"], "failed")
         self.assertEqual(results[0]["exit_code"], 23)
+        self.assertEqual(results[0]["exit_code_hex"], "0x00000017")
         self.assertEqual(results[1]["status"], "passed")
         self.assertIn("Exit: 23", Path(results[0]["log"]).read_text())
 
@@ -78,6 +79,18 @@ else:
         self.assertEqual(results[0]["status"], "failed")
         self.assertIsNone(results[0]["exit_code"])
         self.assertIn("before timeout", Path(results[0]["log"]).read_text())
+
+    def test_nested_pass_cannot_hide_a_final_zero_test_result(self):
+        results = self.run_harness('''
+import sys
+if "--list" in sys.argv:
+    if "--ignored" not in sys.argv:
+        print("renamed: test")
+else:
+    print("test result: ok. 1 passed; 0 failed; 0 ignored;")
+    print("test result: ok. 0 passed; 0 failed; 0 ignored;")
+''')
+        self.assertEqual(results[0]["status"], "failed")
 
     def test_listing_failure_is_not_an_empty_successful_suite(self):
         with self.assertRaisesRegex(RuntimeError, "could not list tests"):

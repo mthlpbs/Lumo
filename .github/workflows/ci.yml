@@ -187,6 +187,7 @@ jobs:
           version: latest
 
       - name: Package installer and portable app
+        id: assets
         env:
           APP_VERSION: ${{ needs.windows.outputs.version }}
         run: |
@@ -226,6 +227,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Save installer
+        if: always() && steps.assets.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: lumo-setup
@@ -235,6 +237,7 @@ jobs:
           compression-level: 0
 
       - name: Save portable app and checksums
+        if: always() && steps.assets.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: lumo-portable
