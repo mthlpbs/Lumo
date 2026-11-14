@@ -3,6 +3,7 @@
 *.log
 .DS_Store
 /selftest-out
+/test-out
 /.claude/
 /design-review
 /after

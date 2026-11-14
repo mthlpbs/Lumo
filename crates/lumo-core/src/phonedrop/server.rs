@@ -219,10 +219,16 @@ impl Server {
     }
 
     fn shutdown(&mut self) {
-        if self.shared.stop.swap(true, Ordering::SeqCst) {
-            return;
+        {
+            // Change the wait predicate under the same lock used by
+            // serve_ask. Otherwise stop can notify between its predicate
+            // check and wait_timeout, leaving it asleep until the deadline.
+            let _st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if self.shared.stop.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            self.shared.answered.notify_all();
         }
-        self.shared.answered.notify_all();
         // Wake the blocking accept() with a connection of our own.
         let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(500));
         if let Some(h) = self.accept.take() {

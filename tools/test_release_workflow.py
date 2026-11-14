@@ -36,7 +36,8 @@ def run_step(name, tag, event="release"):
             env={**os.environ, "EVENT_NAME": event, "RELEASE_TAG": tag, "GITHUB_OUTPUT": str(output)},
             capture_output=True, text=True,
         )
-        return result, output.read_text() if output.exists() else ""
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
+        return result, values
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -45,26 +46,33 @@ class ReleaseWorkflowTests(unittest.TestCase):
             with self.subTest(tag=tag):
                 result, output = run_step("Identify app release", tag)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output.strip(), "build=true")
+                self.assertEqual(output, {"build": "true", "package": "true"})
 
     def test_addons_and_invalid_tags_stay_skipped(self):
         for tag in ["dictionary-data", "ja-dict-2026-11", "v-data", "", "2026.1107.2-preview", "2026.1107.2/path"]:
             with self.subTest(tag=tag):
                 result, output = run_step("Identify app release", tag)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output.strip(), "build=false")
+                self.assertEqual(output, {"build": "false", "package": "false"})
 
     def test_manual_dispatch_builds_without_a_tag(self):
         result, output = run_step("Identify app release", "", "workflow_dispatch")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.strip(), "build=true")
+        self.assertEqual(output, {"build": "true", "package": "true"})
+
+    def test_code_changes_run_tests_without_packaging(self):
+        for event in ["push", "pull_request"]:
+            with self.subTest(event=event):
+                result, output = run_step("Identify app release", "", event)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output, {"build": "true", "package": "false"})
 
     def test_both_current_tag_formats_validate(self):
         for tag in [VERSION, f"v{VERSION}", ""]:
             with self.subTest(tag=tag):
                 result, output = run_step("Validate release version", tag)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output.strip(), f"version={VERSION}")
+                self.assertEqual(output, {"version": VERSION})
 
     def test_mismatched_versions_fail_with_the_current_version(self):
         for tag in ["2026.1107.1", "v1.0.0"]:
@@ -74,7 +82,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 result, output = run_step("Validate release version", tag)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f"must match Cargo.toml version {VERSION}", result.stderr)
-                self.assertEqual(output, "")
+                self.assertEqual(output, {})
 
 
 if __name__ == "__main__":

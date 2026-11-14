@@ -982,38 +982,10 @@ fn copy_image(owner: SendHwnd, a: &Attachment) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    // HttpClient uses process-wide WinRT state and asynchronous callbacks. Run
-    // each live HTTP case in its own process so cancellation/apartment teardown
-    // cannot race another test. A native fault then reports the exact case and
-    // its output instead of terminating the entire parallel workspace suite.
-    // The child's apartment outlives the whole scenario, including retries and
-    // cancellation, just as it outlives requests on an application worker.
-    fn http_test_apartment(name: &str) -> Option<MtaGuard> {
-        const CHILD: &str = "LUMO_HTTP_TEST_CHILD";
-        // libtest lists module paths without the crate name.
-        let module = module_path!().split_once("::").unwrap().1;
-        let test = format!("{module}::{name}");
-        if std::env::var(CHILD).as_deref() == Ok(test.as_str()) {
-            return Some(MtaGuard::new());
-        }
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
-            .env(CHILD, &test)
-            .output()
-            .expect("start isolated native HTTP test");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            output.status.success() && stdout.contains("1 passed;"),
-            "isolated test {test} exited with {}\n{stdout}\n{stderr}",
-            output.status
-        );
-        None
-    }
-
     #[test]
     fn native_http_marks_only_explicit_model_refusals_without_retrying_posts() {
-        let Some(_com) = http_test_apartment("native_http_marks_only_explicit_model_refusals_without_retrying_posts") else { return; };
+        // Keep the apartment alive across all requests, as on an app worker.
+        let _com = MtaGuard::new();
         use std::io::{Read,Write};
         for (status,body,blocked) in [
             (404,r#"{"error":{"code":"model_not_found","message":"Unknown model"}}"#,true),
@@ -1068,7 +1040,7 @@ mod tests {
     }
     #[test]
     fn catalog_get_retries_a_transient_first_failure_but_not_authentication_errors() {
-        let Some(_com) = http_test_apartment("catalog_get_retries_a_transient_first_failure_but_not_authentication_errors") else { return; };
+        let _com = MtaGuard::new();
         use std::io::{Read, Write};
         for statuses in [vec![503, 200], vec![401]] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1216,7 +1188,7 @@ mod tests {
     }
     #[test]
     fn native_http_uses_the_selected_provider_protocol_without_external_requests() {
-        let Some(_com) = http_test_apartment("native_http_uses_the_selected_provider_protocol_without_external_requests") else { return; };
+        let _com = MtaGuard::new();
         use std::io::{Read, Write};
         for provider in Provider::ALL {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1281,7 +1253,7 @@ mod tests {
     }
     #[test]
     fn stop_cancels_a_waiting_native_request_without_a_poll_timer() {
-        let Some(_com) = http_test_apartment("stop_cancels_a_waiting_native_request_without_a_poll_timer") else { return; };
+        let _com = MtaGuard::new();
         use std::io::Read;
         use std::sync::{mpsc, Arc};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
