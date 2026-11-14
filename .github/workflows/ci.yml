@@ -207,6 +207,23 @@ jobs:
           $checksums | Set-Content -LiteralPath "$dist/SHA256SUMS.txt" -Encoding ascii
           'Update checks: opt-in, twice a day; no permanent updater worker or per-frame animation. See smoke-out for idle memory and CPU metrics.' | Add-Content $env:GITHUB_STEP_SUMMARY
 
+      - name: Check installer download size
+        env:
+          APP_VERSION: ${{ needs.windows.outputs.version }}
+        run: |
+          $budget = Get-Content tools/weight-budget.json -Raw | ConvertFrom-Json
+          $installer = Get-Item -LiteralPath "dist/Lumo-Setup-$env:APP_VERSION.exe"
+          $downloadMB = $installer.Length / 1e6
+          "Installer download: $([Math]::Round($downloadMB, 2)) MB; budget: $($budget.download_mb) MB" | Add-Content $env:GITHUB_STEP_SUMMARY
+          if ($downloadMB -gt [double]$budget.download_mb) {
+            $message = "Installer download exceeds its $($budget.download_mb) MB budget"
+            if ([DateTime]::UtcNow.ToString('yyyy-MM-dd') -le $budget.warn_only_until) {
+              Write-Warning $message
+            } else {
+              throw $message
+            }
+          }
+
       - name: Check Windows desktop and idle costs
         run: ./tools/ci-smoke.ps1 -Exe ./target/x86_64-pc-windows-msvc/release/lumo.exe -Out smoke-out
 
