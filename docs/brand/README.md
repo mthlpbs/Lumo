@@ -3,10 +3,24 @@
 ## Current README screenshots
 
 Refreshed on 13 November 2026 from version **2026.1113.6**. These are
-unmodified app captures with fictional chat, music, phone and metric data.
+app captures with fictional chat, music, phone and metric data.
 Search uses installed Windows application icons. No AI provider request is
 made. The README uses the hash-based filenames below to refresh image caches.
 These documentation images are not bundled in Lumo.
+
+The opening README image, `banner.png`, is a desktop preview,
+not a full-screen app capture. It places the original `music-f8c50633d075.png`
+at native size against the top edge of an illustrated Windows 11 desktop.
+The desktop background was generated with the built-in imagegen tool; the
+Lumo panel is composited from the native capture so its controls and text
+are unchanged. Prompt: a clean Windows 11 desktop with blue Bloom-style
+wallpaper, a bottom taskbar, no open windows and space at the top for Lumo.
+The banner keeps a stable filename so older README previews also resolve it.
+
+Focus and System have transparent desktop backgrounds as of 14 November 2026.
+Their original self-test opacity masks replace the composited desktop gradient;
+opaque app pixels, canvas sizes and framing are preserved. The original captures
+remain available as `focus-a41cffafcbd0.png` and `system-a35e9bd90dcd.png`.
 
 | Image | Capture source | Theme / window |
 | --- | --- | --- |
@@ -17,8 +31,8 @@ These documentation images are not bundled in Lumo.
 | `compact-network-a84605893881.png` | `layouts_render_in_both_themes_and_scroll_has_three_views` | Pill |
 | `ai-607aea43711c.png` | `ai_workspace_preserves_handoffs_resume_pin_and_pauses_while_away` | Pill |
 | `phone-076dea3a298b.png` | `search_scroll_and_local_phone_drop_layouts` | Pill |
-| `system-a35e9bd90dcd.png` | `self-test: page-system` | Classic |
-| `focus-a41cffafcbd0.png` | `self-test: page-focus` | Classic |
+| `system-e458c29a1838.png` | `self-test: page-system`, restored native opacity | Classic |
+| `focus-1f6cacf75a00.png` | `self-test: page-focus`, restored native opacity | Classic |
 | `pill-9f103a9a843f.png` | `music_player_controls_fit_with_and_without_lyrics_at_supported_sizes` | Pill |
 | `section-tabs-97789f0ed028.png` | `section_tabs_restore_icons_and_active_name_with_wheel_navigation` | Pill |
 | `search-single-6045b9e9789c.png` | `inline_search_renders_icons_keyboard_filters_and_collapses_in_both_themes` | Pill |
